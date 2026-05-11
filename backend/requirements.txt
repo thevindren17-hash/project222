@@ -1,0 +1,26 @@
+# ── Web framework ──────────────────────────────────────────────────────────────
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-dotenv==1.0.0
+httpx>=0.26.0
+
+# ── LiveKit Agents 1.3.x ──────────────────────────────────────────────────────
+livekit-agents==1.3.6
+livekit-plugins-deepgram==1.3.6
+livekit-plugins-openai==1.3.6
+livekit-plugins-silero==1.3.6
+livekit-plugins-cartesia==1.3.6
+livekit-plugins-elevenlabs==1.3.6
+livekit-plugins-anthropic==1.3.6
+
+# ── Database ───────────────────────────────────────────────────────────────────
+supabase==2.15.3
+
+# ── LLM / AI providers (text mode — let pip resolve to match livekit-agents) ──
+openai>=1.99.2
+anthropic>=0.40.0
+groq>=0.11.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dateutil==2.8.2
+pydantic>=2.6.0

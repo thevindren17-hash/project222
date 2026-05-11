@@ -1,0 +1,47 @@
+"""
+FastAPI Server
+Handles WhatsApp webhooks, Google OAuth callbacks, and health checks.
+"""
+
+import os
+from datetime import datetime
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from api.whatsapp import router as whatsapp_router
+from api.integrations import router as integrations_router
+
+app = FastAPI(title="AI Receptionist Backend", version="1.0.0")
+
+_origins = [o for o in [
+    os.getenv("FRONTEND_URL"),
+    "http://localhost:3000",
+] if o]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(whatsapp_router, prefix="/webhook", tags=["WhatsApp"])
+app.include_router(integrations_router, prefix="/api/integrations", tags=["Integrations"])
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "ai-receptionist-backend"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))

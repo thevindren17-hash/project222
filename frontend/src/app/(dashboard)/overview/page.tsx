@@ -1,0 +1,135 @@
+'use client'
+
+import { useQuery } from '@tanstack/react-query'
+import { supabase, getCurrentTenant } from '@/lib/supabase'
+import StatCard from '@/components/dashboard/stat-card'
+import LiveIndicator from '@/components/dashboard/live-indicator'
+import PluginStatusBar from '@/components/dashboard/plugin-status-bar'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import Link from 'next/link'
+import { format } from 'date-fns'
+
+export default function OverviewPage() {
+  const { data: metrics } = useQuery({
+    queryKey: ['overview-metrics'],
+    queryFn: async () => {
+      const tenant = await getCurrentTenant()
+      if (!tenant) throw new Error('No tenant found')
+
+      const startOfWeek = new Date()
+      startOfWeek.setDate(startOfWeek.getDate() - 7)
+
+      const [bookingsRes, callsRes, threadsRes] = await Promise.all([
+        supabase.from('bookings').select('*', { count: 'exact', head: true })
+          .eq('tenant_id', tenant.id).gte('created_at', startOfWeek.toISOString()),
+        supabase.from('call_logs').select('duration_seconds,auto_escalated')
+          .eq('tenant_id', tenant.id).gte('started_at', startOfWeek.toISOString()),
+        supabase.from('whatsapp_threads').select('status')
+          .eq('tenant_id', tenant.id),
+      ])
+
+      const calls = callsRes.data || []
+      const threads = threadsRes.data || []
+      const totalCalls = calls.length
+      const avgDuration = totalCalls > 0
+        ? calls.reduce((s, c) => s + (c.duration_seconds || 0), 0) / totalCalls
+        : 0
+      const escalations = calls.filter((c) => c.auto_escalated).length
+      const aiThreads = threads.filter((t) => t.status === 'ai').length
+
+      return {
+        bookingsThisWeek: bookingsRes.count || 0,
+        avgCallDuration: Math.round(avgDuration),
+        totalCalls,
+        escalations,
+        aiHandleRate: threads.length > 0 ? Math.round((aiThreads / threads.length) * 100) : 0,
+        waMessages: threads.length,
+      }
+    },
+  })
+
+  const { data: recentBookings } = useQuery({
+    queryKey: ['recent-bookings'],
+    queryFn: async () => {
+      const tenant = await getCurrentTenant()
+      if (!tenant) return []
+      const { data } = await supabase
+        .from('bookings')
+        .select('*, contact:contacts(name,phone)')
+        .eq('tenant_id', tenant.id)
+        .order('created_at', { ascending: false })
+        .limit(5)
+      return data || []
+    },
+  })
+
+  const durMin = Math.floor((metrics?.avgCallDuration || 0) / 60)
+  const durSec = (metrics?.avgCallDuration || 0) % 60
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold">Overview</h1>
+        <p className="text-muted-foreground">Welcome back! Here&apos;s what&apos;s happening.</p>
+      </div>
+
+      <PluginStatusBar />
+      <LiveIndicator />
+
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <StatCard title="Appointments Booked" value={metrics?.bookingsThisWeek ?? '—'} subtitle="This week" icon="calendar" />
+        <StatCard title="Total Calls" value={metrics?.totalCalls ?? '—'} subtitle="This week" icon="phone" />
+        <StatCard title="Avg Call Duration" value={`${durMin}m ${durSec}s`} icon="clock" />
+        <StatCard title="WA Threads" value={metrics?.waMessages ?? '—'} subtitle="All time" icon="message" />
+        <StatCard title="AI Handle Rate" value={`${metrics?.aiHandleRate ?? 0}%`} icon="bot" />
+        <StatCard title="Escalations" value={metrics?.escalations ?? '—'} subtitle="This week" icon="alert" />
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Recent Appointments</span>
+              <Link href="/appointments"><Button variant="ghost" size="sm">View all</Button></Link>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {recentBookings?.length === 0 && (
+              <p className="text-sm text-muted-foreground">No bookings yet</p>
+            )}
+            {recentBookings?.map((b: any) => (
+              <div key={b.id} className="flex items-center justify-between text-sm">
+                <div>
+                  <p className="font-medium">{b.contact?.name || 'Unknown'}</p>
+                  <p className="text-muted-foreground">{b.service_type}</p>
+                </div>
+                <div className="text-right">
+                  <p>{format(new Date(b.scheduled_at), 'MMM d, h:mm a')}</p>
+                  <Badge variant={b.status === 'confirmed' ? 'default' : 'secondary'} className="text-xs">
+                    {b.status}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>WhatsApp Inbox</span>
+              <Link href="/whatsapp"><Button variant="ghost" size="sm">View inbox</Button></Link>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              {metrics?.waMessages ? `${metrics.waMessages} total threads` : 'No threads yet'}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
