@@ -9,6 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ── Tenants ────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tenants (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    owner_id            UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name                TEXT NOT NULL,
     agent_name          TEXT NOT NULL DEFAULT 'Maya',
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,

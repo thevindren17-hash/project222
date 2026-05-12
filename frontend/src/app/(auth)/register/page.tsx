@@ -30,7 +30,6 @@ export default function RegisterPage() {
         owner_id: authData.user.id,
         name: clinicName,
         agent_name: 'Maya',
-        default_language: 'en',
         is_active: true,
       })
       if (tenantError) throw tenantError
