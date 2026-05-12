@@ -11,7 +11,7 @@ import { toast } from 'sonner'
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns'
 import {
   Send, Bot, User, Phone, MessageSquare, Mic,
-  Search, Copy, Check, Pencil, X, Tag, Plus,
+  Search, Copy, Check, Pencil, X, Tag, Plus, Wifi, WifiOff,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { WhatsAppThread } from '@/lib/types'
@@ -62,15 +62,17 @@ export default function WhatsAppPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
+  const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
+
   const { data: threads = [], isLoading: threadsLoading } = useQuery({
     queryKey: ['wa-threads'],
     queryFn: async () => {
-      const tenant = await getCurrentTenant()
-      if (!tenant) return []
+      const t = await getCurrentTenant()
+      if (!t) return []
       const { data } = await supabase
         .from('whatsapp_threads')
         .select('*, contact:contacts(name,phone)')
-        .eq('tenant_id', tenant.id)
+        .eq('tenant_id', t.id)
         .order('last_message_at', { ascending: false })
       return (data || []) as WhatsAppThread[]
     },
@@ -220,6 +222,20 @@ export default function WhatsAppPage() {
         <div>
           <h1 className="text-3xl font-bold">WhatsApp</h1>
           <div className="flex items-center gap-2 mt-1">
+            {/* Connected number pill */}
+            {tenant?.wa_phone_number_id ? (
+              <div className="flex items-center gap-1.5 bg-green-500/10 border border-green-500/30 rounded-full px-2.5 py-0.5">
+                <Wifi className="h-3 w-3 text-green-500" />
+                <span className="text-xs font-medium text-green-700 dark:text-green-400">
+                  {tenant.wa_phone_number || tenant.wa_phone_number_id}
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 bg-muted rounded-full px-2.5 py-0.5">
+                <WifiOff className="h-3 w-3 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">No number connected</span>
+              </div>
+            )}
             <span className="text-sm text-muted-foreground">{threads.length} conversations</span>
             {aiCount > 0 && (
               <Badge variant="default" className="gap-1 text-xs">

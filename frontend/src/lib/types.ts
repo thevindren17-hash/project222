@@ -5,6 +5,7 @@ export interface Tenant {
   default_language: string
   sip_uri?: string
   escalation_number?: string
+  wa_phone_number?: string
   wa_phone_number_id?: string
   wa_business_account_id?: string
   wa_access_token?: string

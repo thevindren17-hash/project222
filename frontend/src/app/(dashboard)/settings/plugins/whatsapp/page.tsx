@@ -15,6 +15,7 @@ import { CheckCircle2, XCircle, Copy, ExternalLink, Loader2, RefreshCw, AlertCir
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
   const [phoneNumberId, setPhoneNumberId] = useState('')
+  const [phoneNumber, setPhoneNumber] = useState('')
   const [businessAccountId, setBusinessAccountId] = useState('')
   const [accessToken, setAccessToken] = useState('')
 
@@ -38,6 +39,7 @@ export default function WhatsAppPluginPage() {
       if (!tenant) throw new Error('No tenant')
       const derivedToken = `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}`
       const { error } = await supabase.from('tenants').update({
+        wa_phone_number: phoneNumber || null,
         wa_phone_number_id: phoneNumberId,
         wa_business_account_id: businessAccountId,
         wa_access_token: accessToken,
@@ -149,6 +151,9 @@ export default function WhatsAppPluginPage() {
         </CardHeader>
         {isConnected && (
           <CardContent className="space-y-2">
+            {tenant.wa_phone_number && (
+              <p className="text-sm"><span className="font-medium">Phone Number:</span> {tenant.wa_phone_number}</p>
+            )}
             <p className="text-sm"><span className="font-medium">Phone Number ID:</span> {tenant.wa_phone_number_id}</p>
             <p className="text-sm"><span className="font-medium">Business Account ID:</span> {tenant.wa_business_account_id || '—'}</p>
             <Button variant="destructive" size="sm" className="mt-4"
@@ -220,6 +225,11 @@ export default function WhatsAppPluginPage() {
                 <h3 className="font-semibold">Paste your credentials</h3>
               </div>
               <div className="space-y-4 ml-8">
+                <div className="space-y-2">
+                  <Label>WhatsApp Phone Number</Label>
+                  <Input autoComplete="off" placeholder="+60123456789" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} />
+                  <p className="text-xs text-muted-foreground">The actual phone number shown to users (e.g. +60123456789)</p>
+                </div>
                 <div className="space-y-2">
                   <Label>Phone Number ID</Label>
                   <Input autoComplete="off" placeholder="123456789012345" value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)} />
