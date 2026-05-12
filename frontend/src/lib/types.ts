@@ -2,7 +2,6 @@ export interface Tenant {
   id: string
   owner_id: string
   name: string
-  agent_name: string
   default_language: string
   sip_uri?: string
   escalation_number?: string
@@ -28,6 +27,8 @@ export interface TenantSettings {
   google_calendar_id?: string
   google_sheets_id?: string
   provider_credentials: Record<string, Record<string, string>>
+  escalation_keywords: string[]
+  max_turns_before_handoff: number
   created_at: string
 }
 
@@ -87,6 +88,8 @@ export interface WhatsAppThread {
   id: string
   tenant_id: string
   contact_id: string
+  contact_number: string
+  contact_name?: string
   wa_contact_name?: string
   status: 'ai' | 'human_takeover' | 'resolved'
   last_message_at: string
@@ -99,7 +102,8 @@ export interface WhatsAppMessage {
   id: string
   thread_id: string
   tenant_id: string
-  direction: 'inbound' | 'outbound'
+  role: 'user' | 'assistant'
+  handled_by: string
   body: string
   created_at: string
 }

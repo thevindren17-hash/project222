@@ -29,7 +29,6 @@ export default function RegisterPage() {
       const { error: tenantError } = await supabase.from('tenants').insert({
         owner_id: authData.user.id,
         name: clinicName,
-        agent_name: 'Maya',
         is_active: true,
       })
       if (tenantError) throw tenantError
