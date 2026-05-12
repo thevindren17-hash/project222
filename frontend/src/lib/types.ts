@@ -94,6 +94,7 @@ export interface WhatsAppThread {
   status: 'ai' | 'human_takeover' | 'resolved'
   last_message_at: string
   created_at: string
+  tags: string[]
   contact?: Contact
   messages?: WhatsAppMessage[]
 }
