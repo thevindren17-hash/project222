@@ -63,8 +63,9 @@ export default function AgentPluginPage() {
   const [clinicTagline, setClinicTagline] = useState('')
   const [tone, setTone] = useState('friendly')
 
-  const [rawMode, setRawMode] = useState(false)
+  const [rawMode, setRawMode] = useState(true)
   const [rawPrompt, setRawPrompt] = useState('')
+  const [promptSeeded, setPromptSeeded] = useState(false)
   const [selectedServices, setSelectedServices] = useState<string[]>([])
   const [specialInstructions, setSpecialInstructions] = useState('')
   const [neverSay, setNeverSay] = useState('')
@@ -90,9 +91,10 @@ export default function AgentPluginPage() {
 
   useEffect(() => {
     if (tenant) setClinicName(tenant.name || '')
-    if (settings) {
+    if (settings && !promptSeeded) {
       setAgentName(settings.agent_name || 'Maya')
       setRawPrompt(settings.system_prompt || '')
+      setPromptSeeded(true)
       setTemperature(settings.llm_config?.temperature ?? 0.7)
       setMaxTokens(settings.llm_config?.max_tokens ?? 1024)
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
@@ -269,15 +271,15 @@ export default function AgentPluginPage() {
                   <p className="text-sm text-muted-foreground">Define what your AI knows and how it behaves</p>
                 </div>
                 <div className="flex rounded-lg border overflow-hidden text-xs">
-                  <button onClick={() => setRawMode(false)}
+                  <button onClick={() => setRawMode(true)}
                     className={cn('px-3 py-1.5 font-medium transition-colors flex items-center gap-1.5',
-                      !rawMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground')}>
-                    <Eye className="h-3 w-3" />Guided Form
-                  </button>
-                  <button onClick={() => { if (!rawMode) setRawPrompt(buildSystemPrompt()); setRawMode(true) }}
-                    className={cn('px-3 py-1.5 font-medium transition-colors flex items-center gap-1.5 border-l',
                       rawMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground')}>
-                    <Code className="h-3 w-3" />Custom Prompt
+                    <Code className="h-3 w-3" />Write Prompt
+                  </button>
+                  <button onClick={() => { if (rawMode && !rawPrompt) setRawPrompt(buildSystemPrompt()); setRawMode(false) }}
+                    className={cn('px-3 py-1.5 font-medium transition-colors flex items-center gap-1.5 border-l',
+                      !rawMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground')}>
+                    <Eye className="h-3 w-3" />Use Builder
                   </button>
                 </div>
               </div>
@@ -285,11 +287,28 @@ export default function AgentPluginPage() {
               {rawMode ? (
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-base">System Prompt</CardTitle>
-                    <CardDescription>This is sent to the AI before every conversation</CardDescription>
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <CardTitle className="text-base">System Prompt</CardTitle>
+                        <CardDescription>Sent to the AI before every conversation. Write in plain language — be specific about what the AI should and shouldn't do.</CardDescription>
+                      </div>
+                      {!rawPrompt && (
+                        <Button variant="outline" size="sm" className="shrink-0 text-xs"
+                          onClick={() => setRawPrompt(buildSystemPrompt())}>
+                          Generate starter prompt
+                        </Button>
+                      )}
+                    </div>
                   </CardHeader>
-                  <CardContent>
-                    <Textarea value={rawPrompt} onChange={(e) => setRawPrompt(e.target.value)} rows={20} className="font-mono text-sm" placeholder="Enter your system prompt..." />
+                  <CardContent className="space-y-2">
+                    <Textarea
+                      value={rawPrompt}
+                      onChange={(e) => setRawPrompt(e.target.value)}
+                      rows={24}
+                      className="font-mono text-sm resize-y min-h-[200px]"
+                      placeholder={`You are Maya, an AI receptionist for Bright Smile Dental.\n\nYour job:\n- Book, reschedule, and cancel appointments\n- Answer questions about clinic hours, services, and pricing\n- Escalate to a human when the customer asks\n\nAlways be friendly, concise, and confirm appointment details before booking.`}
+                    />
+                    <p className="text-xs text-muted-foreground text-right">{rawPrompt.length} characters</p>
                   </CardContent>
                 </Card>
               ) : (
@@ -355,7 +374,13 @@ export default function AgentPluginPage() {
 
                   <Card className="bg-muted/30 border-dashed">
                     <CardHeader className="pb-2">
-                      <CardTitle className="text-sm flex items-center gap-2"><Eye className="h-3.5 w-3.5" />Prompt Preview</CardTitle>
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm flex items-center gap-2"><Eye className="h-3.5 w-3.5" />Prompt Preview</CardTitle>
+                        <Button variant="outline" size="sm" className="text-xs h-7"
+                          onClick={() => { setRawPrompt(buildSystemPrompt()); setRawMode(true) }}>
+                          Edit this prompt
+                        </Button>
+                      </div>
                     </CardHeader>
                     <CardContent>
                       <pre className="text-xs font-mono whitespace-pre-wrap max-h-56 overflow-y-auto leading-relaxed text-muted-foreground">
