@@ -13,9 +13,10 @@ CREATE TABLE IF NOT EXISTS tenants (
     agent_name          TEXT NOT NULL DEFAULT 'Maya',
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
     sip_number          TEXT UNIQUE,                    -- e.g. +60321234567
-    wa_phone_number_id  TEXT UNIQUE,                    -- Meta phone_number_id
-    wa_access_token     TEXT,
-    wa_verify_token     TEXT,
+    wa_phone_number_id      TEXT UNIQUE,                -- Meta phone_number_id
+    wa_business_account_id  TEXT,                       -- Meta WhatsApp Business Account ID
+    wa_access_token         TEXT,
+    wa_verify_token         TEXT,
     escalation_number   TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()

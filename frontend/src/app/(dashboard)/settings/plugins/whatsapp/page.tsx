@@ -15,6 +15,7 @@ import { CheckCircle2, XCircle, Copy, ExternalLink, Loader2 } from 'lucide-react
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
   const [phoneNumberId, setPhoneNumberId] = useState('')
+  const [businessAccountId, setBusinessAccountId] = useState('')
   const [accessToken, setAccessToken] = useState('')
 
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
@@ -23,11 +24,10 @@ export default function WhatsAppPluginPage() {
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
-      const verifyToken = `verify_${tenant.id.slice(0, 8)}`
       const { error } = await supabase.from('tenants').update({
         wa_phone_number_id: phoneNumberId,
+        wa_business_account_id: businessAccountId,
         wa_access_token: accessToken,
-        wa_verify_token: verifyToken,
       }).eq('id', tenant.id)
       if (error) throw error
     },
@@ -43,7 +43,9 @@ export default function WhatsAppPluginPage() {
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
       const { error } = await supabase.from('tenants').update({
-        wa_phone_number_id: null, wa_access_token: null, wa_verify_token: null,
+        wa_phone_number_id: null,
+        wa_business_account_id: null,
+        wa_access_token: null,
       }).eq('id', tenant.id)
       if (error) throw error
     },
@@ -55,8 +57,9 @@ export default function WhatsAppPluginPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
-  const webhookUrl = tenant ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/webhook/whatsapp/${tenant.id}` : ''
-  const verifyToken = tenant?.wa_verify_token || `verify_${tenant?.id?.slice(0, 8) || ''}`
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || ''
+  const webhookUrl = `${backendUrl}/webhook/whatsapp`
+  const verifyToken = process.env.NEXT_PUBLIC_WA_VERIFY_TOKEN || 'yourreceptionist_verify'
 
   function copy(text: string) {
     navigator.clipboard.writeText(text)
@@ -78,14 +81,18 @@ export default function WhatsAppPluginPage() {
               <CardDescription>{isConnected ? 'Your WhatsApp is connected' : 'Not connected yet'}</CardDescription>
             </div>
             <Badge variant={isConnected ? 'default' : 'secondary'} className="gap-1">
-              {isConnected ? <><CheckCircle2 className="h-4 w-4" />Connected</> : <><XCircle className="h-4 w-4" />Disconnected</>}
+              {isConnected
+                ? <><CheckCircle2 className="h-4 w-4" />Connected</>
+                : <><XCircle className="h-4 w-4" />Disconnected</>}
             </Badge>
           </div>
         </CardHeader>
         {isConnected && (
-          <CardContent>
-            <p className="text-sm mb-4"><span className="font-medium">Phone Number ID:</span> {tenant?.wa_phone_number_id}</p>
-            <Button variant="destructive" size="sm" onClick={() => disconnectMutation.mutate()} disabled={disconnectMutation.isPending}>
+          <CardContent className="space-y-2">
+            <p className="text-sm"><span className="font-medium">Phone Number ID:</span> {tenant?.wa_phone_number_id}</p>
+            <p className="text-sm"><span className="font-medium">Business Account ID:</span> {tenant?.wa_business_account_id || '—'}</p>
+            <Button variant="destructive" size="sm" className="mt-4"
+              onClick={() => disconnectMutation.mutate()} disabled={disconnectMutation.isPending}>
               {disconnectMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Disconnect
             </Button>
@@ -100,6 +107,7 @@ export default function WhatsAppPluginPage() {
             <CardDescription>Follow the steps below</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
+
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">1</div>
@@ -110,7 +118,7 @@ export default function WhatsAppPluginPage() {
                 <a href="https://business.facebook.com" target="_blank" rel="noopener noreferrer"
                   className="text-primary hover:underline inline-flex items-center gap-1">
                   Meta Business Suite <ExternalLink className="h-3 w-3" />
-                </a>{' '}→ WhatsApp → API Setup
+                </a>{' '}→ WhatsApp → API Setup. You will find your Phone Number ID, Business Account ID, and can generate a Permanent Token.
               </p>
             </div>
 
@@ -125,13 +133,20 @@ export default function WhatsAppPluginPage() {
                 <div className="space-y-2">
                   <Label>Phone Number ID</Label>
                   <Input placeholder="123456789012345" value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)} />
+                  <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → Phone Number ID</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>WhatsApp Business Account ID</Label>
+                  <Input placeholder="987654321098765" value={businessAccountId} onChange={(e) => setBusinessAccountId(e.target.value)} />
+                  <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → WhatsApp Business Account ID</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Permanent Access Token</Label>
                   <Input type="password" placeholder="EAA..." value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
+                  <p className="text-xs text-muted-foreground">Generate a permanent token from Meta System Users (not the temp token)</p>
                 </div>
                 <Button onClick={() => saveMutation.mutate()}
-                  disabled={saveMutation.isPending || !phoneNumberId || !accessToken}>
+                  disabled={saveMutation.isPending || !phoneNumberId || !businessAccountId || !accessToken}>
                   {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save & Connect
                 </Button>
@@ -146,6 +161,7 @@ export default function WhatsAppPluginPage() {
                 <h3 className="font-semibold">Configure webhook in Meta</h3>
               </div>
               <div className="space-y-4 ml-8">
+                <p className="text-sm text-muted-foreground">In Meta Developer Portal → your App → WhatsApp → Configuration → Webhooks</p>
                 <div className="space-y-2">
                   <Label>Callback URL</Label>
                   <div className="flex gap-2">
@@ -159,9 +175,11 @@ export default function WhatsAppPluginPage() {
                     <Input value={verifyToken} readOnly className="font-mono text-xs" />
                     <Button variant="outline" size="icon" onClick={() => copy(verifyToken)}><Copy className="h-4 w-4" /></Button>
                   </div>
+                  <p className="text-xs text-muted-foreground">After verifying, subscribe to the <span className="font-medium">messages</span> webhook field.</p>
                 </div>
               </div>
             </div>
+
           </CardContent>
         </Card>
       )}

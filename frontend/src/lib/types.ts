@@ -7,6 +7,7 @@ export interface Tenant {
   sip_uri?: string
   escalation_number?: string
   wa_phone_number_id?: string
+  wa_business_account_id?: string
   wa_access_token?: string
   wa_verify_token?: string
   is_active: boolean
