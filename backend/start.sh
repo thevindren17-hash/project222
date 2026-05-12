@@ -9,5 +9,6 @@ else
   echo "LiveKit credentials not set — skipping agent worker (WhatsApp still works)"
 fi
 
-# Start FastAPI server in foreground (Railway routes traffic here)
+# Start FastAPI server — Railway sets $PORT automatically
+echo "Starting uvicorn on port ${PORT:-8000}..."
 exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8000}"

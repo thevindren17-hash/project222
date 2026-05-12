@@ -39,18 +39,20 @@ router = APIRouter()
 
 # ── Webhook verification ───────────────────────────────────────────────────────
 
+def _derive_verify_token(tenant_id: str) -> str:
+    """Deterministic verify token derived from tenant ID — no DB save needed."""
+    return f"wa_{tenant_id.replace('-', '')[:16]}"
+
+
 @router.get("/whatsapp/{tenant_id}")
 async def whatsapp_verify(tenant_id: str, request: Request):
-    """Meta webhook verification — checks token against the tenant's own stored verify token."""
+    """Meta webhook verification — token is derived from tenant ID, no prior save needed."""
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
-    if mode == "subscribe":
-        supabase = get_supabase_client()
-        result = supabase.table("tenants").select("wa_verify_token").eq("id", tenant_id).single().execute()
-        if result.data and result.data.get("wa_verify_token") == token:
-            return Response(content=challenge, media_type="text/plain")
+    if mode == "subscribe" and token == _derive_verify_token(tenant_id):
+        return Response(content=challenge, media_type="text/plain")
 
     raise HTTPException(status_code=403, detail="Verification failed")
 
