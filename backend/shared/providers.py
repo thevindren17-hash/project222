@@ -128,6 +128,16 @@ def create_lk_llm(provider: str, model: str, tenant) -> Any:
             api_key=api_key,
         )
 
+    if provider == "mistral":
+        api_key = _cred(tenant, "mistral", "api_key")
+        if not api_key:
+            raise ValueError("Tenant has no Mistral API key configured")
+        return lk_openai.LLM(
+            model=model or "mistral-large-latest",
+            base_url="https://api.mistral.ai/v1",
+            api_key=api_key,
+        )
+
     raise ValueError(f"Unknown LLM provider: '{provider}'")
 
 
@@ -226,6 +236,12 @@ class LLMClient:
                 messages, tools,
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 api_key=_cred(self._tenant, "google", "api_key"),
+            )
+        if self.provider == "mistral":
+            return await self._call_openai(
+                messages, tools,
+                base_url="https://api.mistral.ai/v1",
+                api_key=_cred(self._tenant, "mistral", "api_key"),
             )
         return await self._call_openai(messages, tools)
 

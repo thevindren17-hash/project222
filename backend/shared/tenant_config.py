@@ -137,6 +137,10 @@ class TenantConfig:
     # Per-tenant provider API keys (set by clinic in dashboard, stored encrypted in Supabase)
     # Structure: {"openai": {"api_key": "..."}, "deepgram": {"api_key": "..."}, ...}
     provider_credentials: Dict[str, Any] = field(default_factory=dict)
+    # Voice reply settings for WhatsApp
+    voice_reply_enabled: bool = False
+    voice_stt_provider: str = "openai"
+    voice_tts_voice: str = "nova"
 
     def __post_init__(self):
         if not self.system_prompt:
@@ -183,6 +187,9 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         google_calendar_id=settings.get("google_calendar_id"),
         google_sheets_id=settings.get("google_sheets_id"),
         provider_credentials=settings.get("provider_credentials") or {},
+        voice_reply_enabled=bool(settings.get("voice_reply_enabled", False)),
+        voice_stt_provider=settings.get("voice_stt_provider") or "openai",
+        voice_tts_voice=settings.get("voice_tts_voice") or "nova",
     )
 
 

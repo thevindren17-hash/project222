@@ -14,8 +14,10 @@ import { Separator } from '@/components/ui/separator'
 import { Checkbox } from '@/components/ui/checkbox'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { OPENAI_TTS_VOICES } from '@/lib/providers'
 import {
-  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain,
+  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -34,6 +36,7 @@ const SECTIONS = [
   { id: 'instructions', label: 'Instructions', icon: Code },
   { id: 'model', label: 'Model Settings', icon: Brain },
   { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
+  { id: 'voice', label: 'Voice', icon: Mic },
   { id: 'handoff', label: 'Handoff', icon: Users },
   { id: 'capabilities', label: 'Capabilities', icon: Zap },
 ]
@@ -74,6 +77,10 @@ export default function AgentPluginPage() {
 
   const [faq, setFaq] = useState<FaqItem[]>([])
 
+  const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
+  const [voiceTtsVoice, setVoiceTtsVoice] = useState('nova')
+  const [voiceSttProvider, setVoiceSttProvider] = useState('openai')
+
   const [humanTakeover, setHumanTakeover] = useState(true)
   const [escalationKeywords, setEscalationKeywords] = useState<string[]>([
     'urgent', 'emergency', 'speak to human', 'real person',
@@ -91,6 +98,9 @@ export default function AgentPluginPage() {
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
       setHumanTakeover(settings.tool_config?.escalate ?? true)
       setFaq(settings.faq || [])
+      setVoiceReplyEnabled(settings.voice_reply_enabled ?? false)
+      if (settings.voice_tts_voice) setVoiceTtsVoice(settings.voice_tts_voice)
+      if (settings.voice_stt_provider) setVoiceSttProvider(settings.voice_stt_provider)
       if (settings.escalation_keywords?.length) setEscalationKeywords(settings.escalation_keywords)
       if (settings.max_turns_before_handoff) setMaxTurns(settings.max_turns_before_handoff)
     }
@@ -130,6 +140,9 @@ export default function AgentPluginPage() {
         llm_config: { ...(settings?.llm_config || {}), temperature, max_tokens: maxTokens },
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
+        voice_reply_enabled: voiceReplyEnabled,
+        voice_tts_voice: voiceTtsVoice,
+        voice_stt_provider: voiceSttProvider,
         escalation_keywords: escalationKeywords,
         max_turns_before_handoff: maxTurns,
       }, { onConflict: 'tenant_id' })
@@ -255,12 +268,18 @@ export default function AgentPluginPage() {
                   <h2 className="text-lg font-semibold">Instructions</h2>
                   <p className="text-sm text-muted-foreground">Define what your AI knows and how it behaves</p>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => {
-                  if (!rawMode) setRawPrompt(buildSystemPrompt())
-                  setRawMode(!rawMode)
-                }}>
-                  {rawMode ? <><Eye className="h-3.5 w-3.5 mr-1.5" />Guided</> : <><Code className="h-3.5 w-3.5 mr-1.5" />Raw Prompt</>}
-                </Button>
+                <div className="flex rounded-lg border overflow-hidden text-xs">
+                  <button onClick={() => setRawMode(false)}
+                    className={cn('px-3 py-1.5 font-medium transition-colors flex items-center gap-1.5',
+                      !rawMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground')}>
+                    <Eye className="h-3 w-3" />Guided Form
+                  </button>
+                  <button onClick={() => { if (!rawMode) setRawPrompt(buildSystemPrompt()); setRawMode(true) }}
+                    className={cn('px-3 py-1.5 font-medium transition-colors flex items-center gap-1.5 border-l',
+                      rawMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground')}>
+                    <Code className="h-3 w-3" />Custom Prompt
+                  </button>
+                </div>
               </div>
 
               {rawMode ? (
@@ -538,6 +557,79 @@ export default function AgentPluginPage() {
                 <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">How to take over a conversation</p>
                 <p className="text-sm text-blue-700 dark:text-blue-400 mt-1">
                   Open <strong>WhatsApp</strong> from the sidebar, select a conversation, then click <strong>Take Over</strong>. The AI pauses instantly and your typed messages go directly to the customer. Click <strong>Hand Back to AI</strong> when done.
+                </p>
+              </div>
+            </>
+          )}
+
+          {/* Voice */}
+          {section === 'voice' && (
+            <>
+              <div>
+                <h2 className="text-lg font-semibold">Voice Messages</h2>
+                <p className="text-sm text-muted-foreground">Let customers send voice notes — AI transcribes and replies with voice</p>
+              </div>
+
+              <Card>
+                <CardContent className="pt-4 space-y-5">
+                  <div className="flex items-center justify-between p-3 bg-muted/40 rounded-lg">
+                    <div>
+                      <p className="font-medium text-sm">Enable voice replies</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">AI receives voice notes, transcribes them, and replies with a voice message</p>
+                    </div>
+                    <Switch checked={voiceReplyEnabled} onCheckedChange={setVoiceReplyEnabled} />
+                  </div>
+
+                  {voiceReplyEnabled && (
+                    <>
+                      <Separator />
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label>Speech-to-Text (Transcription)</Label>
+                          <p className="text-xs text-muted-foreground">How incoming voice messages are converted to text</p>
+                          <Select value={voiceSttProvider} onValueChange={(v) => v && setVoiceSttProvider(v)}>
+                            <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="openai">OpenAI Whisper (recommended)</SelectItem>
+                              <SelectItem value="deepgram">Deepgram Nova-2</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label>AI Voice</Label>
+                          <p className="text-xs text-muted-foreground">The voice used when the AI speaks back (via OpenAI TTS)</p>
+                          <Select value={voiceTtsVoice} onValueChange={(v) => v && setVoiceTtsVoice(v)}>
+                            <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {OPENAI_TTS_VOICES.map((v) => (
+                                <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4">
+                        <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Requirements</p>
+                        <ul className="mt-1 space-y-0.5 text-sm text-amber-700 dark:text-amber-400">
+                          <li>• An <strong>OpenAI API key</strong> must be set in Settings → AI Providers (used for Whisper transcription + TTS)</li>
+                          <li>• Works with WhatsApp voice notes (OGG/Opus format)</li>
+                          <li>• Each voice exchange uses ~$0.01–$0.02 in API costs</li>
+                        </ul>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/30 p-4">
+                <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">How voice messages work</p>
+                <p className="text-sm text-blue-700 dark:text-blue-400 mt-1">
+                  Customer sends a WhatsApp voice note → AI transcribes it → generates a reply → sends back a voice note.
+                  If voice reply is disabled, the AI still reads the voice note but replies as text.
                 </p>
               </div>
             </>

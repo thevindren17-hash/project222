@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
 import { format, isToday, isYesterday } from 'date-fns'
-import { Send, Bot, User, Phone, MessageSquare, RefreshCw } from 'lucide-react'
+import { Send, Bot, User, Phone, MessageSquare, RefreshCw, Mic } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { WhatsAppThread } from '@/lib/types'
 
@@ -297,7 +297,20 @@ export default function WhatsAppPage() {
                             {isStaff ? 'Staff' : 'AI'}
                           </p>
                         )}
-                        <p className="text-sm leading-relaxed">{m.body}</p>
+                        {(m as any).message_type === 'audio' ? (
+                          <div className="flex items-center gap-2 py-0.5">
+                            <Mic className="h-4 w-4 opacity-70 shrink-0" />
+                            <div className="flex-1">
+                              {m.body ? (
+                                <p className="text-sm leading-relaxed italic opacity-90">"{m.body}"</p>
+                              ) : (
+                                <p className="text-sm opacity-60">Voice message</p>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm leading-relaxed">{m.body}</p>
+                        )}
                         <p className={cn('text-xs mt-1', isOutbound ? 'text-right opacity-70' : 'text-muted-foreground')}>
                           {format(new Date(m.created_at), 'h:mm a')}
                         </p>

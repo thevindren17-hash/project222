@@ -73,6 +73,7 @@ export default function AIProvidersPage() {
     openai: [{ key: 'api_key', label: 'OpenAI API Key', placeholder: 'sk-...' }],
     anthropic: [{ key: 'api_key', label: 'Anthropic API Key', placeholder: 'sk-ant-...' }],
     google: [{ key: 'api_key', label: 'Google API Key', placeholder: 'AIza...' }],
+    mistral: [{ key: 'api_key', label: 'Mistral API Key', placeholder: 'your-mistral-key' }],
     deepgram: [{ key: 'api_key', label: 'Deepgram API Key', placeholder: 'dg_...' }],
     cartesia: [
       { key: 'api_key', label: 'Cartesia API Key', placeholder: '' },
