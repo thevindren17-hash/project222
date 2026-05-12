@@ -39,24 +39,26 @@ router = APIRouter()
 
 # ── Webhook verification ───────────────────────────────────────────────────────
 
-@router.get("/whatsapp")
-async def whatsapp_verify(request: Request):
-    """Meta webhook verification (called once during setup). Uses platform-level verify token."""
+@router.get("/whatsapp/{tenant_id}")
+async def whatsapp_verify(tenant_id: str, request: Request):
+    """Meta webhook verification — checks token against the tenant's own stored verify token."""
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
-    platform_token = os.getenv("WA_VERIFY_TOKEN", "yourreceptionist_verify")
-    if mode == "subscribe" and token == platform_token:
-        return Response(content=challenge, media_type="text/plain")
+    if mode == "subscribe":
+        supabase = get_supabase_client()
+        result = supabase.table("tenants").select("wa_verify_token").eq("id", tenant_id).single().execute()
+        if result.data and result.data.get("wa_verify_token") == token:
+            return Response(content=challenge, media_type="text/plain")
 
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
 # ── Incoming message webhook ───────────────────────────────────────────────────
 
-@router.post("/whatsapp")
-async def whatsapp_webhook(request: Request):
+@router.post("/whatsapp/{tenant_id}")
+async def whatsapp_webhook(tenant_id: str, request: Request):
     """Meta webhook for incoming WhatsApp messages."""
     try:
         payload = await request.json()

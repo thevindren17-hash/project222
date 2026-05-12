@@ -24,10 +24,13 @@ export default function WhatsAppPluginPage() {
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
+      // Auto-generate a verify token if the tenant doesn't have one yet
+      const verifyToken = tenant.wa_verify_token || `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}`
       const { error } = await supabase.from('tenants').update({
         wa_phone_number_id: phoneNumberId,
         wa_business_account_id: businessAccountId,
         wa_access_token: accessToken,
+        wa_verify_token: verifyToken,
       }).eq('id', tenant.id)
       if (error) throw error
     },
@@ -58,8 +61,8 @@ export default function WhatsAppPluginPage() {
   })
 
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || ''
-  const webhookUrl = `${backendUrl}/webhook/whatsapp`
-  const verifyToken = process.env.NEXT_PUBLIC_WA_VERIFY_TOKEN || 'yourreceptionist_verify'
+  const webhookUrl = tenant ? `${backendUrl}/webhook/whatsapp/${tenant.id}` : ''
+  const verifyToken = tenant?.wa_verify_token || (tenant ? `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}` : '')
 
   function copy(text: string) {
     navigator.clipboard.writeText(text)
