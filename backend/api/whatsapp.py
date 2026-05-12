@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request, HTTPException, Response
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.tenant_config import get_tenant_by_wa_phone_id, get_supabase_client
+from shared.tenant_config import get_tenant_by_wa_phone_id, get_tenant_by_id, get_supabase_client
 from shared.providers import load_llm_client
 from shared.tools import (
     book_appointment,
@@ -74,14 +74,13 @@ async def whatsapp_webhook(tenant_id: str, request: Request):
             return {"status": "no_messages"}
 
         message = messages[0]
-        phone_number_id = value.get("metadata", {}).get("phone_number_id")
+        phone_number_id = value.get("metadata", {}).get("phone_number_id", "")
 
-        if not phone_number_id:
-            raise HTTPException(status_code=400, detail="Missing phone_number_id")
-
-        tenant = await get_tenant_by_wa_phone_id(phone_number_id)
+        # Load tenant by the tenant_id in the URL path (robust — doesn't depend
+        # on wa_phone_number_id being formatted correctly in the DB)
+        tenant = await get_tenant_by_id(tenant_id)
         if not tenant or not tenant.is_active:
-            logger.warning(f"Unknown tenant for phone_number_id: {phone_number_id}")
+            logger.warning(f"Unknown or inactive tenant: {tenant_id}")
             return {"status": "unknown_tenant"}
 
         await handle_whatsapp_message(tenant, message, value)

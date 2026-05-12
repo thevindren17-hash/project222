@@ -1,7 +1,7 @@
 'use client'
 
 import { useTheme } from 'next-themes'
-import { Bell, User, Sun, Moon, Settings, LogOut } from 'lucide-react'
+import { Bell, Sun, Moon, Settings, LogOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -54,9 +54,9 @@ export default function Navbar() {
               <p className="text-xs text-muted-foreground">Clinic Admin</p>
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => router.push('/settings')}>
+            <DropdownMenuItem onClick={() => router.push('/settings/clinic-info')}>
               <Settings className="h-4 w-4 mr-2" />
-              Settings
+              Clinic Settings
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark'

@@ -232,8 +232,18 @@ export default function WhatsAppPluginPage() {
                 </div>
                 <div className="space-y-2">
                   <Label>Phone Number ID</Label>
-                  <Input autoComplete="off" placeholder="123456789012345" value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)} />
-                  <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → Phone Number ID</p>
+                  <Input
+                    autoComplete="off"
+                    placeholder="123456789012345"
+                    value={phoneNumberId}
+                    onChange={(e) => {
+                      // Strip URLs — extract the first long numeric sequence
+                      const raw = e.target.value.trim()
+                      const match = raw.match(/\d{10,}/)
+                      setPhoneNumberId(match ? match[0] : raw)
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → Phone Number ID (numbers only, e.g. 1044148438779639)</p>
                 </div>
                 <div className="space-y-2">
                   <Label>WhatsApp Business Account ID</Label>

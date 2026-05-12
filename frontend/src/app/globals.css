@@ -156,6 +156,153 @@
   ::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/50; }
 }
 
+/* ─── FullCalendar — Google Calendar-inspired theme ─────────────────────── */
+.fc {
+  --fc-border-color: var(--color-border);
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: var(--color-muted);
+  --fc-neutral-text-color: var(--color-muted-foreground);
+  --fc-today-bg-color: rgba(0, 128, 255, 0.06);
+  --fc-event-bg-color: var(--color-primary);
+  --fc-event-border-color: transparent;
+  --fc-event-text-color: #fff;
+  --fc-event-selected-overlay-color: rgba(0,0,0,0.15);
+  --fc-highlight-color: rgba(0, 128, 255, 0.1);
+  --fc-now-indicator-color: #ea4335;
+  color: var(--color-foreground);
+  font-family: inherit;
+}
+
+/* Fix Tailwind * { border-border } on every element breaking FC tables */
+.fc table, .fc td, .fc th {
+  border-color: var(--fc-border-color) !important;
+  outline: none !important;
+}
+
+/* Remove dashed half-hour slot lines — keep solid hour lines only */
+.fc .fc-timegrid-slot-minor {
+  border-top-style: none !important;
+}
+
+/* ── Toolbar ── */
+.fc .fc-toolbar.fc-header-toolbar {
+  margin: 0 !important;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--fc-border-color);
+  background: var(--color-card);
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fc .fc-toolbar-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-foreground);
+}
+.fc .fc-button, .fc .fc-button-primary {
+  background: transparent !important;
+  border: 1px solid var(--fc-border-color) !important;
+  color: var(--color-foreground) !important;
+  border-radius: 6px !important;
+  font-size: 0.78rem !important;
+  font-weight: 500 !important;
+  padding: 5px 12px !important;
+  text-transform: none !important;
+  box-shadow: none !important;
+  line-height: 1.4 !important;
+  transition: background 0.12s !important;
+}
+.fc .fc-button:hover { background: var(--color-muted) !important; }
+.fc .fc-button-primary:not(:disabled).fc-button-active,
+.fc .fc-button-primary:not(:disabled):active {
+  background: var(--color-primary) !important;
+  border-color: var(--color-primary) !important;
+  color: #fff !important;
+}
+.fc .fc-button:focus {
+  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-ring) !important;
+}
+.fc .fc-button:disabled { opacity: 0.35 !important; }
+.fc .fc-button-group .fc-button            { border-radius: 0 !important; }
+.fc .fc-button-group .fc-button:first-child { border-radius: 6px 0 0 6px !important; }
+.fc .fc-button-group .fc-button:last-child  { border-radius: 0 6px 6px 0 !important; }
+
+/* ── Column header row ── */
+.fc .fc-col-header { background: var(--color-card); }
+.fc .fc-col-header-cell {
+  border-bottom: 1px solid var(--fc-border-color) !important;
+  vertical-align: middle;
+}
+/* We use dayHeaderContent (React) so the cushion is just a wrapper */
+.fc .fc-col-header-cell-cushion {
+  padding: 0;
+  text-decoration: none;
+  cursor: default;
+  width: 100%;
+}
+
+/* Today column subtle tint */
+.fc .fc-timegrid-col.fc-day-today,
+.fc .fc-daygrid-day.fc-day-today {
+  background: var(--fc-today-bg-color) !important;
+}
+
+/* ── Time axis ── */
+.fc .fc-timegrid-slot-label-cushion,
+.fc .fc-timegrid-axis-cushion {
+  color: var(--color-muted-foreground);
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding-right: 8px;
+}
+
+/* ── Month view day numbers ── */
+.fc .fc-daygrid-day-number {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+  text-decoration: none;
+  padding: 6px 8px;
+}
+.fc .fc-day-today .fc-daygrid-day-number {
+  background: var(--color-primary);
+  color: #fff;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 4px;
+  font-weight: 600;
+}
+
+/* ── Events ── */
+.fc-event {
+  border: none !important;
+  border-radius: 4px !important;
+  font-size: 0.73rem !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  padding: 2px 5px !important;
+  transition: filter 0.1s, opacity 0.1s !important;
+}
+.fc-event:hover { filter: brightness(1.12) !important; }
+.fc-timegrid-event { padding: 3px 6px !important; }
+.fc-event .fc-event-title { overflow: hidden; text-overflow: ellipsis; }
+.fc-event .fc-event-time  { font-size: 0.67rem !important; font-weight: 600; opacity: 0.9; }
+
+/* ── Now indicator — Google red ── */
+.fc .fc-timegrid-now-indicator-line  { border-color: #ea4335 !important; border-width: 2px !important; }
+.fc .fc-timegrid-now-indicator-arrow { border-top-color: #ea4335 !important; border-bottom-color: #ea4335 !important; border-width: 5px !important; }
+
+/* ── Scroller scrollbar ── */
+.fc .fc-scroller::-webkit-scrollbar       { width: 5px; height: 5px; }
+.fc .fc-scroller::-webkit-scrollbar-track { background: transparent; }
+.fc .fc-scroller::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.25); border-radius: 99px; }
+
 @layer components {
   .stat-card-glow {
     position: relative;
