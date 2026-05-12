@@ -21,6 +21,7 @@ export async function getCurrentTenant() {
     .eq('owner_id', user.id)
     .single()
 
-  if (error) throw error
-  return data
+  // PGRST116 = no rows found — not an error, just no tenant yet
+  if (error && error.code !== 'PGRST116') throw error
+  return data ?? null
 }

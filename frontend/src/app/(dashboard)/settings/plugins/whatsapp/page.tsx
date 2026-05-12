@@ -135,17 +135,17 @@ export default function WhatsAppPluginPage() {
               <div className="space-y-4 ml-8">
                 <div className="space-y-2">
                   <Label>Phone Number ID</Label>
-                  <Input placeholder="123456789012345" value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)} />
+                  <Input autoComplete="off" placeholder="123456789012345" value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)} />
                   <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → Phone Number ID</p>
                 </div>
                 <div className="space-y-2">
                   <Label>WhatsApp Business Account ID</Label>
-                  <Input placeholder="987654321098765" value={businessAccountId} onChange={(e) => setBusinessAccountId(e.target.value)} />
+                  <Input autoComplete="off" placeholder="987654321098765" value={businessAccountId} onChange={(e) => setBusinessAccountId(e.target.value)} />
                   <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → WhatsApp Business Account ID</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Permanent Access Token</Label>
-                  <Input type="password" placeholder="EAA..." value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
+                  <Input autoComplete="new-password" type="password" placeholder="EAA..." value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
                   <p className="text-xs text-muted-foreground">Generate a permanent token from Meta System Users (not the temp token)</p>
                 </div>
                 <Button onClick={() => saveMutation.mutate()}
