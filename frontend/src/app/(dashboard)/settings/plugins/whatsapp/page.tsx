@@ -8,9 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { CheckCircle2, XCircle, Copy, ExternalLink, Loader2, RefreshCw, AlertCircle } from 'lucide-react'
+import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle } from 'lucide-react'
 
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
@@ -166,107 +165,78 @@ export default function WhatsAppPluginPage() {
         )}
       </Card>
 
-      {!isConnected && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Connect WhatsApp Business</CardTitle>
-            <CardDescription>Follow the steps below</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-
-            {/* Step 1 */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">1</div>
-                <h3 className="font-semibold">Get credentials from Meta</h3>
-              </div>
-              <p className="text-sm text-muted-foreground ml-8">
-                Go to{' '}
-                <a href="https://developers.facebook.com" target="_blank" rel="noopener noreferrer"
-                  className="text-primary hover:underline inline-flex items-center gap-1">
-                  developers.facebook.com <ExternalLink className="h-3 w-3" />
-                </a>{' '}→ your App → WhatsApp → API Setup
-              </p>
+      {/* Webhook config — always visible so you can copy these at any time */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Webhook Configuration</CardTitle>
+          <CardDescription>Paste these into Meta Developer Portal → your App → WhatsApp → Configuration → Webhooks</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label>Callback URL</Label>
+            <div className="flex gap-2">
+              <Input value={webhookUrl} readOnly className="font-mono text-xs bg-muted" />
+              <Button variant="outline" size="icon" onClick={() => copy(webhookUrl)}><Copy className="h-4 w-4" /></Button>
             </div>
-
-            <Separator />
-
-            {/* Step 2 — Webhook (shown first so user can verify before saving creds) */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">2</div>
-                <h3 className="font-semibold">Configure webhook in Meta</h3>
-              </div>
-              <div className="space-y-4 ml-8">
-                <p className="text-sm text-muted-foreground">In Meta Developer Portal → your App → WhatsApp → Configuration → Webhooks</p>
-                <div className="space-y-2">
-                  <Label>Callback URL</Label>
-                  <div className="flex gap-2">
-                    <Input value={webhookUrl} readOnly className="font-mono text-xs bg-muted" />
-                    <Button variant="outline" size="icon" onClick={() => copy(webhookUrl)}><Copy className="h-4 w-4" /></Button>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label>Verify Token</Label>
-                  <div className="flex gap-2">
-                    <Input value={verifyToken} readOnly className="font-mono text-xs bg-muted" />
-                    <Button variant="outline" size="icon" onClick={() => copy(verifyToken)}><Copy className="h-4 w-4" /></Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">After verifying, subscribe to the <span className="font-medium">messages</span> webhook field.</p>
-                </div>
-              </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Verify Token</Label>
+            <div className="flex gap-2">
+              <Input value={verifyToken} readOnly className="font-mono text-xs bg-muted" />
+              <Button variant="outline" size="icon" onClick={() => copy(verifyToken)}><Copy className="h-4 w-4" /></Button>
             </div>
+            <p className="text-xs text-muted-foreground">After verifying, subscribe to the <span className="font-medium">messages</span> webhook field.</p>
+          </div>
+        </CardContent>
+      </Card>
 
-            <Separator />
-
-            {/* Step 3 — Credentials */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">3</div>
-                <h3 className="font-semibold">Paste your credentials</h3>
-              </div>
-              <div className="space-y-4 ml-8">
-                <div className="space-y-2">
-                  <Label>WhatsApp Phone Number</Label>
-                  <Input autoComplete="off" placeholder="+60123456789" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} />
-                  <p className="text-xs text-muted-foreground">The actual phone number shown to users (e.g. +60123456789)</p>
-                </div>
-                <div className="space-y-2">
-                  <Label>Phone Number ID</Label>
-                  <Input
-                    autoComplete="off"
-                    placeholder="123456789012345"
-                    value={phoneNumberId}
-                    onChange={(e) => {
-                      // Strip URLs — extract the first long numeric sequence
-                      const raw = e.target.value.trim()
-                      const match = raw.match(/\d{10,}/)
-                      setPhoneNumberId(match ? match[0] : raw)
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → Phone Number ID (numbers only, e.g. 1044148438779639)</p>
-                </div>
-                <div className="space-y-2">
-                  <Label>WhatsApp Business Account ID</Label>
-                  <Input autoComplete="off" placeholder="987654321098765" value={businessAccountId} onChange={(e) => setBusinessAccountId(e.target.value)} />
-                  <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → WhatsApp Business Account ID</p>
-                </div>
-                <div className="space-y-2">
-                  <Label>Permanent Access Token</Label>
-                  <Input autoComplete="new-password" type="password" placeholder="EAA..." value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
-                  <p className="text-xs text-muted-foreground">Generate a permanent token from Meta System Users (not the temp token)</p>
-                </div>
-                <Button onClick={() => saveMutation.mutate()}
-                  disabled={saveMutation.isPending || !phoneNumberId || !businessAccountId || !accessToken}>
-                  {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Save & Connect
-                </Button>
-              </div>
-            </div>
-
-          </CardContent>
-        </Card>
-      )}
+      {/* Credentials form — always visible for initial setup or re-configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle>{isConnected ? 'Update Credentials' : 'Connect WhatsApp Business'}</CardTitle>
+          <CardDescription>
+            {isConnected
+              ? 'Update your credentials if your token has changed or you need to re-connect'
+              : 'Get these from Meta Developer Portal → your App → WhatsApp → API Setup'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label>WhatsApp Phone Number</Label>
+            <Input autoComplete="off" placeholder="+60123456789" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} />
+            <p className="text-xs text-muted-foreground">The actual number shown to users (e.g. +60123456789)</p>
+          </div>
+          <div className="space-y-2">
+            <Label>Phone Number ID</Label>
+            <Input
+              autoComplete="off"
+              placeholder="123456789012345"
+              value={phoneNumberId}
+              onChange={(e) => {
+                const raw = e.target.value.trim()
+                const match = raw.match(/\d{10,}/)
+                setPhoneNumberId(match ? match[0] : raw)
+              }}
+            />
+            <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → Phone Number ID</p>
+          </div>
+          <div className="space-y-2">
+            <Label>WhatsApp Business Account ID</Label>
+            <Input autoComplete="off" placeholder="987654321098765" value={businessAccountId} onChange={(e) => setBusinessAccountId(e.target.value)} />
+            <p className="text-xs text-muted-foreground">Found in Meta → WhatsApp → API Setup → WhatsApp Business Account ID</p>
+          </div>
+          <div className="space-y-2">
+            <Label>Permanent Access Token</Label>
+            <Input autoComplete="new-password" type="password" placeholder="EAA..." value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
+            <p className="text-xs text-muted-foreground">Generate a permanent token from Meta System Users (not the temp token)</p>
+          </div>
+          <Button onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending || !phoneNumberId || !businessAccountId || !accessToken}>
+            {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isConnected ? 'Update & Reconnect' : 'Save & Connect'}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   )
 }
