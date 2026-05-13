@@ -57,6 +57,11 @@ export default function TestAgentPage() {
     const text = input.trim()
     if (!text || !tenant || loading) return
 
+    if (!backendUrl) {
+      setError('Backend URL not configured. Restart the dev server so NEXT_PUBLIC_BACKEND_URL loads from .env.local.')
+      return
+    }
+
     setInput('')
     setError('')
     setLoading(true)
@@ -72,8 +77,21 @@ export default function TestAgentPage() {
       })
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
-        throw new Error(err.detail || `Server error ${res.status}`)
+        const body = await res.text()
+        let detail: string
+        try {
+          const err = JSON.parse(body)
+          if (err.detail && typeof err.detail === 'string') {
+            detail = err.detail
+          } else if (Array.isArray(err.detail)) {
+            detail = `Validation error (${res.status})`
+          } else {
+            detail = `Error ${res.status}`
+          }
+        } catch {
+          detail = `Error ${res.status}: ${body.slice(0, 120) || res.statusText}`
+        }
+        throw new Error(detail)
       }
 
       const data = await res.json()
@@ -88,7 +106,8 @@ export default function TestAgentPage() {
       }
       setMessages((prev) => [...prev, assistantMsg])
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to reach the backend')
+      const msg = e instanceof Error ? e.message : 'Failed to reach the backend'
+      setError(msg)
       setMessages((prev) => prev.slice(0, -1))
       setInput(text)
     } finally {
