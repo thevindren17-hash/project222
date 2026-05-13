@@ -59,6 +59,7 @@ export default function WhatsAppPluginPage() {
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
       const { error } = await supabase.from('tenants').update({
+        wa_phone_number: null,
         wa_phone_number_id: null,
         wa_business_account_id: null,
         wa_access_token: null,
