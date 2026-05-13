@@ -106,7 +106,7 @@ export default function AgentPluginPage() {
       if (settings.escalation_keywords?.length) setEscalationKeywords(settings.escalation_keywords)
       if (settings.max_turns_before_handoff) setMaxTurns(settings.max_turns_before_handoff)
     }
-  }, [tenant, settings])
+  }, [tenant, settings, promptSeeded])
 
   function buildSystemPrompt() {
     const serviceList = selectedServices.length
@@ -377,7 +377,7 @@ export default function AgentPluginPage() {
                       <div className="flex items-center justify-between">
                         <CardTitle className="text-sm flex items-center gap-2"><Eye className="h-3.5 w-3.5" />Prompt Preview</CardTitle>
                         <Button variant="outline" size="sm" className="text-xs h-7"
-                          onClick={() => { setRawPrompt(buildSystemPrompt()); setRawMode(true) }}>
+                          onClick={() => { if (!rawPrompt) setRawPrompt(buildSystemPrompt()); setRawMode(true) }}>
                           Edit this prompt
                         </Button>
                       </div>
