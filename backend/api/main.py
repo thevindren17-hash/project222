@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.whatsapp import router as whatsapp_router
 from api.integrations import router as integrations_router
+from api.agent import router as agent_router
 
 app = FastAPI(title="AI Receptionist Backend", version="1.0.0")
 
@@ -30,6 +31,7 @@ app.add_middleware(
 
 app.include_router(whatsapp_router, prefix="/webhook", tags=["WhatsApp"])
 app.include_router(integrations_router, prefix="/api/integrations", tags=["Integrations"])
+app.include_router(agent_router, prefix="/api/agent", tags=["Agent"])
 
 
 @app.get("/")
