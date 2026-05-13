@@ -14,11 +14,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     {
       cookies: {
         getAll() { return cookieStore.getAll() },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
-          )
-        },
+        setAll() {}, // token refresh is handled by middleware
       },
     }
   )
