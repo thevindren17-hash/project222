@@ -47,7 +47,8 @@ export default function TestAgentPage() {
     enabled: !!tenant,
   })
 
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || ''
+  // Proxy route handles the actual backend call — works on both Vercel and local
+  const agentTestUrl = '/api/agent/test'
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -57,11 +58,6 @@ export default function TestAgentPage() {
     const text = input.trim()
     if (!text || !tenant || loading) return
 
-    if (!backendUrl) {
-      setError('Backend URL not configured. Restart the dev server so NEXT_PUBLIC_BACKEND_URL loads from .env.local.')
-      return
-    }
-
     setInput('')
     setError('')
     setLoading(true)
@@ -70,7 +66,7 @@ export default function TestAgentPage() {
     setMessages((prev) => [...prev, userMsg])
 
     try {
-      const res = await fetch(`${backendUrl}/api/agent/test`, {
+      const res = await fetch(agentTestUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tenant_id: tenant.id, message: text, history }),
