@@ -39,9 +39,9 @@ export default function TestAgentPage() {
       if (!tenant) return null
       const { data } = await (await import('@/lib/supabase')).supabase
         .from('tenant_settings')
-        .select('system_prompt,agent_name,llm_config')
+        .select('system_prompt,agent_name,llm_config,provider_credentials')
         .eq('tenant_id', tenant.id)
-        .single()
+        .maybeSingle()
       return data
     },
     enabled: !!tenant,
@@ -108,6 +108,9 @@ export default function TestAgentPage() {
   const agentName = settings?.agent_name || 'Maya'
   const systemPrompt = settings?.system_prompt || ''
   const hasConfig = !!systemPrompt
+  const activeProvider = settings?.llm_config?.provider || 'groq'
+  const activeModel = settings?.llm_config?.model || ''
+  const hasApiKey = !!(settings?.provider_credentials as Record<string, Record<string, string>> | null)?.[activeProvider]?.api_key
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] -mx-6 -mt-6 -mb-6">
@@ -122,9 +125,10 @@ export default function TestAgentPage() {
             <p className="font-semibold text-sm">{agentName}</p>
             <p className="text-xs text-muted-foreground">Test Environment — no data is saved</p>
           </div>
-          {providerInfo && (
+          {(providerInfo || settings?.llm_config) && (
             <Badge variant="secondary" className="text-xs capitalize ml-1">
-              {providerInfo.provider}{providerInfo.model ? ` · ${providerInfo.model}` : ''}
+              {providerInfo?.provider ?? activeProvider}
+              {(providerInfo?.model ?? activeModel) ? ` · ${providerInfo?.model ?? activeModel}` : ''}
             </Badge>
           )}
         </div>
@@ -161,7 +165,24 @@ export default function TestAgentPage() {
             <div>
               <p className="text-sm font-medium text-amber-700 dark:text-amber-400">No agent configured</p>
               <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
-                Set a system prompt in <strong>Agent Config</strong> before testing. The AI has nothing to work from right now.
+                Set a system prompt in <strong>Agent Config → Instructions</strong> and click <strong>Save Changes</strong> before testing.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Missing API key warning ── */}
+      {hasConfig && !hasApiKey && (
+        <div className="mx-6 mt-4 shrink-0">
+          <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
+            <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                No API key for <span className="capitalize">{activeProvider}</span>
+              </p>
+              <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
+                Go to <strong>Agent Config → Model Settings</strong>, enter your {activeProvider === 'groq' ? 'Groq' : activeProvider === 'google' ? 'Google' : activeProvider === 'anthropic' ? 'Anthropic' : activeProvider === 'mistral' ? 'Mistral' : 'OpenAI'} API key, and click <strong>Save Changes</strong>.
               </p>
             </div>
           </div>

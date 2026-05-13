@@ -15,10 +15,9 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { LLM_PROVIDERS, OPENAI_TTS_VOICES } from '@/lib/providers'
 import {
-  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key,
+  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -425,72 +424,79 @@ export default function AgentPluginPage() {
                   <CardDescription>The AI engine for conversations</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <RadioGroup
-                    value={llmProvider}
-                    onValueChange={(v) => {
-                      if (!v) return
-                      setLlmProvider(v)
-                      const p = LLM_PROVIDERS.find((x) => x.provider === v)
-                      if (p?.models?.[0]) setLlmModel(p.models[0].id)
-                    }}
-                  >
-                    {LLM_PROVIDERS.map((p) => (
-                      <div
-                        key={p.provider}
-                        className="flex items-start space-x-3 rounded-md border p-3 hover:bg-muted/50 transition-colors cursor-pointer"
-                        onClick={() => {
-                          setLlmProvider(p.provider)
-                          if (p.models?.[0]) setLlmModel(p.models[0].id)
-                        }}
-                      >
-                        <RadioGroupItem value={p.provider} id={`llm-${p.provider}`} className="mt-0.5" />
-                        <div className="flex-1">
-                          <Label htmlFor={`llm-${p.provider}`} className="font-semibold cursor-pointer flex items-center gap-2">
-                            {p.name}
-                            {p.recommended && <Badge variant="secondary" className="text-xs">Recommended</Badge>}
-                          </Label>
-                          <p className="text-xs text-muted-foreground mt-0.5">{p.description}</p>
-                          <p className="text-xs text-muted-foreground">Est. {p.estimatedCostPerCall}/call</p>
-                        </div>
-                      </div>
-                    ))}
-                  </RadioGroup>
 
+                  {/* Compact provider grid */}
+                  <div className="grid grid-cols-5 gap-2">
+                    {LLM_PROVIDERS.map((p) => {
+                      const active = llmProvider === p.provider
+                      return (
+                        <button
+                          key={p.provider}
+                          type="button"
+                          onClick={() => {
+                            setLlmProvider(p.provider)
+                            if (p.models?.[0]) setLlmModel(p.models[0].id)
+                          }}
+                          className={cn(
+                            'relative flex flex-col gap-1 rounded-xl border px-3 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                            active
+                              ? 'border-primary bg-primary/5 shadow-sm'
+                              : 'border-border hover:border-muted-foreground/30 hover:bg-muted/20'
+                          )}
+                        >
+                          {active && (
+                            <span className="absolute top-2 right-2 flex h-4 w-4 items-center justify-center rounded-full bg-primary">
+                              <Check className="h-2.5 w-2.5 text-primary-foreground" />
+                            </span>
+                          )}
+                          <span className="text-xs font-semibold leading-snug pr-5">{p.name}</span>
+                          <span className={cn('text-[11px] font-medium', p.recommended ? 'text-emerald-500' : 'text-muted-foreground')}>
+                            {p.estimatedCostPerCall}/call
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {/* Model + API key inline */}
                   {(() => {
                     const selectedLlm = LLM_PROVIDERS.find((p) => p.provider === llmProvider)
-                    return selectedLlm ? (
-                      <div className="space-y-2">
-                        <Label>Model</Label>
-                        <Select value={llmModel} onValueChange={(v) => v && setLlmModel(v)}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {selectedLlm.models.map((m) => (
-                              <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                    if (!selectedLlm) return null
+                    const hasKey = !!LLM_CRED_FIELDS[llmProvider]
+                    return (
+                      <div className={cn('grid gap-3 pt-3 border-t', hasKey ? 'grid-cols-2' : 'grid-cols-1 max-w-sm')}>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs font-medium text-muted-foreground">Model</Label>
+                          <Select value={llmModel} onValueChange={(v) => v && setLlmModel(v)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {selectedLlm.models.map((m) => (
+                                <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {hasKey && (
+                          <div className="space-y-1.5">
+                            <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                              <Key className="h-3 w-3" />API Key
+                            </Label>
+                            <Input
+                              type="password"
+                              placeholder={LLM_CRED_FIELDS[llmProvider].placeholder}
+                              value={creds[llmProvider]?.api_key || ''}
+                              onChange={(e) =>
+                                setCreds((prev) => ({
+                                  ...prev,
+                                  [llmProvider]: { ...(prev[llmProvider] || {}), api_key: e.target.value },
+                                }))
+                              }
+                            />
+                          </div>
+                        )}
                       </div>
-                    ) : null
+                    )
                   })()}
-
-                  {LLM_CRED_FIELDS[llmProvider] && (
-                    <div className="space-y-2 pt-1 border-t">
-                      <Label className="flex items-center gap-1.5 mt-3">
-                        <Key className="h-3.5 w-3.5" />API Key
-                      </Label>
-                      <Input
-                        type="password"
-                        placeholder={LLM_CRED_FIELDS[llmProvider].placeholder}
-                        value={creds[llmProvider]?.api_key || ''}
-                        onChange={(e) =>
-                          setCreds((prev) => ({
-                            ...prev,
-                            [llmProvider]: { ...(prev[llmProvider] || {}), api_key: e.target.value },
-                          }))
-                        }
-                      />
-                    </div>
-                  )}
                 </CardContent>
               </Card>
 
