@@ -195,56 +195,64 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
 
 async def get_tenant_by_sip_uri(sip_uri: str) -> Optional[TenantConfig]:
     """Load tenant config by the SIP destination number/URI."""
-    supabase = get_supabase_client()
+    try:
+        supabase = get_supabase_client()
 
-    # Strip 'sip:' prefix and @domain if present; match against sip_uri column
-    number = sip_uri.replace("sip:", "").split("@")[0].strip()
+        number = sip_uri.replace("sip:", "").split("@")[0].strip()
 
-    result = supabase.table("tenants").select("*").eq(
-        "sip_uri", number
-    ).eq("is_active", True).single().execute()
+        result = supabase.table("tenants").select("*").eq(
+            "sip_uri", number
+        ).eq("is_active", True).maybe_single().execute()
 
-    if not result.data:
+        if not result.data:
+            return None
+
+        settings_result = supabase.table("tenant_settings").select("*").eq(
+            "tenant_id", result.data["id"]
+        ).maybe_single().execute()
+
+        return _build_tenant_from_rows(result.data, settings_result.data or {})
+    except Exception:
         return None
-
-    settings_result = supabase.table("tenant_settings").select("*").eq(
-        "tenant_id", result.data["id"]
-    ).single().execute()
-
-    return _build_tenant_from_rows(result.data, settings_result.data or {})
 
 
 async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConfig]:
     """Load tenant config by WhatsApp phone_number_id."""
-    supabase = get_supabase_client()
+    try:
+        supabase = get_supabase_client()
 
-    result = supabase.table("tenants").select("*").eq(
-        "wa_phone_number_id", phone_number_id
-    ).eq("is_active", True).single().execute()
+        result = supabase.table("tenants").select("*").eq(
+            "wa_phone_number_id", phone_number_id
+        ).eq("is_active", True).maybe_single().execute()
 
-    if not result.data:
+        if not result.data:
+            return None
+
+        settings_result = supabase.table("tenant_settings").select("*").eq(
+            "tenant_id", result.data["id"]
+        ).maybe_single().execute()
+
+        return _build_tenant_from_rows(result.data, settings_result.data or {})
+    except Exception:
         return None
-
-    settings_result = supabase.table("tenant_settings").select("*").eq(
-        "tenant_id", result.data["id"]
-    ).single().execute()
-
-    return _build_tenant_from_rows(result.data, settings_result.data or {})
 
 
 async def get_tenant_by_id(tenant_id: str) -> Optional[TenantConfig]:
     """Load tenant config by tenant UUID."""
-    supabase = get_supabase_client()
+    try:
+        supabase = get_supabase_client()
 
-    result = supabase.table("tenants").select("*").eq(
-        "id", tenant_id
-    ).single().execute()
+        result = supabase.table("tenants").select("*").eq(
+            "id", tenant_id
+        ).maybe_single().execute()
 
-    if not result.data:
+        if not result.data:
+            return None
+
+        settings_result = supabase.table("tenant_settings").select("*").eq(
+            "tenant_id", tenant_id
+        ).maybe_single().execute()
+
+        return _build_tenant_from_rows(result.data, settings_result.data or {})
+    except Exception:
         return None
-
-    settings_result = supabase.table("tenant_settings").select("*").eq(
-        "tenant_id", tenant_id
-    ).single().execute()
-
-    return _build_tenant_from_rows(result.data, settings_result.data or {})

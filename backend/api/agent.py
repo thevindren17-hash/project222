@@ -58,7 +58,7 @@ async def test_agent(req: TestMessage):
         raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
 
     reply = response.get("content", "")
-    tool_calls = response.get("tool_calls", [])
+    tool_calls = response.get("tool_calls") or []
     tool_results = []
 
     # Execute tools so the tester can see real results
