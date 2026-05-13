@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import {
   LayoutDashboard, Calendar, ClipboardList, Phone, MessageSquare,
-  BarChart3, Bot, Sparkles, Users, Building2, FlaskConical,
+  BarChart3, Bot, Users, Building2, FlaskConical,
 } from 'lucide-react'
 
 type SectionItem = {
@@ -42,9 +42,8 @@ const sections: Section[] = [
   {
     label: 'CONFIGURE',
     items: [
-      { name: 'Agent Config', href: '/settings/plugins/agent',        icon: Bot,           statusKey: 'agent' },
-      { name: 'AI Providers', href: '/settings/plugins/ai-providers', icon: Sparkles,      statusKey: 'ai' },
-      { name: 'Test Agent',   href: '/test-agent',                    icon: FlaskConical },
+      { name: 'Agent Config', href: '/settings/plugins/agent', icon: Bot,         statusKey: 'agent' },
+      { name: 'Test Agent',   href: '/test-agent',           icon: FlaskConical },
     ],
   },
   {
@@ -81,7 +80,6 @@ function usePluginStatus() {
         phone:    !!tenant.sip_uri,
         calendar: !!settings?.google_calendar_id,
         agent:    !!settings?.system_prompt,
-        ai:       !!settings?.provider_credentials,
       }
     },
   })

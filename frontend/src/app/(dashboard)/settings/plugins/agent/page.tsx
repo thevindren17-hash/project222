@@ -15,9 +15,10 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { OPENAI_TTS_VOICES } from '@/lib/providers'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { LLM_PROVIDERS, OPENAI_TTS_VOICES } from '@/lib/providers'
 import {
-  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic,
+  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -40,6 +41,14 @@ const SECTIONS = [
   { id: 'handoff', label: 'Handoff', icon: Users },
   { id: 'capabilities', label: 'Capabilities', icon: Zap },
 ]
+
+const LLM_CRED_FIELDS: Record<string, { placeholder: string }> = {
+  groq: { placeholder: 'gsk_...' },
+  openai: { placeholder: 'sk-...' },
+  anthropic: { placeholder: 'sk-ant-...' },
+  google: { placeholder: 'AIza...' },
+  mistral: { placeholder: 'your-mistral-key' },
+}
 
 interface FaqItem { q: string; a: string }
 
@@ -78,6 +87,10 @@ export default function AgentPluginPage() {
 
   const [faq, setFaq] = useState<FaqItem[]>([])
 
+  const [llmProvider, setLlmProvider] = useState('groq')
+  const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
+  const [creds, setCreds] = useState<Record<string, Record<string, string>>>({})
+
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
   const [voiceTtsVoice, setVoiceTtsVoice] = useState('nova')
   const [voiceSttProvider, setVoiceSttProvider] = useState('openai')
@@ -95,6 +108,9 @@ export default function AgentPluginPage() {
       setAgentName(settings.agent_name || 'Maya')
       setRawPrompt(settings.system_prompt || '')
       setPromptSeeded(true)
+      setLlmProvider(settings.llm_config?.provider || 'groq')
+      setLlmModel(settings.llm_config?.model || 'llama-3.3-70b-versatile')
+      setCreds(settings.provider_credentials || {})
       setTemperature(settings.llm_config?.temperature ?? 0.7)
       setMaxTokens(settings.llm_config?.max_tokens ?? 1024)
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
@@ -139,7 +155,8 @@ export default function AgentPluginPage() {
         tenant_id: tenant.id,
         agent_name: agentName,
         system_prompt: rawMode ? rawPrompt : buildSystemPrompt(),
-        llm_config: { ...(settings?.llm_config || {}), temperature, max_tokens: maxTokens },
+        llm_config: { provider: llmProvider, model: llmModel, temperature, max_tokens: maxTokens },
+        provider_credentials: creds,
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
         voice_reply_enabled: voiceReplyEnabled,
@@ -177,8 +194,6 @@ export default function AgentPluginPage() {
     setEscalationKeywords(escalationKeywords.filter((k) => k !== kw))
   }
 
-  const provider = settings?.llm_config?.provider || 'groq'
-
   return (
     <div className="space-y-6">
       {/* ── Header ── */}
@@ -215,7 +230,7 @@ export default function AgentPluginPage() {
                     <span className="h-1.5 w-1.5 rounded-full bg-green-400 inline-block" />
                     Active
                   </Badge>
-                  <Badge variant="secondary" className="text-xs px-2 py-0.5 capitalize">{provider}</Badge>
+                  <Badge variant="secondary" className="text-xs px-2 py-0.5 capitalize">{llmProvider}</Badge>
                 </div>
               </div>
             </CardContent>
@@ -398,13 +413,93 @@ export default function AgentPluginPage() {
             <>
               <div>
                 <h2 className="text-lg font-semibold">Model Settings</h2>
-                <p className="text-sm text-muted-foreground">Control how the AI generates responses</p>
+                <p className="text-sm text-muted-foreground">Choose your AI provider and configure how it generates responses</p>
               </div>
 
+              {/* Provider + model + API key */}
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Parameters</CardTitle>
-                  <CardDescription>To change provider or model, go to Settings → AI Providers</CardDescription>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-primary" />Language Model
+                  </CardTitle>
+                  <CardDescription>The AI engine for conversations</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <RadioGroup
+                    value={llmProvider}
+                    onValueChange={(v) => {
+                      if (!v) return
+                      setLlmProvider(v)
+                      const p = LLM_PROVIDERS.find((x) => x.provider === v)
+                      if (p?.models?.[0]) setLlmModel(p.models[0].id)
+                    }}
+                  >
+                    {LLM_PROVIDERS.map((p) => (
+                      <div
+                        key={p.provider}
+                        className="flex items-start space-x-3 rounded-md border p-3 hover:bg-muted/50 transition-colors cursor-pointer"
+                        onClick={() => {
+                          setLlmProvider(p.provider)
+                          if (p.models?.[0]) setLlmModel(p.models[0].id)
+                        }}
+                      >
+                        <RadioGroupItem value={p.provider} id={`llm-${p.provider}`} className="mt-0.5" />
+                        <div className="flex-1">
+                          <Label htmlFor={`llm-${p.provider}`} className="font-semibold cursor-pointer flex items-center gap-2">
+                            {p.name}
+                            {p.recommended && <Badge variant="secondary" className="text-xs">Recommended</Badge>}
+                          </Label>
+                          <p className="text-xs text-muted-foreground mt-0.5">{p.description}</p>
+                          <p className="text-xs text-muted-foreground">Est. {p.estimatedCostPerCall}/call</p>
+                        </div>
+                      </div>
+                    ))}
+                  </RadioGroup>
+
+                  {(() => {
+                    const selectedLlm = LLM_PROVIDERS.find((p) => p.provider === llmProvider)
+                    return selectedLlm ? (
+                      <div className="space-y-2">
+                        <Label>Model</Label>
+                        <Select value={llmModel} onValueChange={(v) => v && setLlmModel(v)}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {selectedLlm.models.map((m) => (
+                              <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : null
+                  })()}
+
+                  {LLM_CRED_FIELDS[llmProvider] && (
+                    <div className="space-y-2 pt-1 border-t">
+                      <Label className="flex items-center gap-1.5 mt-3">
+                        <Key className="h-3.5 w-3.5" />API Key
+                      </Label>
+                      <Input
+                        type="password"
+                        placeholder={LLM_CRED_FIELDS[llmProvider].placeholder}
+                        value={creds[llmProvider]?.api_key || ''}
+                        onChange={(e) =>
+                          setCreds((prev) => ({
+                            ...prev,
+                            [llmProvider]: { ...(prev[llmProvider] || {}), api_key: e.target.value },
+                          }))
+                        }
+                      />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Parameters */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Brain className="h-4 w-4 text-muted-foreground" />Parameters
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="space-y-3">
@@ -438,16 +533,6 @@ export default function AgentPluginPage() {
                         className="w-36"
                       />
                       <span className="text-xs text-muted-foreground">tokens ≈ {Math.round(maxTokens * 0.75)} words</span>
-                    </div>
-                  </div>
-
-                  <Separator />
-
-                  <div className="flex items-center gap-3 p-3 bg-muted/40 rounded-lg">
-                    <Brain className="h-5 w-5 text-muted-foreground shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium capitalize">{provider} — {settings?.llm_config?.model || 'default model'}</p>
-                      <p className="text-xs text-muted-foreground">Change in Settings → AI Providers</p>
                     </div>
                   </div>
                 </CardContent>
