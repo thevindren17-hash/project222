@@ -373,7 +373,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
             supabase.table("messages").insert({
                 "thread_id": thread["id"], "tenant_id": tenant.tenant_id,
                 "contact_id": contact.get("id"), "wa_message_id": message.get("id"),
-                "role": "user", "body": "[Voice message]", "message_type": "audio",
+                "role": "user", "body": "[Voice message]",
                 "language": language, "handled_by": "human",
             }).execute()
             return
@@ -402,20 +402,20 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
     language = detect_language(transcript)
 
-    # Save transcribed user voice message
-    supabase.table("messages").insert({
-        "thread_id": thread["id"], "tenant_id": tenant.tenant_id,
-        "contact_id": contact.get("id"), "wa_message_id": message.get("id"),
-        "role": "user", "body": transcript, "message_type": "audio",
-        "language": language, "handled_by": "ai",
-    }).execute()
-
-    # Get conversation history
+    # Get conversation history BEFORE saving the current message (avoids duplicate in LLM payload)
     history = supabase.table("messages").select("role, body").eq(
         "thread_id", thread["id"]
     ).order("created_at", desc=False).limit(10).execute()
     conversation_history = [{"role": m["role"], "content": m["body"]} for m in history.data]
     conversation_history.append({"role": "user", "content": transcript})
+
+    # Save transcribed user voice message
+    supabase.table("messages").insert({
+        "thread_id": thread["id"], "tenant_id": tenant.tenant_id,
+        "contact_id": contact.get("id"), "wa_message_id": message.get("id"),
+        "role": "user", "body": transcript,
+        "language": language, "handled_by": "ai",
+    }).execute()
 
     # LLM response
     llm_client = load_llm_client(tenant)
@@ -460,7 +460,6 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     supabase.table("messages").insert({
         "thread_id": thread["id"], "tenant_id": tenant.tenant_id,
         "contact_id": contact.get("id"), "role": "assistant", "body": reply_text,
-        "message_type": "audio" if voice_enabled else "text",
         "language": language, "handled_by": "ai",
     }).execute()
 
