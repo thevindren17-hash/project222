@@ -56,14 +56,17 @@ export default function AgentPluginPage() {
   const [section, setSection] = useState('instructions')
 
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
-  const { data: settings } = useQuery({
-    queryKey: ['tenant-settings'],
+  const { data: settings, isLoading: settingsLoading } = useQuery({
+    queryKey: ['tenant-settings', 'full'],
     queryFn: async () => {
       if (!tenant) return null
-      const { data } = await supabase.from('tenant_settings').select('*').eq('tenant_id', tenant.id).single()
+      const { data, error } = await supabase.from('tenant_settings').select('*').eq('tenant_id', tenant.id).maybeSingle()
+      if (error) throw error
       return data
     },
     enabled: !!tenant,
+    staleTime: 0,
+    refetchOnMount: true,
   })
 
   const [agentName, setAgentName] = useState('Maya')
@@ -150,10 +153,12 @@ export default function AgentPluginPage() {
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
+      const prompt = rawMode ? rawPrompt.trim() : buildSystemPrompt()
+      if (!prompt) throw new Error('System prompt cannot be empty — write one in the Instructions tab first.')
       const { error } = await supabase.from('tenant_settings').upsert({
         tenant_id: tenant.id,
         agent_name: agentName,
-        system_prompt: rawMode ? rawPrompt : buildSystemPrompt(),
+        system_prompt: prompt,
         llm_config: { provider: llmProvider, model: llmModel, temperature, max_tokens: maxTokens },
         provider_credentials: creds,
         tool_config: { ...toolConfig, escalate: humanTakeover },
@@ -170,6 +175,7 @@ export default function AgentPluginPage() {
       toast.success('Agent configuration saved')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
+      queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'full'] })
     },
     onError: (e: Error) => toast.error(e.message),
   })

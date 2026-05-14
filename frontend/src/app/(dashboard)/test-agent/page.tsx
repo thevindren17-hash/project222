@@ -33,8 +33,8 @@ export default function TestAgentPage() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   const queryClient = useQueryClient()
-  const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
-  const { data: settings } = useQuery({
+  const { data: tenant, isLoading: tenantLoading } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
+  const { data: settings, isLoading: settingsLoading } = useQuery({
     queryKey: ['tenant-settings'],
     queryFn: async () => {
       if (!tenant) return null
@@ -47,6 +47,7 @@ export default function TestAgentPage() {
     },
     enabled: !!tenant,
   })
+  const isLoadingConfig = tenantLoading || (!!tenant && settingsLoading)
 
   // Proxy route handles the actual backend call — works on both Vercel and local
   const agentTestUrl = '/api/agent/test'
@@ -179,7 +180,7 @@ export default function TestAgentPage() {
       )}
 
       {/* ── No config warning ── */}
-      {!hasConfig && (
+      {!isLoadingConfig && !hasConfig && (
         <div className="mx-6 mt-4 shrink-0">
           <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
             <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
@@ -194,7 +195,7 @@ export default function TestAgentPage() {
       )}
 
       {/* ── Missing API key warning ── */}
-      {hasConfig && !hasApiKey && (
+      {!isLoadingConfig && hasConfig && !hasApiKey && (
         <div className="mx-6 mt-4 shrink-0">
           <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
             <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
@@ -318,11 +319,11 @@ export default function TestAgentPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={hasConfig ? 'Type a message as a patient…' : 'Configure your agent first'}
-            disabled={loading || !tenant || !hasConfig}
+            disabled={loading || isLoadingConfig || !tenant || !hasConfig}
             className="flex-1"
             autoFocus
           />
-          <Button type="submit" disabled={!input.trim() || loading || !tenant || !hasConfig} size="icon">
+          <Button type="submit" disabled={!input.trim() || loading || isLoadingConfig || !tenant || !hasConfig} size="icon">
             <Send className="h-4 w-4" />
           </Button>
         </form>
