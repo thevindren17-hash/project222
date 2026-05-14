@@ -5,8 +5,11 @@ Clinics connect their own Google account via OAuth to sync appointments and trac
 
 import os
 import json
+import httpx
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
+
+GCAL_API = "https://www.googleapis.com/calendar/v3"
 
 
 class GoogleCalendarIntegration:
@@ -14,7 +17,56 @@ class GoogleCalendarIntegration:
 
     def __init__(self, tenant_id: str, calendar_id: Optional[str] = "primary"):
         self.tenant_id = tenant_id
-        self.calendar_id = calendar_id
+        self.calendar_id = calendar_id or "primary"
+
+    async def _get_token(self) -> str:
+        from shared.tenant_config import get_supabase_client
+        supabase = get_supabase_client()
+        result = (
+            supabase.table("tenant_settings")
+            .select("google_calendar_token,google_calendar_refresh")
+            .eq("tenant_id", self.tenant_id)
+            .maybe_single()
+            .execute()
+        )
+        if not result.data:
+            raise RuntimeError("No Google Calendar credentials found")
+
+        token = result.data.get("google_calendar_token")
+        refresh = result.data.get("google_calendar_refresh")
+
+        if not token and not refresh:
+            raise RuntimeError("Google Calendar not connected")
+
+        if refresh:
+            token = await self._refresh_token(refresh)
+
+        return token
+
+    async def _refresh_token(self, refresh_token: str) -> str:
+        client_id = os.getenv("GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "refresh_token",
+                },
+            )
+        if r.status_code != 200:
+            raise RuntimeError(f"Token refresh failed: {r.text[:200]}")
+        new_token = r.json()["access_token"]
+
+        from shared.tenant_config import get_supabase_client
+        supabase = get_supabase_client()
+        supabase.table("tenant_settings").update(
+            {"google_calendar_token": new_token}
+        ).eq("tenant_id", self.tenant_id).execute()
+
+        return new_token
 
     async def create_appointment(
         self,
@@ -26,15 +78,16 @@ class GoogleCalendarIntegration:
         service_type: str,
         notes: Optional[str] = None,
     ) -> Dict[str, Any]:
+        token = await self._get_token()
         event = {
             "summary": summary,
             "description": (
                 f"Patient: {patient_name}\n"
                 f"Phone: {patient_phone}\n"
-                f"Service: {service_type}\n"
-                + (f"Notes: {notes}" if notes else "")
+                f"Service: {service_type}"
+                + (f"\nNotes: {notes}" if notes else "")
                 + "\n\n---\nCreated by AI Receptionist"
-            ).strip(),
+            ),
             "start": {
                 "dateTime": start_time.isoformat(),
                 "timeZone": "Asia/Kuala_Lumpur",
@@ -52,7 +105,15 @@ class GoogleCalendarIntegration:
             },
         }
         try:
-            result = await self._call_mcp_tool("create_event", calendar_id=self.calendar_id, event=event)
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    f"{GCAL_API}/calendars/{self.calendar_id}/events",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=event,
+                )
+            if r.status_code not in (200, 201):
+                return {"success": False, "error": r.text[:200]}
+            result = r.json()
             return {
                 "success": True,
                 "event_id": result.get("id"),
@@ -63,18 +124,22 @@ class GoogleCalendarIntegration:
             return {"success": False, "error": str(e)}
 
     async def list_appointments(self, date: datetime, days_ahead: int = 7) -> List[Dict[str, Any]]:
-        time_min = date.isoformat()
-        time_max = (date + timedelta(days=days_ahead)).isoformat()
+        token = await self._get_token()
+        time_min = date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
+        time_max = (date + timedelta(days=days_ahead)).isoformat() + "Z"
         try:
-            result = await self._call_mcp_tool(
-                "list_events",
-                calendar_id=self.calendar_id,
-                time_min=time_min,
-                time_max=time_max,
-                single_events=True,
-                order_by="startTime",
-            )
-            return result.get("items", [])
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"{GCAL_API}/calendars/{self.calendar_id}/events",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={
+                        "timeMin": time_min,
+                        "timeMax": time_max,
+                        "singleEvents": "true",
+                        "orderBy": "startTime",
+                    },
+                )
+            return r.json().get("items", []) if r.status_code == 200 else []
         except Exception as e:
             print(f"Error listing calendar events: {e}")
             return []
@@ -87,52 +152,85 @@ class GoogleCalendarIntegration:
     ) -> List[Dict[str, datetime]]:
         if not business_hours:
             business_hours = {"open": "09:00", "close": "18:00"}
-        try:
-            result = await self._call_mcp_tool(
-                "find_free_time",
-                calendar_id=self.calendar_id,
-                time_min=date.isoformat(),
-                time_max=(date + timedelta(days=1)).isoformat(),
-                duration_minutes=duration_minutes,
-            )
-            slots = []
-            for slot in result.get("free_slots", []):
-                start = datetime.fromisoformat(slot["start"])
-                if self._is_within_hours(start, business_hours):
-                    slots.append({"start": start, "end": datetime.fromisoformat(slot["end"])})
-            return slots
-        except Exception as e:
-            print(f"Error finding free time: {e}")
+        if business_hours.get("closed"):
             return []
 
-    async def update_appointment(self, event_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        token = await self._get_token()
+        day_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = date.replace(hour=23, minute=59, second=59, microsecond=0)
+
         try:
-            result = await self._call_mcp_tool(
-                "update_event",
-                calendar_id=self.calendar_id,
-                event_id=event_id,
-                event=updates,
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    f"{GCAL_API}/freeBusy",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "timeMin": day_start.isoformat() + "Z",
+                        "timeMax": day_end.isoformat() + "Z",
+                        "items": [{"id": self.calendar_id}],
+                    },
+                )
+            busy_blocks = []
+            if r.status_code == 200:
+                cal_data = r.json().get("calendars", {}).get(self.calendar_id, {})
+                busy_blocks = [
+                    (
+                        datetime.fromisoformat(b["start"].replace("Z", "+00:00")).replace(tzinfo=None),
+                        datetime.fromisoformat(b["end"].replace("Z", "+00:00")).replace(tzinfo=None),
+                    )
+                    for b in cal_data.get("busy", [])
+                ]
+        except Exception as e:
+            print(f"Error fetching freebusy: {e}")
+            busy_blocks = []
+
+        # Generate slots within business hours, skipping busy blocks
+        open_h, open_m = map(int, business_hours["open"].split(":"))
+        close_h, close_m = map(int, business_hours["close"].split(":"))
+        current = date.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+        close_dt = date.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+
+        free_slots = []
+        while current + timedelta(minutes=duration_minutes) <= close_dt:
+            slot_end = current + timedelta(minutes=duration_minutes)
+            overlap = any(
+                not (slot_end <= b_start or current >= b_end)
+                for b_start, b_end in busy_blocks
             )
-            return {"success": True, "event": result}
+            if not overlap:
+                free_slots.append({"start": current, "end": slot_end})
+            current += timedelta(minutes=duration_minutes)
+
+        return free_slots
+
+    async def update_appointment(self, event_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        token = await self._get_token()
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.patch(
+                    f"{GCAL_API}/calendars/{self.calendar_id}/events/{event_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=updates,
+                )
+            return {"success": r.status_code in (200, 201), "event": r.json()}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def delete_appointment(self, event_id: str) -> Dict[str, Any]:
+        token = await self._get_token()
         try:
-            await self._call_mcp_tool("delete_event", calendar_id=self.calendar_id, event_id=event_id)
-            return {"success": True}
+            async with httpx.AsyncClient() as client:
+                r = await client.delete(
+                    f"{GCAL_API}/calendars/{self.calendar_id}/events/{event_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            return {"success": r.status_code == 204}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _is_within_hours(self, dt: datetime, hours: Dict[str, str]) -> bool:
         time_str = dt.strftime("%H:%M")
         return hours["open"] <= time_str <= hours["close"]
-
-    async def _call_mcp_tool(self, tool_name: str, **kwargs):
-        raise NotImplementedError(
-            f"MCP tool '{tool_name}' not available. "
-            "Ensure Google Calendar MCP server is configured."
-        )
 
 
 class GoogleSheetsIntegration:
@@ -206,15 +304,15 @@ class GoogleSheetsIntegration:
 
 async def get_google_oauth_url(tenant_id: str, service: str) -> str:
     """Generate OAuth URL for clinic to authorize Google Calendar/Sheets access."""
-    base_url = os.getenv("BACKEND_URL")
-    redirect_uri = f"{base_url}/api/integrations/google/callback"
+    backend_url = os.getenv("BACKEND_URL", "")
+    redirect_uri = f"{backend_url}/api/integrations/google/callback"
     state = json.dumps({"tenant_id": tenant_id, "service": service})
     scopes = {
         "calendar": "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events",
         "sheets": "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file",
     }
     scope = scopes.get(service, scopes["calendar"])
-    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
     import urllib.parse
     params = urllib.parse.urlencode({
         "client_id": client_id,
@@ -259,12 +357,22 @@ async def store_google_tokens(
 # ── Per-tenant instance getters ────────────────────────────────────────────────
 
 async def get_google_calendar(tenant_id: str) -> Optional[GoogleCalendarIntegration]:
-    from shared.tenant_config import get_tenant_by_id
-
-    tenant = await get_tenant_by_id(tenant_id)
-    if tenant and tenant.google_calendar_id:
-        return GoogleCalendarIntegration(tenant_id=tenant_id, calendar_id=tenant.google_calendar_id)
-    return None
+    from shared.tenant_config import get_supabase_client
+    supabase = get_supabase_client()
+    result = (
+        supabase.table("tenant_settings")
+        .select("google_calendar_token,google_calendar_refresh,google_calendar_id")
+        .eq("tenant_id", tenant_id)
+        .maybe_single()
+        .execute()
+    )
+    if not result.data:
+        return None
+    has_token = result.data.get("google_calendar_token") or result.data.get("google_calendar_refresh")
+    if not has_token:
+        return None
+    calendar_id = result.data.get("google_calendar_id") or "primary"
+    return GoogleCalendarIntegration(tenant_id=tenant_id, calendar_id=calendar_id)
 
 
 async def get_google_sheets(tenant_id: str) -> Optional[GoogleSheetsIntegration]:

@@ -21,13 +21,13 @@ export default function CalendarPluginPage() {
     queryKey: ['tenant-settings'],
     queryFn: async () => {
       if (!tenant) return null
-      const { data } = await supabase.from('tenant_settings').select('*').eq('tenant_id', tenant.id).single()
+      const { data } = await supabase.from('tenant_settings').select('*').eq('tenant_id', tenant.id).maybeSingle()
       return data
     },
     enabled: !!tenant,
   })
 
-  const isConnected = !!(settings?.google_calendar_id)
+  const isConnected = !!(settings?.google_calendar_token || settings?.google_calendar_refresh)
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {

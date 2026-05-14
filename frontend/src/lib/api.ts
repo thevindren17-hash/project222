@@ -31,7 +31,7 @@ export async function testWhatsAppConnection(tenantId: string) {
 }
 
 export async function initiateGoogleCalendarOAuth(tenantId: string) {
-  window.location.href = `${BACKEND_URL}/api/integrations/google/auth?tenant_id=${tenantId}&service=calendar`
+  window.location.href = `/api/integrations/google/auth?tenant_id=${tenantId}&service=calendar`
 }
 
 export async function disconnectGoogleCalendar(tenantId: string) {
