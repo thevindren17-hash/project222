@@ -312,7 +312,7 @@ async def get_google_oauth_url(tenant_id: str, service: str) -> str:
         "sheets": "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file",
     }
     scope = scopes.get(service, scopes["calendar"])
-    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
     import urllib.parse
     params = urllib.parse.urlencode({
         "client_id": client_id,

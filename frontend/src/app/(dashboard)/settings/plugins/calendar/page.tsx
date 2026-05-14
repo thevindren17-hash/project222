@@ -1,13 +1,13 @@
 'use client'
 
+import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'next/navigation'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { initiateGoogleCalendarOAuth } from '@/lib/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Switch } from '@/components/ui/switch'
-import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import { CheckCircle2, XCircle, Calendar, Loader2 } from 'lucide-react'
@@ -15,6 +15,8 @@ import { format } from 'date-fns'
 
 export default function CalendarPluginPage() {
   const queryClient = useQueryClient()
+  const searchParams = useSearchParams()
+
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
 
   const { data: settings } = useQuery({
@@ -27,14 +29,35 @@ export default function CalendarPluginPage() {
     enabled: !!tenant,
   })
 
+  // Handle redirect back from Google OAuth
+  useEffect(() => {
+    const success = searchParams.get('success')
+    const error = searchParams.get('error')
+    if (success === 'true') {
+      toast.success('Google Calendar connected successfully!')
+      queryClient.invalidateQueries({ queryKey: ['tenant-settings'] })
+      queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
+      window.history.replaceState({}, '', window.location.pathname)
+    } else if (error) {
+      const messages: Record<string, string> = {
+        access_denied: 'Access was denied. Please try again and allow calendar access.',
+        token_exchange_failed: 'Failed to connect. Please try again.',
+        missing_params: 'Something went wrong. Please try again.',
+      }
+      toast.error(messages[error] || `Connection failed: ${error}`)
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [searchParams, queryClient])
+
   const isConnected = !!(settings?.google_calendar_token || settings?.google_calendar_refresh)
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
       const { error } = await supabase.from('tenant_settings').update({
+        google_calendar_token: null,
+        google_calendar_refresh: null,
         google_calendar_id: null,
-        google_sheets_id: null,
       }).eq('tenant_id', tenant.id)
       if (error) throw error
     },
@@ -58,10 +81,14 @@ export default function CalendarPluginPage() {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>Connection Status</CardTitle>
-              <CardDescription>{isConnected ? `Calendar ID: ${settings?.google_calendar_id}` : 'Not connected'}</CardDescription>
+              <CardDescription>
+                {isConnected ? 'Your Google Calendar is connected' : 'Not connected'}
+              </CardDescription>
             </div>
             <Badge variant={isConnected ? 'default' : 'secondary'} className="gap-1">
-              {isConnected ? <><CheckCircle2 className="h-4 w-4" />Connected</> : <><XCircle className="h-4 w-4" />Disconnected</>}
+              {isConnected
+                ? <><CheckCircle2 className="h-4 w-4" />Connected</>
+                : <><XCircle className="h-4 w-4" />Disconnected</>}
             </Badge>
           </div>
         </CardHeader>
@@ -72,7 +99,11 @@ export default function CalendarPluginPage() {
               {settings.updated_at ? format(new Date(settings.updated_at), 'MMM dd, yyyy HH:mm') : 'Unknown'}
             </p>
             <Separator />
-            <Button variant="destructive" onClick={() => disconnectMutation.mutate()} disabled={disconnectMutation.isPending}>
+            <Button
+              variant="destructive"
+              onClick={() => disconnectMutation.mutate()}
+              disabled={disconnectMutation.isPending}
+            >
               {disconnectMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Disconnect Calendar
             </Button>
@@ -84,7 +115,9 @@ export default function CalendarPluginPage() {
         <>
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><Calendar className="h-5 w-5 text-primary" />How It Works</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <Calendar className="h-5 w-5 text-primary" />How It Works
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               {[
@@ -107,9 +140,14 @@ export default function CalendarPluginPage() {
 
           <Card>
             <CardContent className="pt-6">
-              <Button size="lg" className="w-full"
-                onClick={() => tenant && initiateGoogleCalendarOAuth(tenant.id)}>
-                <Calendar className="mr-2 h-5 w-5" />Connect Google Calendar
+              <Button
+                size="lg"
+                className="w-full"
+                onClick={() => tenant && initiateGoogleCalendarOAuth(tenant.id)}
+                disabled={!tenant}
+              >
+                <Calendar className="mr-2 h-5 w-5" />
+                Connect Google Calendar
               </Button>
             </CardContent>
           </Card>
