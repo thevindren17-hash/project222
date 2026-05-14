@@ -361,13 +361,19 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     if not reply_text:
         reply_text = "I'm sorry, I couldn't process that. Please try again or call us directly."
 
-    # Send reply
-    await send_whatsapp_message(
-        to=from_number,
-        text=reply_text,
-        phone_number_id=tenant.wa_phone_number_id,
-        access_token=tenant.wa_access_token,
-    )
+    # Send reply — wrap so a send failure is logged but doesn't swallow the whole flow
+    try:
+        await send_whatsapp_message(
+            to=from_number,
+            text=reply_text,
+            phone_number_id=tenant.wa_phone_number_id,
+            access_token=tenant.wa_access_token,
+        )
+    except Exception as send_err:
+        logger.error(
+            f"SEND FAILED for tenant={tenant.tenant_id} to={from_number}: {send_err}"
+        )
+        return  # message already saved; don't crash the whole webhook
 
     # Save assistant message
     supabase.table("messages").insert({
@@ -495,10 +501,14 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
                 phone_number_id=tenant.wa_phone_number_id, access_token=tenant.wa_access_token,
             )
     else:
-        await send_whatsapp_message(
-            to=from_number, text=f"🎤 _{transcript}_\n\n{reply_text}",
-            phone_number_id=tenant.wa_phone_number_id, access_token=tenant.wa_access_token,
-        )
+        try:
+            await send_whatsapp_message(
+                to=from_number, text=f"🎤 _{transcript}_\n\n{reply_text}",
+                phone_number_id=tenant.wa_phone_number_id, access_token=tenant.wa_access_token,
+            )
+        except Exception as send_err:
+            logger.error(f"SEND FAILED (voice) tenant={tenant.tenant_id} to={from_number}: {send_err}")
+            return
 
     # Save assistant message
     supabase.table("messages").insert({
@@ -514,6 +524,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
 async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: str) -> str:
     """Execute LLM tool calls and return a combined response string."""
+    from api.agent import _resolve_datetime  # NLP date parser (handles natural language + Malay)
     results = []
 
     for tc in tool_calls:
@@ -521,9 +532,9 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
         args = tc["function"]["arguments"]
 
         if fn_name == "book_appointment":
-            scheduled_dt = parse_datetime(args.get("date", ""), args.get("time", ""))
+            scheduled_dt = _resolve_datetime(args.get("date", ""), args.get("time", ""))
             if not scheduled_dt:
-                results.append("I couldn't understand the date and time. Please try again with YYYY-MM-DD and HH:MM format.")
+                results.append("I couldn't understand the date and time. Please confirm the date and time with the patient.")
                 continue
             result = await book_appointment(
                 tenant_id=tenant.tenant_id,
@@ -652,5 +663,45 @@ async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access
                 "Content-Type": "application/json",
             },
         )
+        if not response.is_success:
+            logger.error(
+                f"Meta send failed {response.status_code} | phone_id={phone_number_id} | "
+                f"to={to} | body={response.text}"
+            )
         response.raise_for_status()
         return response.json()
+
+
+# ── Test-send endpoint ─────────────────────────────────────────────────────────
+
+@router.post("/whatsapp/test-send/{tenant_id}")
+async def test_whatsapp_send(tenant_id: str, request: Request):
+    """Dashboard button: verify that WhatsApp send credentials are working."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"success": False, "error": "Invalid request body"}
+
+    to_phone = body.get("to_phone", "").strip()
+    if not to_phone:
+        return {"success": False, "error": "to_phone is required"}
+
+    tenant = await get_tenant_by_id(tenant_id)
+    if not tenant:
+        return {"success": False, "error": "Tenant not found"}
+    if not tenant.wa_phone_number_id or not tenant.wa_access_token:
+        return {
+            "success": False,
+            "error": "WhatsApp credentials not saved. Fill in Phone Number ID and Access Token then click Save & Connect.",
+        }
+
+    try:
+        result = await send_whatsapp_message(
+            to=to_phone,
+            text="✅ Test message from AI Receptionist — your WhatsApp connection is working!",
+            phone_number_id=tenant.wa_phone_number_id,
+            access_token=tenant.wa_access_token,
+        )
+        return {"success": True, "result": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

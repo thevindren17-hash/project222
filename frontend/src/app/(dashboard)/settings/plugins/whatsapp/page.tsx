@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle } from 'lucide-react'
+import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send } from 'lucide-react'
 
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
@@ -17,6 +17,9 @@ export default function WhatsAppPluginPage() {
   const [phoneNumber, setPhoneNumber] = useState('')
   const [businessAccountId, setBusinessAccountId] = useState('')
   const [accessToken, setAccessToken] = useState('')
+  const [testPhone, setTestPhone] = useState('')
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [testLoading, setTestLoading] = useState(false)
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
@@ -74,6 +77,25 @@ export default function WhatsAppPluginPage() {
   function copy(text: string) {
     navigator.clipboard.writeText(text)
     toast.success('Copied!')
+  }
+
+  async function runTestSend() {
+    if (!tenant || !testPhone.trim()) return
+    setTestLoading(true)
+    setTestResult(null)
+    try {
+      const res = await fetch('/api/whatsapp/test-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenant.id, to_phone: testPhone.trim() }),
+      })
+      const data = await res.json()
+      setTestResult({ ok: data.success, msg: data.success ? 'Test message sent! Check your WhatsApp.' : (data.error || 'Unknown error') })
+    } catch (e) {
+      setTestResult({ ok: false, msg: 'Network error — backend unreachable' })
+    } finally {
+      setTestLoading(false)
+    }
   }
 
   // ── Loading state ──────────────────────────────────────────────────────────
@@ -185,6 +207,38 @@ export default function WhatsAppPluginPage() {
             </div>
             <p className="text-xs text-muted-foreground">After verifying, subscribe to the <span className="font-medium">messages</span> webhook field.</p>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Test Connection — verify send credentials are working */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Test Connection</CardTitle>
+          <CardDescription>Send a test message to verify your WhatsApp credentials are working correctly</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label>Send test message to (your own number)</Label>
+            <div className="flex gap-2">
+              <Input
+                placeholder="+60123456789"
+                value={testPhone}
+                onChange={(e) => setTestPhone(e.target.value)}
+                className="flex-1"
+              />
+              <Button onClick={runTestSend} disabled={testLoading || !testPhone.trim() || !isConnected}>
+                {testLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                <span className="ml-2">Send Test</span>
+              </Button>
+            </div>
+            {!isConnected && <p className="text-xs text-muted-foreground">Save credentials below before testing.</p>}
+          </div>
+          {testResult && (
+            <div className={`flex items-start gap-2 rounded-md p-3 text-sm ${testResult.ok ? 'bg-green-500/10 text-green-600' : 'bg-destructive/10 text-destructive'}`}>
+              {testResult.ok ? <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" /> : <XCircle className="h-4 w-4 mt-0.5 shrink-0" />}
+              <span>{testResult.msg}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
