@@ -52,8 +52,11 @@ async def google_oauth_callback(request: Request):
     try:
         access_token, refresh_token = await _exchange_google_code(code)
     except Exception as e:
-        print(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {e}")
-        url = f"{calendar_page}?error=token_exchange_failed" if calendar_page else "/?error=token_exchange_failed"
+        err_str = str(e)
+        print(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {err_str}")
+        # Surface the actual Google error in the redirect so we can debug
+        import urllib.parse
+        url = f"{calendar_page}?error={urllib.parse.quote(err_str[:120])}" if calendar_page else "/?error=token_exchange_failed"
         return RedirectResponse(url=url)
 
     if not access_token:

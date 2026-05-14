@@ -28,11 +28,10 @@ function OAuthResultHandler() {
     } else if (error) {
       const messages: Record<string, string> = {
         access_denied: 'Access was denied. Please try again and allow calendar access.',
-        token_exchange_failed: 'Connection failed — please try again.',
         storage_failed: 'Connected but failed to save. Please try again.',
         missing_params: 'Something went wrong. Please try again.',
       }
-      toast.error(messages[error] || `Connection failed: ${error}`)
+      toast.error(messages[error] || `Connection failed: ${decodeURIComponent(error)}`)
       window.history.replaceState({}, '', window.location.pathname)
     }
   }, [searchParams, queryClient])
