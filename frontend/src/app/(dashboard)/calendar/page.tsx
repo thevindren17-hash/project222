@@ -70,16 +70,23 @@ export default function CalendarPage() {
     staleTime: 5 * 60 * 1000,
   })
 
-  const bookingEvents = bookings?.map((b) => ({
+  const bookingEvents = bookings?.map((b) => {
+    // Strip timezone suffix so FullCalendar treats the stored time as local (no UTC conversion).
+    // Stored times are naive local-time values; without this, UTC+8 browsers shift 10am → 6pm.
+    const startLocal = b.scheduled_at.slice(0, 19)
+    const endBase = new Date(startLocal + 'Z')
+    endBase.setUTCMinutes(endBase.getUTCMinutes() + 30)
+    const endLocal = endBase.toISOString().slice(0, 19)
+    return ({
     id: b.id,
     title: b.contact?.name ? `${b.service_type} · ${b.contact.name}` : b.service_type,
-    start: b.scheduled_at,
-    end: new Date(new Date(b.scheduled_at).getTime() + 30 * 60000).toISOString(),
+    start: startLocal,
+    end: endLocal,
     backgroundColor: STATUS[b.status as keyof typeof STATUS]?.color ?? STATUS.completed.color,
     borderColor: 'transparent',
     textColor: '#fff',
     extendedProps: { booking: b },
-  })) ?? []
+  })}) ?? []
 
   const gcalEvents = googleEvents?.map((e) => ({
     id: `gcal-${e.id}`,
