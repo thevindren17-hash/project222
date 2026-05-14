@@ -61,10 +61,15 @@ async def whatsapp_verify(tenant_id: str, request: Request):
 
 @router.post("/whatsapp/{tenant_id}")
 async def whatsapp_webhook(tenant_id: str, request: Request):
-    """Meta webhook for incoming WhatsApp messages."""
+    """Meta webhook for incoming WhatsApp messages.
+    MUST always return 200 — any non-200 causes Meta to retry endlessly.
+    """
     try:
         payload = await request.json()
+    except Exception:
+        return {"status": "invalid_json"}
 
+    try:
         entry = payload.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
@@ -74,21 +79,35 @@ async def whatsapp_webhook(tenant_id: str, request: Request):
             return {"status": "no_messages"}
 
         message = messages[0]
-        phone_number_id = value.get("metadata", {}).get("phone_number_id", "")
+        wa_message_id = message.get("id", "")
 
-        # Load tenant by the tenant_id in the URL path (robust — doesn't depend
-        # on wa_phone_number_id being formatted correctly in the DB)
+        # Deduplication — skip if we've already processed this exact message
+        supabase = get_supabase_client()
+        if wa_message_id:
+            already = supabase.table("messages").select("id").eq(
+                "wa_message_id", wa_message_id
+            ).limit(1).execute()
+            if already.data:
+                logger.info(f"Duplicate WA message skipped: {wa_message_id}")
+                return {"status": "duplicate"}
+
         tenant = await get_tenant_by_id(tenant_id)
         if not tenant or not tenant.is_active:
             logger.warning(f"Unknown or inactive tenant: {tenant_id}")
             return {"status": "unknown_tenant"}
 
+        # Guard: can't reply without send credentials
+        if not tenant.wa_phone_number_id or not tenant.wa_access_token:
+            logger.warning(f"Tenant {tenant_id} missing WA credentials — cannot reply")
+            return {"status": "no_credentials"}
+
         await handle_whatsapp_message(tenant, message, value)
         return {"status": "ok"}
 
     except Exception as e:
-        logger.error(f"WhatsApp webhook error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log but always return 200 so Meta doesn't retry
+        logger.error(f"WhatsApp webhook error: {e}", exc_info=True)
+        return {"status": "error", "detail": str(e)}
 
 
 # ── Message handler ────────────────────────────────────────────────────────────
@@ -299,10 +318,25 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     # Build LLM client using tenant's own API keys
     llm_client = load_llm_client(tenant)
 
+    now = datetime.now()
+    date_context = (
+        f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}).\n"
+        "TOOL CALLING RULES — follow these strictly:\n"
+        "1. NEVER call any tool until you have collected ALL required information from the user.\n"
+        "2. For book_appointment: you MUST have the patient's name, phone number, service type, date AND time confirmed by the user before calling.\n"
+        "3. For check_slots: only call once you know which date the user is asking about.\n"
+        "4. For cancel/reschedule: confirm the patient's phone or booking ID first.\n"
+        "5. Convert natural-language dates/times before calling:\n"
+        "   - 'tomorrow'/'esok' → actual YYYY-MM-DD, 'next Friday'/'jumaat depan' → correct date\n"
+        "   - '3pm'/'3 petang' → 15:00, '9am'/'9 pagi' → 09:00\n"
+        "6. Always pass actual values — NEVER pass example text or descriptions as parameter values.\n"
+        "You are responding via WhatsApp. Keep replies concise (under 3 sentences).]"
+    )
+
     messages_payload = [
         {
             "role": "system",
-            "content": tenant.system_prompt + "\n\nYou are responding via WhatsApp. Keep replies concise (under 3 sentences).",
+            "content": tenant.system_prompt + date_context,
         },
         *conversation_history,
     ]
@@ -419,8 +453,18 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
     # LLM response
     llm_client = load_llm_client(tenant)
+    now = datetime.now()
+    date_context = (
+        f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}).\n"
+        "TOOL CALLING RULES — follow these strictly:\n"
+        "1. NEVER call any tool until you have collected ALL required information from the user.\n"
+        "2. For book_appointment: collect name, phone, service, date AND time before calling.\n"
+        "3. Convert natural-language dates/times before calling (e.g. 'esok' → YYYY-MM-DD, '3 petang' → 15:00).\n"
+        "4. Always pass actual values — NEVER pass example text as parameter values.\n"
+        "You are responding via WhatsApp. Keep replies concise (under 3 sentences).]"
+    )
     messages_payload = [
-        {"role": "system", "content": tenant.system_prompt + "\n\nYou are responding via WhatsApp. Keep replies concise (under 3 sentences)."},
+        {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,
     ]
     enabled_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
