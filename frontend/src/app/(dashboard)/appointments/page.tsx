@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { toast } from 'sonner'
-import { format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import type { Booking } from '@/lib/types'
 
@@ -79,7 +79,7 @@ export default function AppointmentsPage() {
                     <p className="text-xs text-muted-foreground">{b.contact?.phone}</p>
                   </TableCell>
                   <TableCell>{b.service_type}</TableCell>
-                  <TableCell>{format(new Date(b.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</TableCell>
+                  <TableCell>{format(parseISO(b.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</TableCell>
                   <TableCell className="capitalize">{b.source}</TableCell>
                   <TableCell><Badge variant={statusColors[b.status]}>{b.status}</Badge></TableCell>
                   <TableCell><Button variant="ghost" size="sm">View</Button></TableCell>

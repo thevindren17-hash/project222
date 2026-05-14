@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 import type { Booking } from '@/lib/types'
 
 interface Props {
@@ -62,7 +62,7 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
             </div>
             <div>
               <p className="text-muted-foreground">Date & Time</p>
-              <p className="font-medium">{format(new Date(booking.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</p>
+              <p className="font-medium">{format(parseISO(booking.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</p>
             </div>
             <div>
               <p className="text-muted-foreground">Source</p>
