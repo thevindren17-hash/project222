@@ -38,9 +38,9 @@ export default function CalendarPage() {
       if (!tenant) return null
       const { data } = await supabase
         .from('tenant_settings')
-        .select('google_calendar_id')
+        .select('google_calendar_token,google_calendar_refresh,google_calendar_id')
         .eq('tenant_id', tenant.id)
-        .single()
+        .maybeSingle()
       return data
     },
     enabled: !!tenant,
@@ -61,7 +61,7 @@ export default function CalendarPage() {
     },
   })
 
-  const isConnected = !!(settings?.google_calendar_id)
+  const isConnected = !!(settings?.google_calendar_token || settings?.google_calendar_refresh)
 
   const { data: googleEvents } = useQuery({
     queryKey: ['google-calendar-events', tenant?.id],

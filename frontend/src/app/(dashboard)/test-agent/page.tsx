@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getCurrentTenant } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,6 +32,7 @@ export default function TestAgentPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const queryClient = useQueryClient()
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
   const { data: settings } = useQuery({
     queryKey: ['tenant-settings'],
@@ -101,6 +102,11 @@ export default function TestAgentPage() {
         toolCalls: data.tool_calls?.length ? data.tool_calls : undefined,
       }
       setMessages((prev) => [...prev, assistantMsg])
+
+      const bookingTools = ['book_appointment', 'cancel_appointment', 'reschedule_appointment']
+      if (data.tool_calls?.some((tc: { tool: string }) => bookingTools.includes(tc.tool))) {
+        queryClient.invalidateQueries({ queryKey: ['bookings'] })
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to reach the backend'
       setError(msg)
