@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send } from 'lucide-react'
+import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap } from 'lucide-react'
 
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
@@ -28,7 +28,27 @@ export default function WhatsAppPluginPage() {
     staleTime: 0,
   })
 
+  const { data: agentSettings } = useQuery({
+    queryKey: ['tenant-settings'],
+    queryFn: async () => {
+      if (!tenant) return null
+      const { data } = await supabase.from('tenant_settings').select(
+        'llm_config,agent_name,system_prompt,provider_credentials'
+      ).eq('tenant_id', tenant.id).maybeSingle()
+      return data
+    },
+    enabled: !!tenant,
+  })
+
   const isConnected = !!tenant?.wa_phone_number_id
+
+  // Determine AI agent readiness
+  const llmProvider = agentSettings?.llm_config?.provider || ''
+  const llmModel = agentSettings?.llm_config?.model || ''
+  const agentName = agentSettings?.agent_name || 'Maya'
+  const hasSystemPrompt = !!agentSettings?.system_prompt
+  const hasLlmKey = !!(agentSettings?.provider_credentials?.[llmProvider]?.api_key)
+  const agentReady = !!(llmProvider && hasLlmKey)
 
   const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || '').replace(/\/$/, '')
   const webhookUrl = tenant ? `${backendUrl}/webhook/whatsapp/${tenant.id}` : ''
@@ -183,6 +203,65 @@ export default function WhatsAppPluginPage() {
             </Button>
           </CardContent>
         )}
+      </Card>
+
+      {/* AI Agent Connection status */}
+      <Card className={agentReady && isConnected ? 'border-green-500/40' : ''}>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Bot className="h-5 w-5 text-primary" />
+              <div>
+                <CardTitle>AI Agent</CardTitle>
+                <CardDescription>The AI model that will respond to your WhatsApp messages</CardDescription>
+              </div>
+            </div>
+            <Badge variant={agentReady ? 'default' : 'secondary'} className="gap-1">
+              {agentReady
+                ? <><Zap className="h-3 w-3" />Active</>
+                : <><AlertCircle className="h-3 w-3" />Not configured</>}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {agentReady ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>
+                  <span className="capitalize">{agentName}</span> is ready to handle WhatsApp messages
+                  using <span className="font-semibold capitalize">{llmProvider}</span> · {llmModel}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  {hasSystemPrompt ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> : <XCircle className="h-3.5 w-3.5 text-yellow-500" />}
+                  System prompt {hasSystemPrompt ? 'configured' : 'using default'}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {isConnected ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> : <XCircle className="h-3.5 w-3.5 text-yellow-500" />}
+                  WhatsApp credentials {isConnected ? 'saved' : 'not saved'}
+                </div>
+              </div>
+              {agentReady && isConnected && (
+                <div className="rounded-md bg-green-500/10 border border-green-500/20 p-3 text-sm text-green-700 dark:text-green-400">
+                  ✓ Your AI agent is fully connected and will automatically reply to all incoming WhatsApp messages.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 text-sm text-muted-foreground">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-yellow-500" />
+              <span>
+                No AI model configured. Go to{' '}
+                <a href="/settings/plugins/agent" className="text-primary underline underline-offset-2">
+                  Agent Config
+                </a>{' '}
+                to set up your LLM provider and API key first.
+              </span>
+            </div>
+          )}
+        </CardContent>
       </Card>
 
       {/* Webhook config — always visible so you can copy these at any time */}
