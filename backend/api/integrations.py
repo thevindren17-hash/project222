@@ -8,6 +8,7 @@ import json
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -21,35 +22,43 @@ async def google_auth_start(tenant_id: str, service: str):
 
 @router.get("/google/callback")
 async def google_oauth_callback(request: Request):
+    """
+    Legacy callback — kept for backwards compatibility.
+    New flow uses /api/integrations/google/exchange via the Next.js proxy callback.
+    """
     code = request.query_params.get("code")
     state = request.query_params.get("state")
     error = request.query_params.get("error")
 
-    frontend_url = (os.getenv("FRONTEND_URL") or "https://project222.vercel.app").strip().rstrip("/")
-    calendar_page = f"{frontend_url}/settings/plugins/calendar"
+    frontend_url = (os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    calendar_page = f"{frontend_url}/settings/plugins/calendar" if frontend_url else None
 
     if error:
-        return RedirectResponse(url=f"{calendar_page}?error={error}")
+        url = f"{calendar_page}?error={error}" if calendar_page else f"/?error={error}"
+        return RedirectResponse(url=url)
 
     if not code or not state:
-        return RedirectResponse(url=f"{calendar_page}?error=missing_params")
+        url = f"{calendar_page}?error=missing_params" if calendar_page else "/?error=missing_params"
+        return RedirectResponse(url=url)
 
     try:
         state_data = json.loads(state)
         tenant_id = state_data["tenant_id"]
         service = state_data["service"]
     except Exception:
-        return RedirectResponse(url=f"{calendar_page}?error=invalid_state")
+        url = f"{calendar_page}?error=invalid_state" if calendar_page else "/?error=invalid_state"
+        return RedirectResponse(url=url)
 
     try:
         access_token, refresh_token = await _exchange_google_code(code)
     except Exception as e:
         print(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {e}")
-        return RedirectResponse(url=f"{calendar_page}?error=token_exchange_failed")
+        url = f"{calendar_page}?error=token_exchange_failed" if calendar_page else "/?error=token_exchange_failed"
+        return RedirectResponse(url=url)
 
     if not access_token:
-        print(f"[Google OAuth] No access token returned for tenant {tenant_id}")
-        return RedirectResponse(url=f"{calendar_page}?error=token_exchange_failed")
+        url = f"{calendar_page}?error=token_exchange_failed" if calendar_page else "/?error=token_exchange_failed"
+        return RedirectResponse(url=url)
 
     try:
         from shared.google_integrations import store_google_tokens
@@ -62,9 +71,54 @@ async def google_oauth_callback(request: Request):
         )
     except Exception as e:
         print(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
-        return RedirectResponse(url=f"{calendar_page}?error=storage_failed")
+        url = f"{calendar_page}?error=storage_failed" if calendar_page else "/?error=storage_failed"
+        return RedirectResponse(url=url)
 
-    return RedirectResponse(url=f"{calendar_page}?success=true&service={service}")
+    url = f"{calendar_page}?success=true" if calendar_page else "/?success=true"
+    return RedirectResponse(url=url)
+
+
+class ExchangeRequest(BaseModel):
+    code: str
+    state: str
+
+
+@router.post("/google/exchange")
+async def google_exchange(req: ExchangeRequest):
+    """
+    New endpoint: Next.js callback proxy calls this to exchange code for tokens.
+    Returns JSON so Next.js controls the final redirect (always correct origin).
+    """
+    try:
+        state_data = json.loads(req.state)
+        tenant_id = state_data["tenant_id"]
+        service = state_data["service"]
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid_state")
+
+    try:
+        access_token, refresh_token = await _exchange_google_code(req.code)
+    except Exception as e:
+        print(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {e}")
+        raise HTTPException(status_code=400, detail=f"token_exchange_failed: {str(e)}")
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="token_exchange_failed: no access token")
+
+    try:
+        from shared.google_integrations import store_google_tokens
+        await store_google_tokens(
+            tenant_id=tenant_id,
+            service=service,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            calendar_id="primary" if service == "calendar" else None,
+        )
+    except Exception as e:
+        print(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
+        raise HTTPException(status_code=500, detail="storage_failed")
+
+    return {"success": True, "service": service, "tenant_id": tenant_id}
 
 
 @router.post("/google/disconnect")
@@ -103,7 +157,7 @@ async def _exchange_google_code(code: str):
 
     client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
     client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
-    backend_url = (os.getenv("BACKEND_URL") or "").strip()
+    backend_url = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
     redirect_uri = f"{backend_url}/api/integrations/google/callback"
 
     async with httpx.AsyncClient() as client:
@@ -118,7 +172,7 @@ async def _exchange_google_code(code: str):
             },
         )
         if response.status_code != 200:
-            raise Exception(f"Token exchange failed: {response.text[:200]}")
+            raise Exception(f"Token exchange failed ({response.status_code}): {response.text[:300]}")
         tokens = response.json()
 
     return tokens.get("access_token"), tokens.get("refresh_token")

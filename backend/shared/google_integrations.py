@@ -304,8 +304,14 @@ class GoogleSheetsIntegration:
 
 async def get_google_oauth_url(tenant_id: str, service: str) -> str:
     """Generate OAuth URL for clinic to authorize Google Calendar/Sheets access."""
-    backend_url = os.getenv("BACKEND_URL", "")
-    redirect_uri = f"{backend_url}/api/integrations/google/callback"
+    # Use Vercel frontend as the callback so the redirect always lands on the correct origin.
+    # Falls back to Railway callback for backwards compatibility.
+    frontend_url = (os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    backend_url = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
+    if frontend_url:
+        redirect_uri = f"{frontend_url}/api/integrations/google/callback"
+    else:
+        redirect_uri = f"{backend_url}/api/integrations/google/callback"
     state = json.dumps({"tenant_id": tenant_id, "service": service})
     scopes = {
         "calendar": "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events",
