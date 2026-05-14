@@ -116,7 +116,7 @@ async def _download_wa_media(media_id: str, access_token: str) -> bytes:
     """Download a media file from WhatsApp Cloud API."""
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(
-            f"https://graph.facebook.com/v18.0/{media_id}",
+            f"https://graph.facebook.com/v21.0/{media_id}",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         r.raise_for_status()
@@ -179,7 +179,7 @@ async def _generate_tts_ogg(text: str, voice: str, tenant) -> bytes:
 async def _upload_wa_media(audio_bytes: bytes, phone_number_id: str, access_token: str) -> str:
     """Upload audio to WhatsApp and return media_id."""
     import io
-    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/media"
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/media"
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             url,
@@ -193,7 +193,7 @@ async def _upload_wa_media(audio_bytes: bytes, phone_number_id: str, access_toke
 
 async def _send_whatsapp_audio(to: str, media_id: str, phone_number_id: str, access_token: str):
     """Send a WhatsApp voice note via media ID."""
-    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             url,
@@ -649,14 +649,16 @@ async def _handle_wa_escalation(
 # ── Meta send helper ───────────────────────────────────────────────────────────
 
 async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access_token: str):
-    """Send a WhatsApp text message via Meta Cloud API v18."""
-    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
-    async with httpx.AsyncClient(timeout=10) as client:
+    """Send a WhatsApp text message via Meta Cloud API v21."""
+    # Normalise: Meta send API expects digits only (no +)
+    to_digits = to.lstrip("+")
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+    async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(
             url,
             json={
                 "messaging_product": "whatsapp",
-                "to": to,
+                "to": to_digits,
                 "type": "text",
                 "text": {"body": text},
             },
@@ -666,11 +668,13 @@ async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access
             },
         )
         if not response.is_success:
+            error_body = response.text
             logger.error(
                 f"Meta send failed {response.status_code} | phone_id={phone_number_id} | "
-                f"to={to} | body={response.text}"
+                f"to={to_digits} | body={error_body}"
             )
-        response.raise_for_status()
+            # Raise with full Meta error body so callers (test-send, etc.) can surface it
+            raise RuntimeError(f"Meta API error {response.status_code}: {error_body}")
         return response.json()
 
 
