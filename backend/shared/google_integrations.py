@@ -44,8 +44,8 @@ class GoogleCalendarIntegration:
         return token
 
     async def _refresh_token(self, refresh_token: str) -> str:
-        client_id = os.getenv("GOOGLE_CLIENT_ID")
-        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+        client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 "https://oauth2.googleapis.com/token",

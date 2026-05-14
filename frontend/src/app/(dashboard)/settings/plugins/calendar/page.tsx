@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, Suspense } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'next/navigation'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
@@ -13,23 +13,10 @@ import { toast } from 'sonner'
 import { CheckCircle2, XCircle, Calendar, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 
-export default function CalendarPluginPage() {
-  const queryClient = useQueryClient()
+function OAuthResultHandler() {
   const searchParams = useSearchParams()
+  const queryClient = useQueryClient()
 
-  const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
-
-  const { data: settings } = useQuery({
-    queryKey: ['tenant-settings'],
-    queryFn: async () => {
-      if (!tenant) return null
-      const { data } = await supabase.from('tenant_settings').select('*').eq('tenant_id', tenant.id).maybeSingle()
-      return data
-    },
-    enabled: !!tenant,
-  })
-
-  // Handle redirect back from Google OAuth
   useEffect(() => {
     const success = searchParams.get('success')
     const error = searchParams.get('error')
@@ -41,13 +28,36 @@ export default function CalendarPluginPage() {
     } else if (error) {
       const messages: Record<string, string> = {
         access_denied: 'Access was denied. Please try again and allow calendar access.',
-        token_exchange_failed: 'Failed to connect. Please try again.',
+        token_exchange_failed: 'Connection failed — please try again.',
+        storage_failed: 'Connected but failed to save. Please try again.',
         missing_params: 'Something went wrong. Please try again.',
       }
       toast.error(messages[error] || `Connection failed: ${error}`)
       window.history.replaceState({}, '', window.location.pathname)
     }
   }, [searchParams, queryClient])
+
+  return null
+}
+
+export default function CalendarPluginPage() {
+  const queryClient = useQueryClient()
+
+  const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
+
+  const { data: settings, isLoading } = useQuery({
+    queryKey: ['tenant-settings'],
+    queryFn: async () => {
+      if (!tenant) return null
+      const { data } = await supabase
+        .from('tenant_settings')
+        .select('google_calendar_token, google_calendar_refresh, google_calendar_id, updated_at')
+        .eq('tenant_id', tenant.id)
+        .maybeSingle()
+      return data
+    },
+    enabled: !!tenant,
+  })
 
   const isConnected = !!(settings?.google_calendar_token || settings?.google_calendar_refresh)
 
@@ -71,6 +81,10 @@ export default function CalendarPluginPage() {
 
   return (
     <div className="max-w-4xl space-y-6">
+      <Suspense fallback={null}>
+        <OAuthResultHandler />
+      </Suspense>
+
       <div>
         <h1 className="text-3xl font-bold">Google Calendar Plugin</h1>
         <p className="text-muted-foreground">Sync appointments with your Google Calendar automatically</p>
@@ -82,7 +96,7 @@ export default function CalendarPluginPage() {
             <div>
               <CardTitle>Connection Status</CardTitle>
               <CardDescription>
-                {isConnected ? 'Your Google Calendar is connected' : 'Not connected'}
+                {isLoading ? 'Checking...' : isConnected ? 'Your Google Calendar is connected' : 'Not connected'}
               </CardDescription>
             </div>
             <Badge variant={isConnected ? 'default' : 'secondary'} className="gap-1">

@@ -25,7 +25,7 @@ async def google_oauth_callback(request: Request):
     state = request.query_params.get("state")
     error = request.query_params.get("error")
 
-    frontend_url = (os.getenv("FRONTEND_URL") or "").strip()
+    frontend_url = (os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
     calendar_page = f"{frontend_url}/settings/plugins/calendar"
 
     if error:
@@ -44,15 +44,25 @@ async def google_oauth_callback(request: Request):
     try:
         access_token, refresh_token = await _exchange_google_code(code)
     except Exception as e:
+        print(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {e}")
         return RedirectResponse(url=f"{calendar_page}?error=token_exchange_failed")
 
-    from shared.google_integrations import store_google_tokens
-    await store_google_tokens(
-        tenant_id=tenant_id,
-        service=service,
-        access_token=access_token,
-        refresh_token=refresh_token,
-    )
+    if not access_token:
+        print(f"[Google OAuth] No access token returned for tenant {tenant_id}")
+        return RedirectResponse(url=f"{calendar_page}?error=token_exchange_failed")
+
+    try:
+        from shared.google_integrations import store_google_tokens
+        await store_google_tokens(
+            tenant_id=tenant_id,
+            service=service,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            calendar_id="primary" if service == "calendar" else None,
+        )
+    except Exception as e:
+        print(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
+        return RedirectResponse(url=f"{calendar_page}?error=storage_failed")
 
     return RedirectResponse(url=f"{calendar_page}?success=true&service={service}")
 
