@@ -361,21 +361,8 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     if not reply_text:
         reply_text = "I'm sorry, I couldn't process that. Please try again or call us directly."
 
-    # Send reply — wrap so a send failure is logged but doesn't swallow the whole flow
-    try:
-        await send_whatsapp_message(
-            to=from_number,
-            text=reply_text,
-            phone_number_id=tenant.wa_phone_number_id,
-            access_token=tenant.wa_access_token,
-        )
-    except Exception as send_err:
-        logger.error(
-            f"SEND FAILED for tenant={tenant.tenant_id} to={from_number}: {send_err}"
-        )
-        return  # message already saved; don't crash the whole webhook
-
-    # Save assistant message
+    # Save assistant message FIRST — so the dashboard always shows what the AI said,
+    # even if the WhatsApp send step fails below
     supabase.table("messages").insert({
         "thread_id": thread["id"],
         "tenant_id": tenant.tenant_id,
@@ -390,6 +377,21 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         "last_message_at": datetime.now().isoformat(),
         "language": language,
     }).eq("id", thread["id"]).execute()
+
+    # Now send to WhatsApp — log exact Meta error if it fails
+    try:
+        await send_whatsapp_message(
+            to=from_number,
+            text=reply_text,
+            phone_number_id=tenant.wa_phone_number_id,
+            access_token=tenant.wa_access_token,
+        )
+        logger.info(f"Reply sent OK to={from_number} tenant={tenant.tenant_id}")
+    except Exception as send_err:
+        logger.error(
+            f"SEND FAILED | tenant={tenant.tenant_id} | to={from_number} | "
+            f"phone_id={tenant.wa_phone_number_id} | error={send_err}"
+        )
 
 
 async def _handle_voice_message(tenant, message: dict, from_number: str, media_id: str, supabase):
