@@ -62,7 +62,7 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
             </div>
             <div>
               <p className="text-muted-foreground">Date & Time</p>
-              <p className="font-medium">{format(new Date(booking.scheduled_at), 'MMM d, yyyy h:mm a')}</p>
+              <p className="font-medium">{format(new Date(booking.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</p>
             </div>
             <div>
               <p className="text-muted-foreground">Source</p>

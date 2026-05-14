@@ -79,7 +79,7 @@ export default function AppointmentsPage() {
                     <p className="text-xs text-muted-foreground">{b.contact?.phone}</p>
                   </TableCell>
                   <TableCell>{b.service_type}</TableCell>
-                  <TableCell>{format(new Date(b.scheduled_at), 'MMM d, yyyy h:mm a')}</TableCell>
+                  <TableCell>{format(new Date(b.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</TableCell>
                   <TableCell className="capitalize">{b.source}</TableCell>
                   <TableCell><Badge variant={statusColors[b.status]}>{b.status}</Badge></TableCell>
                   <TableCell><Button variant="ghost" size="sm">View</Button></TableCell>

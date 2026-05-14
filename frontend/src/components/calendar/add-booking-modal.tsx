@@ -54,7 +54,7 @@ export default function AddBookingModal({ open, onClose, defaultDate }: Props) {
         tenant_id: tenant.id,
         contact_id: contactId,
         service_type: service,
-        scheduled_at: new Date(`${date}T${time}`).toISOString(),
+        scheduled_at: `${date}T${time}:00`,
         status: 'pending',
         source: 'whatsapp',
         details: notes ? { notes } : {},
