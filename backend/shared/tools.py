@@ -471,11 +471,11 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "contact_name": {"type": "string", "description": "Patient's full name"},
-                    "contact_phone": {"type": "string", "description": "Patient's phone number"},
-                    "service_type": {"type": "string", "description": "Type of service (scaling, checkup, whitening, etc.)"},
-                    "date": {"type": "string", "description": "Appointment date — resolve to YYYY-MM-DD (e.g. 'tomorrow'→'2026-05-15', 'next friday'→'2026-05-17', 'selasa depan'→'2026-05-19'). Never pass placeholder text."},
-                    "time": {"type": "string", "description": "Appointment time in HH:MM 24-h (e.g. '09:00', '14:30'). Convert '3pm'→'15:00', '9 pagi'→'09:00', '3 petang'→'15:00'. Never pass 'HH:MM'."},
+                    "contact_name": {"type": "string", "description": "Patient's full name (must be confirmed by user)"},
+                    "contact_phone": {"type": "string", "description": "Patient's phone number (must be confirmed by user)"},
+                    "service_type": {"type": "string", "description": "Type of service, e.g. scaling, checkup, whitening"},
+                    "date": {"type": "string", "description": "Appointment date in YYYY-MM-DD format"},
+                    "time": {"type": "string", "description": "Appointment time in HH:MM 24-hour format"},
                     "notes": {"type": "string", "description": "Optional notes"},
                 },
                 "required": ["contact_name", "contact_phone", "service_type", "date", "time"],
@@ -490,7 +490,7 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "date": {"type": "string", "description": "Date to check — resolve to YYYY-MM-DD. Accepts natural language: 'tomorrow', 'next monday', 'isnin depan', 'minggu depan'."},
+                    "date": {"type": "string", "description": "Date to check in YYYY-MM-DD format"},
                     "service_type": {"type": "string", "description": "Service type (optional)"},
                 },
                 "required": ["date"],
@@ -534,8 +534,8 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "new_date": {"type": "string", "description": "New date — resolve to YYYY-MM-DD (e.g. 'next tuesday'→'2026-05-19', 'selasa depan'→'2026-05-19')."},
-                    "new_time": {"type": "string", "description": "New time in HH:MM 24-h (e.g. '14:00'). Convert '2pm'→'14:00', '2 petang'→'14:00'."},
+                    "new_date": {"type": "string", "description": "New appointment date in YYYY-MM-DD format"},
+                    "new_time": {"type": "string", "description": "New appointment time in HH:MM 24-hour format"},
                     "booking_id": {"type": "string", "description": "Booking ID (optional if contact_phone given)"},
                     "contact_phone": {"type": "string", "description": "Patient's phone number"},
                 },

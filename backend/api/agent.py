@@ -353,12 +353,20 @@ async def test_agent(req: TestMessage):
 
     now = datetime.now()
     date_context = (
-        f"\n\n[SYSTEM: Today is {now.strftime('%A, %d %B %Y')} "
-        f"({now.strftime('%Y-%m-%d')}). "
-        "When calling tools, always resolve natural-language dates (e.g. 'tomorrow', "
-        "'next Friday', 'minggu depan', 'selasa depan') to the actual YYYY-MM-DD date "
-        "before passing them to tools. Times like '3pm', '3 petang', '9 pagi' should be "
-        "passed as HH:MM (24-hour). TEST MODE — all tools run for real.]"
+        f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}).\n"
+        "TOOL CALLING RULES — follow these strictly:\n"
+        "1. NEVER call any tool until you have collected ALL required information from the user in prior messages.\n"
+        "2. For book_appointment: you MUST have the patient's name, phone number, service type, date AND time confirmed by the user before calling. Ask for missing info naturally — do NOT call the tool speculatively.\n"
+        "3. For check_slots: only call once you know which date the user is asking about.\n"
+        "4. For cancel/reschedule: confirm the patient's phone or booking ID first.\n"
+        "5. When you have all info, convert natural-language dates/times yourself before calling:\n"
+        "   - 'tomorrow' → actual date e.g. 2026-05-15\n"
+        "   - 'next Friday' / 'jumaat depan' → correct YYYY-MM-DD\n"
+        "   - 'minggu depan' / 'next week' → 7 days from today\n"
+        "   - 'selasa depan' → next Tuesday's date\n"
+        "   - '3pm' / '3 petang' → 15:00, '9am' / '9 pagi' → 09:00\n"
+        "6. Always pass actual values — NEVER pass example text or descriptions as parameter values.\n"
+        "TEST MODE — all tools run for real and save to the database.]"
     )
 
     conversation = list(req.history) + [{"role": "user", "content": req.message}]
