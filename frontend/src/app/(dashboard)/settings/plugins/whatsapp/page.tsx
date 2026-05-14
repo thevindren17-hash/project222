@@ -27,11 +27,9 @@ export default function WhatsAppPluginPage() {
 
   const isConnected = !!tenant?.wa_phone_number_id
 
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || ''
+  const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || '').replace(/\/$/, '')
   const webhookUrl = tenant ? `${backendUrl}/webhook/whatsapp/${tenant.id}` : ''
-  const verifyToken = tenant
-    ? (tenant.wa_verify_token || `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}`)
-    : ''
+  const verifyToken = tenant ? `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}` : ''
 
   const saveMutation = useMutation({
     mutationFn: async () => {
