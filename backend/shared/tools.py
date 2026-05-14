@@ -245,18 +245,18 @@ async def cancel_appointment(
     supabase = get_supabase_client()
 
     if booking_id:
-        booking = supabase.table("bookings").select("*").eq("id", booking_id).single().execute()
+        booking = supabase.table("bookings").select("*").eq("id", booking_id).maybe_single().execute()
     elif contact_phone:
         contact = supabase.table("contacts").select("id").eq(
             "tenant_id", tenant_id
-        ).eq("phone", contact_phone).single().execute()
+        ).eq("phone", contact_phone).maybe_single().execute()
         if not contact.data:
             return {"success": False, "error": "Contact not found"}
         booking = supabase.table("bookings").select("*").eq(
             "tenant_id", tenant_id
         ).eq("contact_id", contact.data["id"]).eq(
             "status", "pending"
-        ).order("scheduled_at", desc=True).limit(1).single().execute()
+        ).order("scheduled_at", desc=True).limit(1).maybe_single().execute()
     else:
         return {"success": False, "error": "Must provide booking_id or contact_phone"}
 
@@ -304,18 +304,18 @@ async def reschedule_appointment(
         return {"success": False, "error": "Invalid date or time format"}
 
     if booking_id:
-        booking = supabase.table("bookings").select("*").eq("id", booking_id).single().execute()
+        booking = supabase.table("bookings").select("*").eq("id", booking_id).maybe_single().execute()
     elif contact_phone:
         contact = supabase.table("contacts").select("id").eq(
             "tenant_id", tenant_id
-        ).eq("phone", contact_phone).single().execute()
+        ).eq("phone", contact_phone).maybe_single().execute()
         if not contact.data:
             return {"success": False, "error": "Contact not found"}
         booking = supabase.table("bookings").select("*").eq(
             "tenant_id", tenant_id
         ).eq("contact_id", contact.data["id"]).eq(
             "status", "pending"
-        ).order("scheduled_at", desc=True).limit(1).single().execute()
+        ).order("scheduled_at", desc=True).limit(1).maybe_single().execute()
     else:
         return {"success": False, "error": "Must provide booking_id or contact_phone"}
 
