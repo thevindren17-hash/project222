@@ -30,7 +30,7 @@ async def google_oauth_callback(request: Request):
     state = request.query_params.get("state")
     error = request.query_params.get("error")
 
-    frontend_url = (os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    frontend_url = (os.getenv("FRONTEND_URL") or "https://project222-livid.vercel.app").strip().rstrip("/")
     calendar_page = f"{frontend_url}/settings/plugins/calendar" if frontend_url else None
 
     if error:
