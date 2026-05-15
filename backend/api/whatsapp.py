@@ -678,6 +678,46 @@ async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access
         return response.json()
 
 
+# ── Validate credentials endpoint ─────────────────────────────────────────────
+
+@router.post("/whatsapp/validate-credentials/{tenant_id}")
+async def validate_whatsapp_credentials(tenant_id: str, request: Request):
+    """Called when user saves credentials — checks phone_number_id is valid before we accept it."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"valid": False, "error": "Invalid request body"}
+
+    phone_number_id = str(body.get("phone_number_id", "")).strip()
+    access_token = str(body.get("access_token", "")).strip()
+
+    if not phone_number_id or not access_token:
+        return {"valid": False, "error": "phone_number_id and access_token are required"}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(
+            f"https://graph.facebook.com/v21.0/{phone_number_id}",
+            params={"fields": "id,display_phone_number,verified_name", "access_token": access_token},
+        )
+    data = r.json()
+    if r.is_success and "display_phone_number" in data:
+        return {
+            "valid": True,
+            "display_phone_number": data.get("display_phone_number"),
+            "verified_name": data.get("verified_name"),
+        }
+
+    err_msg = data.get("error", {}).get("message", r.text)
+    hint = ""
+    if "does not exist" in err_msg or "missing permissions" in err_msg:
+        hint = (
+            " You may have entered the WhatsApp Business Account ID instead of the Phone Number ID. "
+            "In Meta Developer Portal → your App → WhatsApp → API Setup, the Phone Number ID is "
+            "the number shown directly below your registered phone number."
+        )
+    return {"valid": False, "error": f"{err_msg}.{hint}"}
+
+
 # ── Test-send endpoint ─────────────────────────────────────────────────────────
 
 @router.post("/whatsapp/test-send/{tenant_id}")
@@ -701,6 +741,28 @@ async def test_whatsapp_send(tenant_id: str, request: Request):
             "error": "WhatsApp credentials not saved. Fill in Phone Number ID and Access Token then click Save & Connect.",
         }
 
+    # Step 1: validate that the phone_number_id is actually a Phone Number ID,
+    # not the WhatsApp Business Account ID (a very common mix-up).
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            check = await client.get(
+                f"https://graph.facebook.com/v21.0/{tenant.wa_phone_number_id}",
+                params={"fields": "id,display_phone_number", "access_token": tenant.wa_access_token},
+            )
+        check_data = check.json()
+        if not check.is_success or "display_phone_number" not in check_data:
+            err_msg = check_data.get("error", {}).get("message", check.text)
+            hint = (
+                " It looks like you may have entered the WhatsApp Business Account ID in the "
+                "Phone Number ID field — these are two different numbers. "
+                "Go to Meta Developer Portal → your App → WhatsApp → API Setup and copy the "
+                "'Phone Number ID' shown directly next to your phone number."
+            )
+            return {"success": False, "error": f"Invalid Phone Number ID: {err_msg}.{hint}"}
+    except Exception as e:
+        return {"success": False, "error": f"Could not validate Phone Number ID: {e}"}
+
+    # Step 2: send the test message
     try:
         result = await send_whatsapp_message(
             to=to_phone,

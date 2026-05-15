@@ -1,0 +1,32 @@
+import { NextRequest, NextResponse } from 'next/server'
+
+const BACKEND = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || ''
+
+export async function POST(req: NextRequest) {
+  if (!BACKEND) {
+    return NextResponse.json(
+      { valid: false, error: 'BACKEND_URL is not configured' },
+      { status: 503 }
+    )
+  }
+
+  try {
+    const body = await req.json()
+    const { tenant_id, phone_number_id, access_token } = body
+    const upstream = await fetch(
+      `${BACKEND.replace(/\/$/, '')}/webhook/whatsapp/validate-credentials/${tenant_id}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone_number_id, access_token }),
+      }
+    )
+    const data = await upstream.json().catch(() => ({ valid: false, error: `Backend error ${upstream.status}` }))
+    return NextResponse.json(data, { status: upstream.ok ? 200 : upstream.status })
+  } catch (err) {
+    return NextResponse.json(
+      { valid: false, error: `Could not reach backend: ${err instanceof Error ? err.message : 'network error'}` },
+      { status: 502 }
+    )
+  }
+}

@@ -20,6 +20,8 @@ export default function WhatsAppPluginPage() {
   const [testPhone, setTestPhone] = useState('')
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [testLoading, setTestLoading] = useState(false)
+  const [credError, setCredError] = useState<string | null>(null)
+  const [credValid, setCredValid] = useState<{ phone: string; name: string } | null>(null)
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
@@ -57,9 +59,24 @@ export default function WhatsAppPluginPage() {
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
+      setCredError(null)
+      setCredValid(null)
+
+      // Validate Phone Number ID with Meta before saving
+      const valRes = await fetch('/api/whatsapp/validate-credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenant.id, phone_number_id: phoneNumberId, access_token: accessToken }),
+      })
+      const valData = await valRes.json()
+      if (!valData.valid) {
+        throw new Error(valData.error || 'Invalid credentials')
+      }
+      setCredValid({ phone: valData.display_phone_number, name: valData.verified_name })
+
       const derivedToken = `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}`
       const { error } = await supabase.from('tenants').update({
-        wa_phone_number: phoneNumber || null,
+        wa_phone_number: phoneNumber || valData.display_phone_number || null,
         wa_phone_number_id: phoneNumberId,
         wa_business_account_id: businessAccountId,
         wa_access_token: accessToken,
@@ -72,7 +89,10 @@ export default function WhatsAppPluginPage() {
       queryClient.invalidateQueries({ queryKey: ['tenant'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      setCredError(e.message)
+      toast.error('Save failed — check credentials')
+    },
   })
 
   const disconnectMutation = useMutation({
@@ -366,6 +386,19 @@ export default function WhatsAppPluginPage() {
             {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isConnected ? 'Update & Reconnect' : 'Save & Connect'}
           </Button>
+
+          {credError && (
+            <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+              <XCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{credError}</span>
+            </div>
+          )}
+          {credValid && (
+            <div className="flex items-start gap-2 rounded-md bg-green-500/10 p-3 text-sm text-green-700 dark:text-green-400">
+              <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>Verified: <strong>{credValid.name}</strong> — {credValid.phone}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
