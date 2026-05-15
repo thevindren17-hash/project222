@@ -241,14 +241,12 @@ def _build_date_context(reply_language: str = "ask", is_new_conversation: bool =
     now = datetime.now()
     tomorrow = now + timedelta(days=1)
 
-    _LANG_NAMES = {"en": "English", "ms": "Bahasa Melayu", "zh": "Mandarin Chinese"}
-
     if reply_language == "en":
-        lang_rule = "⚠️ CRITICAL: Reply in ENGLISH ONLY. Every word must be English. No exceptions."
+        lang_rule = "⚠️ CRITICAL — ENGLISH: Reply in ENGLISH ONLY. Every word must be English. No Malay, no Chinese. No exceptions."
     elif reply_language == "ms":
-        lang_rule = "⚠️ KRITIKAL: Balas dalam BAHASA MELAYU SAHAJA. Setiap patah perkataan mesti Bahasa Melayu. Tiada pengecualian."
+        lang_rule = "⚠️ KRITIKAL — BAHASA MELAYU: Balas dalam BAHASA MELAYU SAHAJA. Setiap patah perkataan mesti Bahasa Melayu. Tiada perkataan Inggeris. Tiada pengecualian."
     elif reply_language == "zh":
-        lang_rule = "⚠️ 严重警告：只能用中文回复。每一个字都必须是中文，没有例外。"
+        lang_rule = "⚠️ 严重警告 — 中文：只能用中文回复。每一个字都必须是中文，不允许任何英文或马来文。没有例外。"
     else:
         # "ask" mode — use the detected conversation language if known
         if is_new_conversation:
@@ -261,15 +259,19 @@ def _build_date_context(reply_language: str = "ask", is_new_conversation: bool =
             lang_rule = (
                 "⚠️ KRITIKAL — BAHASA MELAYU: Pengguna telah memilih Bahasa Melayu. "
                 "SETIAP patah perkataan dalam balasan anda MESTI dalam Bahasa Melayu. "
-                "Tiada perkataan Inggeris langsung. Ini peraturan WAJIB."
+                "Tiada perkataan Inggeris langsung. Ini peraturan WAJIB. Tiada pengecualian."
             )
         elif conversation_language == "zh":
             lang_rule = (
-                "⚠️ 严重警告：用户选择了中文。您的回复中每一个字都必须是中文。绝对不允许使用英文。"
+                "⚠️ 严重警告 — 中文：用户已选择中文。"
+                "您回复中的每一个字都必须是中文。"
+                "绝对不允许出现任何英文或其他语言文字。这是强制规定，没有例外。"
             )
         else:
             lang_rule = (
-                "⚠️ CRITICAL: Reply ONLY in English. If the user switches language, switch immediately and stay in that language."
+                "⚠️ CRITICAL — ENGLISH: The user has chosen English. "
+                "EVERY word in your reply MUST be in English. "
+                "No Malay, no Chinese, no mixed language. This is MANDATORY. No exceptions."
             )
 
     return (
