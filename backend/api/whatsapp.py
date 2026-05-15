@@ -237,30 +237,39 @@ def _parse_embedded_tool_calls(text: str):
     return cleaned, tool_calls
 
 
-def _build_date_context(reply_language: str = "ask", is_new_conversation: bool = False) -> str:
+def _build_date_context(reply_language: str = "ask", is_new_conversation: bool = False, conversation_language: str = "en") -> str:
     now = datetime.now()
     tomorrow = now + timedelta(days=1)
 
+    _LANG_NAMES = {"en": "English", "ms": "Bahasa Melayu", "zh": "Mandarin Chinese"}
+
     if reply_language == "en":
-        lang_rule = "STRICT LANGUAGE RULE: You MUST always reply in English only, no matter what language the user writes in."
+        lang_rule = "⚠️ CRITICAL: Reply in ENGLISH ONLY. Every word must be English. No exceptions."
     elif reply_language == "ms":
-        lang_rule = "PERATURAN BAHASA KETAT: Anda MESTI sentiasa membalas dalam Bahasa Melayu sahaja, tidak kira apa bahasa yang digunakan oleh pengguna."
+        lang_rule = "⚠️ KRITIKAL: Balas dalam BAHASA MELAYU SAHAJA. Setiap patah perkataan mesti Bahasa Melayu. Tiada pengecualian."
     elif reply_language == "zh":
-        lang_rule = "严格语言规则：无论用户使用什么语言，您必须始终只用中文回复。"
+        lang_rule = "⚠️ 严重警告：只能用中文回复。每一个字都必须是中文，没有例外。"
     else:
-        # "ask" mode
+        # "ask" mode — use the detected conversation language if known
         if is_new_conversation:
             lang_rule = (
-                "LANGUAGE RULE: This is the very first message. Before doing anything else, greet the user "
-                "and ask which language they prefer: English, Bahasa Melayu, or Chinese (Mandarin). "
-                "Example: 'Hello! Would you prefer to chat in English, Bahasa Melayu, or Chinese?' "
-                "Do NOT proceed with any other response until the user confirms their language."
+                "⚠️ LANGUAGE FIRST: This is the very first message. Before anything else, ask: "
+                "'Hello! Would you prefer to chat in English, Bahasa Melayu, or Chinese?' "
+                "Do NOT answer any other question until the user confirms their language."
+            )
+        elif conversation_language == "ms":
+            lang_rule = (
+                "⚠️ KRITIKAL — BAHASA MELAYU: Pengguna telah memilih Bahasa Melayu. "
+                "SETIAP patah perkataan dalam balasan anda MESTI dalam Bahasa Melayu. "
+                "Tiada perkataan Inggeris langsung. Ini peraturan WAJIB."
+            )
+        elif conversation_language == "zh":
+            lang_rule = (
+                "⚠️ 严重警告：用户选择了中文。您的回复中每一个字都必须是中文。绝对不允许使用英文。"
             )
         else:
             lang_rule = (
-                "LANGUAGE RULE: Check the conversation history to see which language the user chose. "
-                "Use that language consistently. If no preference was stated, match whatever language "
-                "the user is writing in right now. Never mix languages in one reply."
+                "⚠️ CRITICAL: Reply ONLY in English. If the user switches language, switch immediately and stay in that language."
             )
 
     return (
@@ -308,7 +317,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     if not message_text:
         return
 
-    language = detect_language(message_text)
+    detected_lang = detect_language(message_text)
     formatted_phone = format_phone_number(from_number)
 
     # Get or create contact
@@ -326,6 +335,10 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
 
     if thread_result.data:
         thread = thread_result.data[0]
+        # Use the thread's established language unless current message clearly shows a different one.
+        # Short messages like "10", "ok", "ya" default to "en" — that must not override the thread language.
+        thread_lang = thread.get("language") or "en"
+        language = detected_lang if detected_lang in ("ms", "zh") else thread_lang
         # Human-takeover mode: save message silently, don't reply
         if thread.get("status") == "human_takeover":
             supabase.table("messages").insert({
@@ -340,6 +353,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             }).execute()
             return
     else:
+        language = detected_lang  # New thread — no prior language to fall back to
         new_thread = supabase.table("whatsapp_threads").insert({
             "tenant_id": tenant.tenant_id,
             "contact_id": contact.get("id"),
@@ -400,6 +414,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     date_context = _build_date_context(
         reply_language=getattr(tenant, "reply_language", "ask"),
         is_new_conversation=is_new_conversation,
+        conversation_language=language,
     )
 
     messages_payload = [
@@ -541,6 +556,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     date_context = _build_date_context(
         reply_language=getattr(tenant, "reply_language", "ask"),
         is_new_conversation=is_new_conversation,
+        conversation_language=language,
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
