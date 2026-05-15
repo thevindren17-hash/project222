@@ -6,6 +6,8 @@ Integrates guardrails: emergency detection, escalation phrases, human-takeover m
 
 import sys
 import os
+import re
+import json
 from datetime import datetime, timedelta
 
 import httpx
@@ -210,6 +212,31 @@ async def _send_whatsapp_audio(to: str, media_id: str, phone_number_id: str, acc
         r.raise_for_status()
 
 
+def _parse_embedded_tool_calls(text: str):
+    """
+    Some models (Llama/Groq) embed tool calls as <function=NAME>JSON</function> in text.
+    Returns (cleaned_text, list_of_tool_call_dicts).
+    """
+    tool_calls = []
+
+    def _replacer(m):
+        fn_name = m.group(1)
+        try:
+            args = json.loads(m.group(2).strip())
+        except Exception:
+            args = {}
+        tool_calls.append({"function": {"name": fn_name, "arguments": args}})
+        return ""
+
+    cleaned = re.sub(
+        r"<function=([^>]+)>(.*?)</function>",
+        _replacer,
+        text,
+        flags=re.DOTALL,
+    ).strip()
+    return cleaned, tool_calls
+
+
 def _build_date_context(language: str = "en") -> str:
     now = datetime.now()
     tomorrow = now + timedelta(days=1)
@@ -362,10 +389,16 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
 
     # Execute tool calls if any
     reply_text = response.get("content", "")
-    if response.get("tool_calls"):
-        reply_text = await _execute_wa_tools(
-            response["tool_calls"], tenant, contact, language
-        )
+    tool_calls = response.get("tool_calls")
+
+    # Some models (Llama/Groq) embed tool calls as text tags instead of structured calls
+    if not tool_calls and reply_text and "<function=" in reply_text:
+        reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
+
+    if tool_calls:
+        tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
+        if tool_result:
+            reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
 
     if not reply_text:
         reply_text = "I'm sorry, I couldn't process that. Please try again or call us directly."
@@ -479,8 +512,16 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
     reply_text = response.get("content", "")
-    if response.get("tool_calls"):
-        reply_text = await _execute_wa_tools(response["tool_calls"], tenant, contact, language)
+    tool_calls = response.get("tool_calls")
+
+    if not tool_calls and reply_text and "<function=" in reply_text:
+        reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
+
+    if tool_calls:
+        tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
+        if tool_result:
+            reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
+
     if not reply_text:
         reply_text = "I'm sorry, I couldn't process that. Please try again."
 
