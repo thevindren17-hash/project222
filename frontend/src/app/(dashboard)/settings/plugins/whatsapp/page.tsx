@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -36,6 +36,15 @@ export default function WhatsAppPluginPage() {
   const [recallEnabled, setRecallEnabled] = useState(false)
   const [recallIntervalMonths, setRecallIntervalMonths] = useState(6)
   const [recallMsgTemplate, setRecallMsgTemplate] = useState('')
+  // CSV upload state
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([])
+  const [csvRows, setCsvRows] = useState<Record<string, string>[]>([])
+  const [nameCol, setNameCol] = useState('')
+  const [phoneCol, setPhoneCol] = useState('')
+  const [csvSending, setCsvSending] = useState(false)
+  const [csvResult, setCsvResult] = useState<{ sent: number; skipped: number; failed: number } | null>(null)
+  const [csvDragOver, setCsvDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
@@ -189,6 +198,84 @@ export default function WhatsAppPluginPage() {
     onSuccess: () => toast.success('Feedback settings saved'),
     onError: (e: Error) => toast.error(e.message),
   })
+
+  const NAME_CANDIDATES  = ['name', 'nama', 'patient', 'full name', 'patient name', 'pesakit']
+  const PHONE_CANDIDATES = ['phone', 'mobile', 'tel', 'contact', 'number', 'no', 'telefon', 'hp', 'handphone']
+
+  function detectCol(headers: string[], candidates: string[]): string {
+    const lower = headers.map(h => h.toLowerCase().trim())
+    for (const c of candidates) {
+      const idx = lower.findIndex(h => h.includes(c))
+      if (idx !== -1) return headers[idx]
+    }
+    return ''
+  }
+
+  const parseFile = useCallback(async (file: File) => {
+    setCsvResult(null)
+    setCsvHeaders([])
+    setCsvRows([])
+
+    try {
+      if (file.name.endsWith('.csv') || file.type === 'text/csv') {
+        const Papa = (await import('papaparse')).default
+        Papa.parse<Record<string, string>>(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (res) => {
+            const headers = res.meta.fields || []
+            setCsvHeaders(headers)
+            setCsvRows(res.data as Record<string, string>[])
+            setNameCol(detectCol(headers, NAME_CANDIDATES))
+            setPhoneCol(detectCol(headers, PHONE_CANDIDATES))
+          },
+        })
+      } else {
+        const XLSX = await import('xlsx')
+        const buf = await file.arrayBuffer()
+        const wb  = XLSX.read(buf, { type: 'array' })
+        const ws  = wb.Sheets[wb.SheetNames[0]]
+        const data = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: '' })
+        if (!data.length) { toast.error('Spreadsheet appears to be empty'); return }
+        const headers = Object.keys(data[0])
+        setCsvHeaders(headers)
+        setCsvRows(data)
+        setNameCol(detectCol(headers, NAME_CANDIDATES))
+        setPhoneCol(detectCol(headers, PHONE_CANDIDATES))
+      }
+    } catch {
+      toast.error('Could not read file — make sure it is a valid CSV or Excel file')
+    }
+  }, [])
+
+  async function sendCsvRecall() {
+    if (!tenant || !nameCol || !phoneCol || !csvRows.length) return
+    setCsvSending(true)
+    setCsvResult(null)
+    try {
+      const contacts = csvRows
+        .map(r => ({ name: String(r[nameCol] || '').trim(), phone: String(r[phoneCol] || '').trim() }))
+        .filter(c => c.phone.length >= 6)
+
+      const res = await fetch('/api/campaigns/recall-csv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenant.id,
+          contacts,
+          message_template: recallMsgTemplate.trim() || undefined,
+          interval_months: recallIntervalMonths,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error || 'Send failed'); return }
+      setCsvResult(data)
+    } catch {
+      toast.error('Network error')
+    } finally {
+      setCsvSending(false)
+    }
+  }
 
   function copy(text: string) {
     navigator.clipboard.writeText(text)
@@ -648,6 +735,135 @@ export default function WhatsAppPluginPage() {
             {saveRecallMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Save Recall Settings
           </Button>
+
+          {/* ── CSV / Excel upload ── */}
+          <div className="border-t pt-6 space-y-4">
+            <div>
+              <p className="text-sm font-medium">Upload patient list</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Import contacts from your existing system and send recall messages immediately.
+                Accepts <span className="font-mono">.csv</span>, <span className="font-mono">.xlsx</span>, or <span className="font-mono">.xls</span> files — max 500 contacts.
+              </p>
+            </div>
+
+            {/* Drop zone */}
+            <div
+              className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
+                csvDragOver ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50 hover:bg-accent/30'
+              }`}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setCsvDragOver(true) }}
+              onDragLeave={() => setCsvDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault()
+                setCsvDragOver(false)
+                const file = e.dataTransfer.files[0]
+                if (file) parseFile(file)
+              }}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) parseFile(f); e.target.value = '' }}
+              />
+              <p className="text-sm text-muted-foreground">
+                {csvRows.length > 0
+                  ? <span className="text-foreground font-medium">{csvRows.length} rows loaded — click to replace</span>
+                  : <>Drag & drop or <span className="text-primary underline">browse</span> to upload</>}
+              </p>
+            </div>
+
+            {/* Column mapping + preview */}
+            {csvHeaders.length > 0 && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Name column</Label>
+                    <select
+                      value={nameCol}
+                      onChange={(e) => setNameCol(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      <option value="">— select —</option>
+                      {csvHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Phone column</Label>
+                    <select
+                      value={phoneCol}
+                      onChange={(e) => setPhoneCol(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      <option value="">— select —</option>
+                      {csvHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Preview table */}
+                {nameCol && phoneCol && (
+                  <div className="rounded-md border overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/60">
+                        <tr>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Name</th>
+                          <th className="text-left px-3 py-2 font-medium text-muted-foreground">Phone</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {csvRows.slice(0, 5).map((r, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-3 py-2">{r[nameCol] || '—'}</td>
+                            <td className="px-3 py-2 font-mono">{r[phoneCol] || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {csvRows.length > 5 && (
+                      <p className="px-3 py-2 text-[11px] text-muted-foreground border-t bg-muted/30">
+                        …and {csvRows.length - 5} more rows
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <Button
+                  onClick={sendCsvRecall}
+                  disabled={csvSending || !nameCol || !phoneCol || !isConnected}
+                  size="sm"
+                  className="w-full sm:w-auto"
+                >
+                  {csvSending
+                    ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Sending…</>
+                    : <><Send className="mr-2 h-4 w-4" />Send to {csvRows.length} contacts</>}
+                </Button>
+                {!isConnected && (
+                  <p className="text-xs text-destructive">WhatsApp must be connected before sending.</p>
+                )}
+              </div>
+            )}
+
+            {/* Results */}
+            {csvResult && (
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3">
+                  <p className="text-xl font-bold text-green-600 dark:text-green-400">{csvResult.sent}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Sent</p>
+                </div>
+                <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-3">
+                  <p className="text-xl font-bold text-yellow-600 dark:text-yellow-400">{csvResult.skipped}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Already contacted</p>
+                </div>
+                <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3">
+                  <p className="text-xl font-bold text-destructive">{csvResult.failed}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Failed</p>
+                </div>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 
