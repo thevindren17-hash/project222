@@ -58,7 +58,9 @@ class GoogleCalendarIntegration:
             )
         if r.status_code != 200:
             raise RuntimeError(f"Token refresh failed: {r.text[:200]}")
-        new_token = r.json()["access_token"]
+        new_token = r.json().get("access_token")
+        if not new_token:
+            raise RuntimeError("Token refresh returned no access_token")
 
         from shared.tenant_config import get_supabase_client
         supabase = get_supabase_client()
@@ -342,12 +344,14 @@ async def store_google_tokens(
 
     if service == "calendar":
         update_data["google_calendar_token"] = access_token
-        update_data["google_calendar_refresh"] = refresh_token
+        if refresh_token:  # never overwrite an existing refresh_token with None
+            update_data["google_calendar_refresh"] = refresh_token
         if calendar_id:
             update_data["google_calendar_id"] = calendar_id
     elif service == "sheets":
         update_data["google_sheets_token"] = access_token
-        update_data["google_sheets_refresh"] = refresh_token
+        if refresh_token:
+            update_data["google_sheets_refresh"] = refresh_token
         if spreadsheet_id:
             update_data["google_sheets_id"] = spreadsheet_id
 
