@@ -210,12 +210,18 @@ async def _send_whatsapp_audio(to: str, media_id: str, phone_number_id: str, acc
         r.raise_for_status()
 
 
-def _build_date_context() -> str:
+def _build_date_context(language: str = "en") -> str:
     now = datetime.now()
     tomorrow = now + timedelta(days=1)
+    lang_instruction = {
+        "ms": "IMPORTANT: The user is writing in Bahasa Melayu. You MUST reply entirely in Bahasa Melayu.",
+        "zh": "IMPORTANT: The user is writing in Chinese. You MUST reply entirely in Chinese.",
+        "en": "IMPORTANT: The user is writing in English. You MUST reply in English.",
+    }.get(language, "IMPORTANT: Reply in the same language the user is using.")
     return (
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
+        f"{lang_instruction}\n"
         "CONVERSATION RULES — follow strictly:\n"
         "1. Read the FULL conversation history before responding. NEVER re-ask for information the user has already provided.\n"
         "2. If name, phone, or service type was given earlier in the conversation, use those values directly — do not ask again.\n"
@@ -336,7 +342,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
 
     # Build LLM client using tenant's own API keys
     llm_client = load_llm_client(tenant)
-    date_context = _build_date_context()
+    date_context = _build_date_context(language)
 
     messages_payload = [
         {
@@ -466,7 +472,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
     # LLM response
     llm_client = load_llm_client(tenant)
-    date_context = _build_date_context()
+    date_context = _build_date_context(language)
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,

@@ -27,9 +27,17 @@ def detect_language(text: str) -> str:
     if chinese_score > 2:
         return "zh"
 
-    malay_words = ["nak", "saya", "boleh", "dengan", "untuk", "ada", "tak", "atau", "sini", "mana"]
+    malay_words = [
+        "nak", "saya", "boleh", "dengan", "untuk", "ada", "tak", "atau",
+        "sini", "mana", "esok", "buat", "nama", "hari", "ini", "telefon",
+        "nombor", "ya", "tidak", "awak", "kita", "kami", "mereka", "dia",
+        "appointment", "temujanji", "tarikh", "masa", "pagi", "petang",
+        "malam", "minggu", "bulan", "tolong", "terima", "kasih", "selamat",
+        "pergi", "datang", "baik", "okay", "lah", "pun", "juga", "dah",
+        "sudah", "akan", "nanti", "lepas", "sebelum", "berapa", "bila",
+    ]
     malay_score = sum(1 for w in malay_words if w in text_lower.split())
-    if malay_score > 1:
+    if malay_score >= 1:
         return "ms"
 
     return "en"
