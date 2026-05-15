@@ -1,21 +1,69 @@
 """
 Tenant Configuration Loader
-Loads clinic settings from Supabase on every call/message.
+Singleton Supabase client, async thread-pool wrapper, and 60-second tenant cache.
 """
 
 import os
+import time
+import asyncio
+import threading
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from supabase import create_client, Client
 
 
-def get_supabase_client() -> Client:
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
-    return create_client(url, key)
+# ── Singleton client (one connection pool for the whole process) ───────────────
+_client: Optional[Client] = None
+_client_lock = threading.Lock()
 
+
+def get_supabase_client() -> Client:
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                url = os.getenv("SUPABASE_URL")
+                key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+                if not url or not key:
+                    raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+                _client = create_client(url, key)
+    return _client
+
+
+async def _db(fn):
+    """Run a synchronous Supabase call in a thread pool so it never blocks the event loop."""
+    return await asyncio.to_thread(fn)
+
+
+# ── Tenant config cache (60 s TTL — settings rarely change) ───────────────────
+_tenant_cache: Dict[str, Tuple["TenantConfig", float]] = {}
+_cache_lock = threading.Lock()
+_CACHE_TTL = 60.0
+
+
+def invalidate_tenant_cache(tenant_id: Optional[str] = None) -> None:
+    """Bust cache after a settings save so the next request picks up new values."""
+    with _cache_lock:
+        if tenant_id:
+            _tenant_cache.pop(tenant_id, None)
+        else:
+            _tenant_cache.clear()
+
+
+def _cache_get(key: str) -> Optional["TenantConfig"]:
+    with _cache_lock:
+        entry = _tenant_cache.get(key)
+        if entry and time.monotonic() - entry[1] < _CACHE_TTL:
+            return entry[0]
+    return None
+
+
+def _cache_set(key: str, config: "TenantConfig") -> None:
+    with _cache_lock:
+        _tenant_cache[key] = (config, time.monotonic())
+
+
+# ── Default system prompt ─────────────────────────────────────────────────────
 
 def _default_system_prompt(clinic_name: str, agent_name: str = "Maya") -> str:
     return f"""You are {agent_name}, an AI receptionist for {clinic_name}.
@@ -114,6 +162,8 @@ IMMEDIATE ESCALATION PHRASES (in any language):
 """
 
 
+# ── TenantConfig dataclass ────────────────────────────────────────────────────
+
 @dataclass
 class TenantConfig:
     tenant_id: str
@@ -134,16 +184,11 @@ class TenantConfig:
     wa_verify_token: Optional[str] = None
     google_calendar_id: Optional[str] = None
     google_sheets_id: Optional[str] = None
-    # Per-tenant provider API keys (set by clinic in dashboard, stored encrypted in Supabase)
-    # Structure: {"openai": {"api_key": "..."}, "deepgram": {"api_key": "..."}, ...}
     provider_credentials: Dict[str, Any] = field(default_factory=dict)
-    # Voice reply settings for WhatsApp
     voice_reply_enabled: bool = False
     voice_stt_provider: str = "openai"
     voice_tts_voice: str = "nova"
-    # Language policy: "ask" | "en" | "ms" | "zh"
     reply_language: str = "ask"
-    # Appointment reminders
     reminder_1d_enabled: bool = False
     reminder_3h_enabled: bool = False
     reminder_1d_template: str = ""
@@ -175,7 +220,6 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
     return TenantConfig(
         tenant_id=str(tenant_row["id"]),
         name=tenant_row["name"],
-        # agent_name lives in tenant_settings, not tenants
         agent_name=settings.get("agent_name") or tenant_row.get("agent_name", "Maya"),
         system_prompt=settings.get("system_prompt", ""),
         stt_config=settings.get("stt_config") or {},
@@ -184,7 +228,6 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         business_hours=settings.get("business_hours") or {},
         faq=settings.get("faq") or [],
         tool_config=settings.get("tool_config") or {},
-        # default_language lives in tenants table
         default_language=tenant_row.get("default_language", "en"),
         is_active=tenant_row.get("is_active", True),
         escalation_number=tenant_row.get("escalation_number"),
@@ -205,66 +248,71 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
     )
 
 
+# ── Tenant loaders (async, cached) ────────────────────────────────────────────
+
 async def get_tenant_by_sip_uri(sip_uri: str) -> Optional[TenantConfig]:
-    """Load tenant config by the SIP destination number/URI."""
+    number = sip_uri.replace("sip:", "").split("@")[0].strip()
+    cache_key = f"sip:{number}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     try:
         supabase = get_supabase_client()
-
-        number = sip_uri.replace("sip:", "").split("@")[0].strip()
-
-        result = supabase.table("tenants").select("*").eq(
+        result = await _db(lambda: supabase.table("tenants").select("*").eq(
             "sip_uri", number
-        ).eq("is_active", True).maybe_single().execute()
-
+        ).eq("is_active", True).maybe_single().execute())
         if not result.data:
             return None
-
-        settings_result = supabase.table("tenant_settings").select("*").eq(
+        settings_result = await _db(lambda: supabase.table("tenant_settings").select("*").eq(
             "tenant_id", result.data["id"]
-        ).maybe_single().execute()
-
-        return _build_tenant_from_rows(result.data, settings_result.data or {})
+        ).maybe_single().execute())
+        config = _build_tenant_from_rows(result.data, settings_result.data or {})
+        _cache_set(cache_key, config)
+        _cache_set(str(result.data["id"]), config)
+        return config
     except Exception:
         return None
 
 
 async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConfig]:
-    """Load tenant config by WhatsApp phone_number_id."""
+    cache_key = f"wa:{phone_number_id}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     try:
         supabase = get_supabase_client()
-
-        result = supabase.table("tenants").select("*").eq(
+        result = await _db(lambda: supabase.table("tenants").select("*").eq(
             "wa_phone_number_id", phone_number_id
-        ).eq("is_active", True).maybe_single().execute()
-
+        ).eq("is_active", True).maybe_single().execute())
         if not result.data:
             return None
-
-        settings_result = supabase.table("tenant_settings").select("*").eq(
+        settings_result = await _db(lambda: supabase.table("tenant_settings").select("*").eq(
             "tenant_id", result.data["id"]
-        ).maybe_single().execute()
-
-        return _build_tenant_from_rows(result.data, settings_result.data or {})
+        ).maybe_single().execute())
+        config = _build_tenant_from_rows(result.data, settings_result.data or {})
+        _cache_set(cache_key, config)
+        _cache_set(str(result.data["id"]), config)
+        return config
     except Exception:
         return None
 
 
 async def get_tenant_by_id(tenant_id: str) -> Optional[TenantConfig]:
-    """Load tenant config by tenant UUID."""
+    cached = _cache_get(tenant_id)
+    if cached:
+        return cached
     try:
         supabase = get_supabase_client()
-
-        result = supabase.table("tenants").select("*").eq(
+        result = await _db(lambda: supabase.table("tenants").select("*").eq(
             "id", tenant_id
-        ).maybe_single().execute()
-
+        ).maybe_single().execute())
         if not result.data:
             return None
-
-        settings_result = supabase.table("tenant_settings").select("*").eq(
+        settings_result = await _db(lambda: supabase.table("tenant_settings").select("*").eq(
             "tenant_id", tenant_id
-        ).maybe_single().execute()
-
-        return _build_tenant_from_rows(result.data, settings_result.data or {})
+        ).maybe_single().execute())
+        config = _build_tenant_from_rows(result.data, settings_result.data or {})
+        _cache_set(tenant_id, config)
+        return config
     except Exception:
         return None

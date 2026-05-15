@@ -2,6 +2,11 @@
 WhatsApp Webhook Handlers (Meta Cloud API)
 Handles incoming messages from clinic WhatsApp Business numbers.
 Integrates guardrails: emergency detection, escalation phrases, human-takeover mode.
+
+Performance notes:
+- Webhook returns 200 immediately; message processing runs as a background task.
+- All Supabase calls use _db() to avoid blocking the async event loop.
+- Tenant config is cached for 60 s in tenant_config.py.
 """
 
 import sys
@@ -11,11 +16,11 @@ import json
 from datetime import datetime, timedelta
 
 import httpx
-from fastapi import APIRouter, Request, HTTPException, Response
+from fastapi import APIRouter, Request, HTTPException, Response, BackgroundTasks
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.tenant_config import get_tenant_by_wa_phone_id, get_tenant_by_id, get_supabase_client
+from shared.tenant_config import get_tenant_by_wa_phone_id, get_tenant_by_id, get_supabase_client, _db
 from shared.providers import load_llm_client
 from shared.tools import (
     book_appointment,
@@ -42,29 +47,27 @@ router = APIRouter()
 # ── Webhook verification ───────────────────────────────────────────────────────
 
 def _derive_verify_token(tenant_id: str) -> str:
-    """Deterministic verify token derived from tenant ID — no DB save needed."""
     return f"wa_{tenant_id.replace('-', '')[:16]}"
 
 
 @router.get("/whatsapp/{tenant_id}")
 async def whatsapp_verify(tenant_id: str, request: Request):
-    """Meta webhook verification — token is derived from tenant ID, no prior save needed."""
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
-
     if mode == "subscribe" and token == _derive_verify_token(tenant_id):
         return Response(content=challenge, media_type="text/plain")
-
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
 # ── Incoming message webhook ───────────────────────────────────────────────────
 
 @router.post("/whatsapp/{tenant_id}")
-async def whatsapp_webhook(tenant_id: str, request: Request):
-    """Meta webhook for incoming WhatsApp messages.
-    MUST always return 200 — any non-200 causes Meta to retry endlessly.
+async def whatsapp_webhook(tenant_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Returns 200 immediately after dedup + tenant checks.
+    Heavy processing (LLM call, DB writes, WA send) runs in background_tasks
+    so Meta never times out waiting for us.
     """
     try:
         payload = await request.json()
@@ -83,12 +86,13 @@ async def whatsapp_webhook(tenant_id: str, request: Request):
         message = messages[0]
         wa_message_id = message.get("id", "")
 
-        # Deduplication — skip if we've already processed this exact message
+        # Dedup check — synchronous before returning 200 so we don't spawn
+        # duplicate background tasks for the same WA message.
         supabase = get_supabase_client()
         if wa_message_id:
-            already = supabase.table("messages").select("id").eq(
+            already = await _db(lambda: supabase.table("messages").select("id").eq(
                 "wa_message_id", wa_message_id
-            ).limit(1).execute()
+            ).limit(1).execute())
             if already.data:
                 logger.info(f"Duplicate WA message skipped: {wa_message_id}")
                 return {"status": "duplicate"}
@@ -98,16 +102,15 @@ async def whatsapp_webhook(tenant_id: str, request: Request):
             logger.warning(f"Unknown or inactive tenant: {tenant_id}")
             return {"status": "unknown_tenant"}
 
-        # Guard: can't reply without send credentials
         if not tenant.wa_phone_number_id or not tenant.wa_access_token:
             logger.warning(f"Tenant {tenant_id} missing WA credentials — cannot reply")
             return {"status": "no_credentials"}
 
-        await handle_whatsapp_message(tenant, message, value)
+        # Return 200 now; process in background
+        background_tasks.add_task(handle_whatsapp_message, tenant, message, value)
         return {"status": "ok"}
 
     except Exception as e:
-        # Log but always return 200 so Meta doesn't retry
         logger.error(f"WhatsApp webhook error: {e}", exc_info=True)
         return {"status": "error", "detail": str(e)}
 
@@ -115,7 +118,6 @@ async def whatsapp_webhook(tenant_id: str, request: Request):
 # ── Message handler ────────────────────────────────────────────────────────────
 
 async def _download_wa_media(media_id: str, access_token: str) -> bytes:
-    """Download a media file from WhatsApp Cloud API."""
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(
             f"https://graph.facebook.com/v21.0/{media_id}",
@@ -131,7 +133,6 @@ async def _download_wa_media(media_id: str, access_token: str) -> bytes:
 
 
 async def _transcribe_audio(audio_bytes: bytes, provider: str, tenant) -> str:
-    """Transcribe audio using STT. Returns transcript text."""
     from shared.providers import _cred
     import io
 
@@ -150,9 +151,7 @@ async def _transcribe_audio(audio_bytes: bytes, provider: str, tenant) -> str:
             alternatives = body.get("results", {}).get("channels", [{}])[0].get("alternatives", [])
             return alternatives[0].get("transcript", "") if alternatives else ""
 
-    # Default: OpenAI Whisper
     from openai import AsyncOpenAI
-    from shared.providers import _cred
     api_key = _cred(tenant, "openai", "api_key")
     if not api_key:
         raise ValueError("No OpenAI API key for transcription")
@@ -164,7 +163,6 @@ async def _transcribe_audio(audio_bytes: bytes, provider: str, tenant) -> str:
 
 
 async def _generate_tts_ogg(text: str, voice: str, tenant) -> bytes:
-    """Generate speech as OGG Opus using OpenAI TTS."""
     from openai import AsyncOpenAI
     from shared.providers import _cred
     api_key = _cred(tenant, "openai", "api_key")
@@ -172,16 +170,12 @@ async def _generate_tts_ogg(text: str, voice: str, tenant) -> bytes:
         raise ValueError("No OpenAI API key for TTS")
     client = AsyncOpenAI(api_key=api_key)
     response = await client.audio.speech.create(
-        model="tts-1",
-        voice=voice or "nova",
-        input=text,
-        response_format="opus",
+        model="tts-1", voice=voice or "nova", input=text, response_format="opus",
     )
     return response.content
 
 
 async def _upload_wa_media(audio_bytes: bytes, phone_number_id: str, access_token: str) -> str:
-    """Upload audio to WhatsApp and return media_id."""
     import io
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/media"
     async with httpx.AsyncClient(timeout=30) as client:
@@ -196,27 +190,18 @@ async def _upload_wa_media(audio_bytes: bytes, phone_number_id: str, access_toke
 
 
 async def _send_whatsapp_audio(to: str, media_id: str, phone_number_id: str, access_token: str):
-    """Send a WhatsApp voice note via media ID."""
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             url,
-            json={
-                "messaging_product": "whatsapp",
-                "to": to,
-                "type": "audio",
-                "audio": {"id": media_id},
-            },
+            json={"messaging_product": "whatsapp", "to": to, "type": "audio", "audio": {"id": media_id}},
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
         )
         r.raise_for_status()
 
 
 def _parse_embedded_tool_calls(text: str):
-    """
-    Some models (Llama/Groq) embed tool calls as <function=NAME>JSON</function> in text.
-    Returns (cleaned_text, list_of_tool_call_dicts).
-    """
+    """Extract <function=NAME>JSON</function> tags embedded by some models (Llama/Groq)."""
     tool_calls = []
 
     def _replacer(m):
@@ -229,15 +214,16 @@ def _parse_embedded_tool_calls(text: str):
         return ""
 
     cleaned = re.sub(
-        r"<function=([^>]+)>(.*?)</function>",
-        _replacer,
-        text,
-        flags=re.DOTALL,
+        r"<function=([^>]+)>(.*?)</function>", _replacer, text, flags=re.DOTALL
     ).strip()
     return cleaned, tool_calls
 
 
-def _build_date_context(reply_language: str = "ask", is_new_conversation: bool = False, conversation_language: str = "en") -> str:
+def _build_date_context(
+    reply_language: str = "ask",
+    is_new_conversation: bool = False,
+    conversation_language: str = "en",
+) -> str:
     now = datetime.now()
     tomorrow = now + timedelta(days=1)
 
@@ -248,7 +234,6 @@ def _build_date_context(reply_language: str = "ask", is_new_conversation: bool =
     elif reply_language == "zh":
         lang_rule = "⚠️ 严重警告 — 中文：只能用中文回复。每一个字都必须是中文，不允许任何英文或马来文。没有例外。"
     else:
-        # "ask" mode — use the detected conversation language if known
         if is_new_conversation:
             lang_rule = (
                 "⚠️ LANGUAGE FIRST: This is the very first message. Before anything else, ask: "
@@ -304,7 +289,6 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     from_number = message.get("from")
     msg_type = message.get("type", "text")
 
-    # Handle audio (voice note)
     if msg_type == "audio":
         audio_info = message.get("audio", {})
         media_id = audio_info.get("id")
@@ -322,28 +306,21 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     detected_lang = detect_language(message_text)
     formatted_phone = format_phone_number(from_number)
 
-    # Get or create contact
     contact_result = await get_or_create_contact(
-        tenant_id=tenant.tenant_id,
-        phone=formatted_phone,
-        source="whatsapp",
+        tenant_id=tenant.tenant_id, phone=formatted_phone, source="whatsapp",
     )
     contact = contact_result.get("contact", {})
 
-    # Load / create thread — order by created_at desc so we always get the latest
-    thread_result = supabase.table("whatsapp_threads").select("*").eq(
+    thread_result = await _db(lambda: supabase.table("whatsapp_threads").select("*").eq(
         "tenant_id", tenant.tenant_id
-    ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute()
+    ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute())
 
     if thread_result.data:
         thread = thread_result.data[0]
-        # Use the thread's established language unless current message clearly shows a different one.
-        # Short messages like "10", "ok", "ya" default to "en" — that must not override the thread language.
         thread_lang = thread.get("language") or "en"
         language = detected_lang if detected_lang in ("ms", "zh") else thread_lang
-        # Human-takeover mode: save message silently, don't reply
         if thread.get("status") == "human_takeover":
-            supabase.table("messages").insert({
+            await _db(lambda: supabase.table("messages").insert({
                 "thread_id": thread["id"],
                 "tenant_id": tenant.tenant_id,
                 "contact_id": contact.get("id"),
@@ -352,11 +329,11 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
                 "body": message_text,
                 "language": language,
                 "handled_by": "human",
-            }).execute()
+            }).execute())
             return
     else:
-        language = detected_lang  # New thread — no prior language to fall back to
-        new_thread = supabase.table("whatsapp_threads").insert({
+        language = detected_lang
+        new_thread = await _db(lambda: supabase.table("whatsapp_threads").insert({
             "tenant_id": tenant.tenant_id,
             "contact_id": contact.get("id"),
             "contact_number": formatted_phone,
@@ -364,10 +341,10 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             "language": language,
             "status": "ai",
             "last_message_at": datetime.now().isoformat(),
-        }).execute()
+        }).execute())
         thread = new_thread.data[0]
 
-    # ── Guardrails ─────────────────────────────────────────────────────────────
+    # ── Guardrails ──────────────────────────────────────────────────────────────
     if check_emergency(message_text):
         logger.info(f"WA emergency keyword | tenant={tenant.tenant_id}")
         await _handle_wa_escalation(
@@ -388,18 +365,16 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         )
         return
 
-    # Load last 20 messages for context
-    history_result = supabase.table("messages").select("role, body").eq(
+    history_result = await _db(lambda: supabase.table("messages").select("role, body").eq(
         "thread_id", thread["id"]
-    ).order("created_at", desc=False).limit(20).execute()
+    ).order("created_at", desc=False).limit(20).execute())
 
     conversation_history = [
         {"role": m["role"], "content": m["body"]} for m in history_result.data
     ]
     conversation_history.append({"role": "user", "content": message_text})
 
-    # Save user message
-    supabase.table("messages").insert({
+    await _db(lambda: supabase.table("messages").insert({
         "thread_id": thread["id"],
         "tenant_id": tenant.tenant_id,
         "contact_id": contact.get("id"),
@@ -408,9 +383,8 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         "body": message_text,
         "language": language,
         "handled_by": "ai",
-    }).execute()
+    }).execute())
 
-    # Build LLM client using tenant's own API keys
     llm_client = load_llm_client(tenant)
     is_new_conversation = len(conversation_history) == 1
     date_context = _build_date_context(
@@ -420,29 +394,18 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     )
 
     messages_payload = [
-        {
-            "role": "system",
-            "content": tenant.system_prompt + date_context,
-        },
+        {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,
     ]
 
-    all_tools = [
-        t for t in TOOL_DEFINITIONS
-        if tenant.tool_config.get(t["function"]["name"], True)
-    ]
+    all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
     enabled_tools = _select_tools(all_tools, history_result.data, message_text)
 
-    response = await llm_client.generate(
-        messages=messages_payload,
-        tools=enabled_tools or None,
-    )
+    response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
-    # Execute tool calls if any
     reply_text = response.get("content", "")
     tool_calls = response.get("tool_calls")
 
-    # Some models (Llama/Groq) embed tool calls as text tags instead of structured calls
     if not tool_calls and reply_text and "<function=" in reply_text:
         reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
 
@@ -454,9 +417,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     if not reply_text:
         reply_text = "I'm sorry, I couldn't process that. Please try again or call us directly."
 
-    # Save assistant message FIRST — so the dashboard always shows what the AI said,
-    # even if the WhatsApp send step fails below
-    supabase.table("messages").insert({
+    await _db(lambda: supabase.table("messages").insert({
         "thread_id": thread["id"],
         "tenant_id": tenant.tenant_id,
         "contact_id": contact.get("id"),
@@ -464,14 +425,15 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         "body": reply_text,
         "language": language,
         "handled_by": "ai",
-    }).execute()
+    }).execute())
 
     thread_update: dict = {"last_message_at": datetime.now().isoformat(), "language": language}
     if contact.get("name"):
         thread_update["contact_name"] = contact["name"]
-    supabase.table("whatsapp_threads").update(thread_update).eq("id", thread["id"]).execute()
+    await _db(lambda: supabase.table("whatsapp_threads").update(thread_update).eq(
+        "id", thread["id"]
+    ).execute())
 
-    # Now send to WhatsApp — log exact Meta error if it fails
     try:
         await send_whatsapp_message(
             to=from_number,
@@ -488,7 +450,6 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
 
 
 async def _handle_voice_message(tenant, message: dict, from_number: str, media_id: str, supabase):
-    """Handle incoming WhatsApp voice note: transcribe → LLM → optional voice reply."""
     language = "en"
     formatted_phone = format_phone_number(from_number)
 
@@ -497,30 +458,28 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     )
     contact = contact_result.get("contact", {})
 
-    thread_result = supabase.table("whatsapp_threads").select("*").eq(
+    thread_result = await _db(lambda: supabase.table("whatsapp_threads").select("*").eq(
         "tenant_id", tenant.tenant_id
-    ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute()
+    ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute())
 
     if thread_result.data:
         thread = thread_result.data[0]
         if thread.get("status") == "human_takeover":
-            # Store voice note as-is during human takeover
-            supabase.table("messages").insert({
+            await _db(lambda: supabase.table("messages").insert({
                 "thread_id": thread["id"], "tenant_id": tenant.tenant_id,
                 "contact_id": contact.get("id"), "wa_message_id": message.get("id"),
                 "role": "user", "body": "[Voice message]",
                 "language": language, "handled_by": "human",
-            }).execute()
+            }).execute())
             return
     else:
-        new_thread = supabase.table("whatsapp_threads").insert({
+        new_thread = await _db(lambda: supabase.table("whatsapp_threads").insert({
             "tenant_id": tenant.tenant_id, "contact_id": contact.get("id"),
             "contact_number": formatted_phone, "language": language,
             "status": "ai", "last_message_at": datetime.now().isoformat(),
-        }).execute()
+        }).execute())
         thread = new_thread.data[0]
 
-    # Transcribe
     try:
         audio_bytes = await _download_wa_media(media_id, tenant.wa_access_token)
         stt_provider = getattr(tenant, "voice_stt_provider", None) or "openai"
@@ -530,29 +489,28 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     except Exception as e:
         logger.error(f"STT error: {e}")
         await send_whatsapp_message(
-            to=from_number, text="Sorry, I couldn't understand that voice message. Please try sending a text message.",
-            phone_number_id=tenant.wa_phone_number_id, access_token=tenant.wa_access_token,
+            to=from_number,
+            text="Sorry, I couldn't understand that voice message. Please try sending a text message.",
+            phone_number_id=tenant.wa_phone_number_id,
+            access_token=tenant.wa_access_token,
         )
         return
 
     language = detect_language(transcript)
 
-    # Get conversation history BEFORE saving the current message (avoids duplicate in LLM payload)
-    history = supabase.table("messages").select("role, body").eq(
+    history = await _db(lambda: supabase.table("messages").select("role, body").eq(
         "thread_id", thread["id"]
-    ).order("created_at", desc=False).limit(20).execute()
+    ).order("created_at", desc=False).limit(20).execute())
     conversation_history = [{"role": m["role"], "content": m["body"]} for m in history.data]
     conversation_history.append({"role": "user", "content": transcript})
 
-    # Save transcribed user voice message
-    supabase.table("messages").insert({
+    await _db(lambda: supabase.table("messages").insert({
         "thread_id": thread["id"], "tenant_id": tenant.tenant_id,
         "contact_id": contact.get("id"), "wa_message_id": message.get("id"),
         "role": "user", "body": transcript,
         "language": language, "handled_by": "ai",
-    }).execute()
+    }).execute())
 
-    # LLM response
     llm_client = load_llm_client(tenant)
     is_new_conversation = len(conversation_history) == 1
     date_context = _build_date_context(
@@ -582,7 +540,6 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     if not reply_text:
         reply_text = "I'm sorry, I couldn't process that. Please try again."
 
-    # Send reply: voice if enabled, otherwise text
     voice_enabled = getattr(tenant, "voice_reply_enabled", False)
     tts_voice = getattr(tenant, "voice_tts_voice", "nova") or "nova"
 
@@ -610,17 +567,18 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
             logger.error(f"SEND FAILED (voice) tenant={tenant.tenant_id} to={from_number}: {send_err}")
             return
 
-    # Save assistant message
-    supabase.table("messages").insert({
+    await _db(lambda: supabase.table("messages").insert({
         "thread_id": thread["id"], "tenant_id": tenant.tenant_id,
         "contact_id": contact.get("id"), "role": "assistant", "body": reply_text,
         "language": language, "handled_by": "ai",
-    }).execute()
+    }).execute())
 
-    supabase.table("whatsapp_threads").update({
+    await _db(lambda: supabase.table("whatsapp_threads").update({
         "last_message_at": datetime.now().isoformat(), "language": language,
-    }).eq("id", thread["id"]).execute()
+    }).eq("id", thread["id"]).execute())
 
+
+# ── Tool selection state machine ───────────────────────────────────────────────
 
 _SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot", "pilih masa")
 _CANCEL_KEYWORDS = ("cancel", "batal", "batalkan", "tak jadi", "cancel", "取消")
@@ -629,17 +587,8 @@ _ALWAYS_ON = {"get_faq", "escalate_to_human"}
 
 
 def _select_tools(all_tools: list, history_messages: list, current_text: str) -> list:
-    """
-    Return only the tools appropriate for the current conversation state.
-    Prevents the model from calling wrong tools (e.g. reschedule when user is booking).
-    """
-    all_text = " ".join(
-        m["body"].lower() for m in history_messages
-    ) + " " + current_text.lower()
-
-    assistant_text = " ".join(
-        m["body"].lower() for m in history_messages if m["role"] == "assistant"
-    )
+    all_text = " ".join(m["body"].lower() for m in history_messages) + " " + current_text.lower()
+    assistant_text = " ".join(m["body"].lower() for m in history_messages if m["role"] == "assistant")
 
     slots_shown = any(marker in assistant_text for marker in _SLOT_MARKERS)
     wants_cancel = any(kw in all_text for kw in _CANCEL_KEYWORDS)
@@ -648,17 +597,14 @@ def _select_tools(all_tools: list, history_messages: list, current_text: str) ->
     allowed: set[str] = set(_ALWAYS_ON)
 
     if slots_shown:
-        # Slots were presented — user is picking a time → only allow booking
         allowed.add("book_appointment")
     else:
-        # No slots shown yet — allow slot checking
         allowed.add("check_slots")
 
     if wants_cancel:
         allowed.add("cancel_appointment")
 
     if wants_reschedule:
-        # Reschedule replaces the normal booking flow
         allowed.add("reschedule_appointment")
         allowed.discard("check_slots")
         allowed.discard("book_appointment")
@@ -666,14 +612,13 @@ def _select_tools(all_tools: list, history_messages: list, current_text: str) ->
     return [t for t in all_tools if t["function"]["name"] in allowed]
 
 
+# ── Booking validation ─────────────────────────────────────────────────────────
+
 _BOOKING_PLACEHOLDERS = {
-    # English placeholders
     "name", "your name", "patient name", "patient", "unknown", "n/a", "tba",
     "[name]", "[patient name]", "[service]", "[service type]", "[phone]",
-    # Malay placeholders
     "nama", "nama anda", "nama pesakit", "pesakit", "perkhidmatan",
     "perkhidmatan yang diperlukan", "jenis perkhidmatan", "nombor telefon",
-    # Chinese placeholders
     "姓名", "服务", "电话",
 }
 
@@ -688,9 +633,10 @@ def _is_valid_phone(phone: str) -> bool:
     return len(re.sub(r"\D", "", phone)) >= 8
 
 
+# ── Tool executor ──────────────────────────────────────────────────────────────
+
 async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: str) -> str:
-    """Execute LLM tool calls and return a combined response string."""
-    from api.agent import _resolve_datetime  # NLP date parser (handles natural language + Malay)
+    from api.agent import _resolve_datetime
     results = []
 
     for tc in tool_calls:
@@ -698,7 +644,6 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
         args = tc["function"]["arguments"]
 
         if fn_name == "book_appointment":
-            # Validate all required fields before booking
             contact_name = args.get("contact_name", "").strip() or contact.get("name", "")
             contact_phone = args.get("contact_phone", "").strip() or contact.get("phone", "")
             service_type = args.get("service_type", "").strip()
@@ -728,6 +673,7 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                 else:
                     results.append("I couldn't understand the date and time. Please clarify.")
                 continue
+
             result = await book_appointment(
                 tenant_id=tenant.tenant_id,
                 contact_id=contact.get("id"),
@@ -740,20 +686,22 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                 source="whatsapp",
             )
             if result["success"]:
-                # Update contact record with the collected name so dashboard shows correct patient
+                # Update contact record so appointments dashboard shows real name
                 existing_name = (contact.get("name") or "").strip().lower()
                 if contact_name and existing_name in ("", "unknown"):
                     try:
-                        _sb = get_supabase_client()
-                        _sb.table("contacts").update({"name": contact_name}).eq(
-                            "id", contact.get("id")
-                        ).execute()
-                        contact["name"] = contact_name  # keep local dict in sync
+                        supabase = get_supabase_client()
+                        _cid = contact.get("id")
+                        await _db(lambda: supabase.table("contacts").update(
+                            {"name": contact_name}
+                        ).eq("id", _cid).execute())
+                        contact["name"] = contact_name
                     except Exception as _e:
                         logger.warning(f"Failed to update contact name: {_e}")
-                svc = args.get('service_type', '')
-                date_ = args.get('date', '')
-                time_ = args.get('time', '')
+
+                svc = args.get("service_type", "")
+                date_ = args.get("date", "")
+                time_ = args.get("time", "")
                 if language == "ms":
                     results.append(f"Berjaya! Temujanji {svc} anda telah ditetapkan pada {date_} jam {time_}.")
                 elif language == "zh":
@@ -865,14 +813,11 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
     return " ".join(results) if results else ""
 
 
-async def _handle_wa_escalation(
-    tenant, thread: dict, contact: dict, from_number: str,
-    reason: str, reply: str, supabase,
-):
-    """Mark thread as human-takeover, log escalation, send reply."""
-    supabase.table("whatsapp_threads").update({"status": "human_takeover"}).eq(
-        "id", thread["id"]
-    ).execute()
+async def _handle_wa_escalation(tenant, thread: dict, contact: dict, from_number: str, reason: str, reply: str, supabase):
+    _tid = thread["id"]
+    await _db(lambda: supabase.table("whatsapp_threads").update(
+        {"status": "human_takeover"}
+    ).eq("id", _tid).execute())
 
     await escalate_to_human(
         tenant_id=tenant.tenant_id,
@@ -882,8 +827,7 @@ async def _handle_wa_escalation(
     )
 
     await send_whatsapp_message(
-        to=from_number,
-        text=reply,
+        to=from_number, text=reply,
         phone_number_id=tenant.wa_phone_number_id,
         access_token=tenant.wa_access_token,
     )
@@ -892,8 +836,6 @@ async def _handle_wa_escalation(
 # ── Meta send helper ───────────────────────────────────────────────────────────
 
 async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access_token: str):
-    """Send a WhatsApp text message via Meta Cloud API v21."""
-    # Normalise: Meta send API expects digits only (no +)
     to_digits = to.lstrip("+")
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
     async with httpx.AsyncClient(timeout=15) as client:
@@ -916,7 +858,6 @@ async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access
                 f"Meta send failed {response.status_code} | phone_id={phone_number_id} | "
                 f"to={to_digits} | body={error_body}"
             )
-            # Raise with full Meta error body so callers (test-send, etc.) can surface it
             raise RuntimeError(f"Meta API error {response.status_code}: {error_body}")
         return response.json()
 
@@ -925,7 +866,6 @@ async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access
 
 @router.post("/whatsapp/validate-credentials/{tenant_id}")
 async def validate_whatsapp_credentials(tenant_id: str, request: Request):
-    """Called when user saves credentials — checks phone_number_id is valid before we accept it."""
     try:
         body = await request.json()
     except Exception:
@@ -969,7 +909,6 @@ async def validate_whatsapp_credentials(tenant_id: str, request: Request):
 
 @router.post("/whatsapp/test-send/{tenant_id}")
 async def test_whatsapp_send(tenant_id: str, request: Request):
-    """Dashboard button: verify that WhatsApp send credentials are working."""
     try:
         body = await request.json()
     except Exception:
@@ -988,8 +927,6 @@ async def test_whatsapp_send(tenant_id: str, request: Request):
             "error": "WhatsApp credentials not saved. Fill in Phone Number ID and Access Token then click Save & Connect.",
         }
 
-    # Step 1: validate that the phone_number_id is actually a Phone Number ID,
-    # not the WhatsApp Business Account ID (a very common mix-up).
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             check = await client.get(
@@ -1009,7 +946,6 @@ async def test_whatsapp_send(tenant_id: str, request: Request):
     except Exception as e:
         return {"success": False, "error": f"Could not validate Phone Number ID: {e}"}
 
-    # Step 2: send the test message
     try:
         result = await send_whatsapp_message(
             to=to_phone,

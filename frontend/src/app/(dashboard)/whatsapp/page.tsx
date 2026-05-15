@@ -77,7 +77,7 @@ export default function WhatsAppPage() {
         .order('last_message_at', { ascending: false })
       return (data || []) as WhatsAppThread[]
     },
-    refetchInterval: 10000,
+    refetchInterval: 60000, // fallback poll every 60 s; Realtime handles real-time updates
   })
 
   const { data: messages = [] } = useQuery({
@@ -92,8 +92,42 @@ export default function WhatsAppPage() {
       return (data || []) as Message[]
     },
     enabled: !!selected,
-    refetchInterval: selected ? 5000 : false,
+    refetchInterval: 30000, // fallback poll every 30 s; Realtime handles real-time updates
   })
+
+  // Realtime: new messages in the open thread
+  useEffect(() => {
+    if (!selected?.id) return
+    const channel = supabase
+      .channel(`wa-messages-${selected.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `thread_id=eq.${selected.id}`,
+      }, () => {
+        queryClient.invalidateQueries({ queryKey: ['wa-messages', selected.id] })
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [selected?.id, queryClient])
+
+  // Realtime: thread list changes (new threads, status updates, last_message_at)
+  useEffect(() => {
+    if (!tenant?.id) return
+    const channel = supabase
+      .channel(`wa-threads-${tenant.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'whatsapp_threads',
+        filter: `tenant_id=eq.${tenant.id}`,
+      }, () => {
+        queryClient.invalidateQueries({ queryKey: ['wa-threads'] })
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [tenant?.id, queryClient])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
