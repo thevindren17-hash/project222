@@ -252,8 +252,8 @@ def _build_date_context(reply_language: str = "ask", is_new_conversation: bool =
         if is_new_conversation:
             lang_rule = (
                 "LANGUAGE RULE: This is the very first message. Before doing anything else, greet the user "
-                "and ask which language they prefer: English or Bahasa Melayu (or Chinese if applicable). "
-                "Example: 'Hello! Would you prefer to chat in English or Bahasa Melayu?' "
+                "and ask which language they prefer: English, Bahasa Melayu, or Chinese (Mandarin). "
+                "Example: 'Hello! Would you prefer to chat in English, Bahasa Melayu, or Chinese?' "
                 "Do NOT proceed with any other response until the user confirms their language."
             )
         else:

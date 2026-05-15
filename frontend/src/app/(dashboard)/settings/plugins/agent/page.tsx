@@ -711,7 +711,7 @@ export default function AgentPluginPage() {
                     {
                       value: 'ask',
                       label: 'Ask user at start of conversation',
-                      desc: 'AI greets and asks "English or Bahasa Melayu?" before doing anything else. Recommended for Malaysian clinics.',
+                      desc: 'AI greets and asks "English, Bahasa Melayu, or Chinese?" before doing anything else. Recommended for Malaysian clinics.',
                     },
                     {
                       value: 'ms',
@@ -762,8 +762,8 @@ export default function AgentPluginPage() {
                 <div className="rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-4 text-sm text-blue-800 dark:text-blue-300">
                   <p className="font-semibold mb-1">How "Ask user" works</p>
                   <p className="text-xs leading-relaxed">
-                    When a new WhatsApp conversation starts, the AI will greet the user and ask which language they prefer before doing anything else.
-                    Once the user replies (e.g. "English" or "BM"), the AI uses that language for the rest of the conversation.
+                    When a new WhatsApp conversation starts, the AI will greet the user and ask which language they prefer (English, Bahasa Melayu, or Chinese) before doing anything else.
+                    Once the user replies (e.g. "English", "BM", or "Chinese"), the AI uses that language for the rest of the conversation.
                     This is the best option for Malaysia where users freely mix English and Malay (Manglish).
                   </p>
                 </div>
