@@ -25,7 +25,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ token: 
     return NextResponse.json({ error: 'This invite has expired' }, { status: 410 })
   }
 
-  const tenant = invite.tenants as { name: string } | null
+  const tenant = invite.tenants as unknown as { name: string } | null
 
   return NextResponse.json({
     email: invite.email,

@@ -152,7 +152,7 @@ export default function StaffPage() {
               </div>
               <div className="space-y-1">
                 <Label>Role</Label>
-                <Select value={role} onValueChange={setRole}>
+                <Select value={role} onValueChange={(v) => v && setRole(v)}>
                   <SelectTrigger className="w-32">
                     <SelectValue />
                   </SelectTrigger>

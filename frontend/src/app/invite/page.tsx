@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,7 @@ import { Loader2, Phone, CheckCircle2 } from 'lucide-react'
 
 type InviteInfo = { email: string; role: string; clinicName: string }
 
-export default function InvitePage() {
+function InviteContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const token = searchParams.get('token') ?? ''
@@ -23,7 +23,6 @@ export default function InvitePage() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(false)
-
   const [password, setPassword] = useState('')
 
   useEffect(() => {
@@ -44,7 +43,6 @@ export default function InvitePage() {
     if (!invite) return
     setSubmitting(true)
     try {
-      // Sign up with the invited email
       const { data: authData, error: signUpError } = await supabase.auth.signUp({
         email: invite.email,
         password,
@@ -52,7 +50,6 @@ export default function InvitePage() {
       if (signUpError) throw signUpError
       if (!authData.user) throw new Error('Sign up failed')
 
-      // Accept the invite
       const res = await fetch('/api/invite/accept', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -144,5 +141,19 @@ export default function InvitePage() {
         </CardFooter>
       </form>
     </Card>
+  )
+}
+
+export default function InvitePage() {
+  return (
+    <Suspense fallback={
+      <Card>
+        <CardContent className="flex items-center justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    }>
+      <InviteContent />
+    </Suspense>
   )
 }
