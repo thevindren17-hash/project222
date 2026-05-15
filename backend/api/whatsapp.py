@@ -410,21 +410,11 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         *conversation_history,
     ]
 
-    enabled_tools = [
+    all_tools = [
         t for t in TOOL_DEFINITIONS
         if tenant.tool_config.get(t["function"]["name"], True)
     ]
-
-    # Once slots have been shown, remove check_slots so the model cannot call it again.
-    # The user's next reply is a time selection — only book_appointment is needed.
-    _SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot")
-    slots_already_shown = any(
-        any(marker in m["body"].lower() for marker in _SLOT_MARKERS)
-        for m in history_result.data
-        if m["role"] == "assistant"
-    )
-    if slots_already_shown:
-        enabled_tools = [t for t in enabled_tools if t["function"]["name"] != "check_slots"]
+    enabled_tools = _select_tools(all_tools, history_result.data, message_text)
 
     response = await llm_client.generate(
         messages=messages_payload,
@@ -556,15 +546,8 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,
     ]
-    enabled_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
-    _SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot")
-    slots_already_shown = any(
-        any(marker in m["body"].lower() for marker in _SLOT_MARKERS)
-        for m in history.data
-        if m["role"] == "assistant"
-    )
-    if slots_already_shown:
-        enabled_tools = [t for t in enabled_tools if t["function"]["name"] != "check_slots"]
+    all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
+    enabled_tools = _select_tools(all_tools, history.data, transcript)
     response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
     reply_text = response.get("content", "")
@@ -619,6 +602,50 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     supabase.table("whatsapp_threads").update({
         "last_message_at": datetime.now().isoformat(), "language": language,
     }).eq("id", thread["id"]).execute()
+
+
+_SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot", "pilih masa")
+_CANCEL_KEYWORDS = ("cancel", "batal", "batalkan", "tak jadi", "cancel", "取消")
+_RESCHEDULE_KEYWORDS = ("reschedule", "tukar masa", "ubah masa", "move", "change appointment", "改期", "tangguh")
+_ALWAYS_ON = {"get_faq", "escalate_to_human"}
+
+
+def _select_tools(all_tools: list, history_messages: list, current_text: str) -> list:
+    """
+    Return only the tools appropriate for the current conversation state.
+    Prevents the model from calling wrong tools (e.g. reschedule when user is booking).
+    """
+    all_text = " ".join(
+        m["body"].lower() for m in history_messages
+    ) + " " + current_text.lower()
+
+    assistant_text = " ".join(
+        m["body"].lower() for m in history_messages if m["role"] == "assistant"
+    )
+
+    slots_shown = any(marker in assistant_text for marker in _SLOT_MARKERS)
+    wants_cancel = any(kw in all_text for kw in _CANCEL_KEYWORDS)
+    wants_reschedule = any(kw in all_text for kw in _RESCHEDULE_KEYWORDS)
+
+    allowed: set[str] = set(_ALWAYS_ON)
+
+    if slots_shown:
+        # Slots were presented — user is picking a time → only allow booking
+        allowed.add("book_appointment")
+    else:
+        # No slots shown yet — allow slot checking
+        allowed.add("check_slots")
+
+    if wants_cancel:
+        allowed.add("cancel_appointment")
+
+    if wants_reschedule:
+        # Reschedule replaces the normal booking flow
+        allowed.add("reschedule_appointment")
+        allowed.discard("check_slots")
+        allowed.discard("book_appointment")
+
+    return [t for t in all_tools if t["function"]["name"] in allowed]
 
 
 _BOOKING_PLACEHOLDERS = {
