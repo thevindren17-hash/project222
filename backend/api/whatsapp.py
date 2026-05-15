@@ -6,7 +6,7 @@ Integrates guardrails: emergency detection, escalation phrases, human-takeover m
 
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Request, HTTPException, Response
@@ -210,6 +210,23 @@ async def _send_whatsapp_audio(to: str, media_id: str, phone_number_id: str, acc
         r.raise_for_status()
 
 
+def _build_date_context() -> str:
+    now = datetime.now()
+    tomorrow = now + timedelta(days=1)
+    return (
+        f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
+        f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
+        "CONVERSATION RULES — follow strictly:\n"
+        "1. Read the FULL conversation history before responding. NEVER re-ask for information the user has already provided.\n"
+        "2. If name, phone, or service type was given earlier in the conversation, use those values directly — do not ask again.\n"
+        "3. When a time is rejected and the user gives a new time, keep all other collected info (name, phone, service) and only update the time.\n"
+        "4. Only call book_appointment once you have name, phone, service type, date, and time — extracting them from the conversation if already given.\n"
+        "5. Date/time conversions: 'tomorrow'/'esok' → use the exact date shown above, '3pm'/'3 petang' → 15:00, '9am'/'9 pagi' → 09:00.\n"
+        "6. Always pass real values to tools — never pass placeholder text.\n"
+        "You are responding via WhatsApp. Keep replies concise (under 3 sentences).]"
+    )
+
+
 async def handle_whatsapp_message(tenant, message: dict, value: dict):
     supabase = get_supabase_client()
 
@@ -295,10 +312,10 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         )
         return
 
-    # Load last 10 messages for context
+    # Load last 20 messages for context
     history_result = supabase.table("messages").select("role, body").eq(
         "thread_id", thread["id"]
-    ).order("created_at", desc=False).limit(10).execute()
+    ).order("created_at", desc=False).limit(20).execute()
 
     conversation_history = [
         {"role": m["role"], "content": m["body"]} for m in history_result.data
@@ -319,21 +336,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
 
     # Build LLM client using tenant's own API keys
     llm_client = load_llm_client(tenant)
-
-    now = datetime.now()
-    date_context = (
-        f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}).\n"
-        "TOOL CALLING RULES — follow these strictly:\n"
-        "1. NEVER call any tool until you have collected ALL required information from the user.\n"
-        "2. For book_appointment: you MUST have the patient's name, phone number, service type, date AND time confirmed by the user before calling.\n"
-        "3. For check_slots: only call once you know which date the user is asking about.\n"
-        "4. For cancel/reschedule: confirm the patient's phone or booking ID first.\n"
-        "5. Convert natural-language dates/times before calling:\n"
-        "   - 'tomorrow'/'esok' → actual YYYY-MM-DD, 'next Friday'/'jumaat depan' → correct date\n"
-        "   - '3pm'/'3 petang' → 15:00, '9am'/'9 pagi' → 09:00\n"
-        "6. Always pass actual values — NEVER pass example text or descriptions as parameter values.\n"
-        "You are responding via WhatsApp. Keep replies concise (under 3 sentences).]"
-    )
+    date_context = _build_date_context()
 
     messages_payload = [
         {
@@ -449,7 +452,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     # Get conversation history BEFORE saving the current message (avoids duplicate in LLM payload)
     history = supabase.table("messages").select("role, body").eq(
         "thread_id", thread["id"]
-    ).order("created_at", desc=False).limit(10).execute()
+    ).order("created_at", desc=False).limit(20).execute()
     conversation_history = [{"role": m["role"], "content": m["body"]} for m in history.data]
     conversation_history.append({"role": "user", "content": transcript})
 
@@ -463,16 +466,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
     # LLM response
     llm_client = load_llm_client(tenant)
-    now = datetime.now()
-    date_context = (
-        f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}).\n"
-        "TOOL CALLING RULES — follow these strictly:\n"
-        "1. NEVER call any tool until you have collected ALL required information from the user.\n"
-        "2. For book_appointment: collect name, phone, service, date AND time before calling.\n"
-        "3. Convert natural-language dates/times before calling (e.g. 'esok' → YYYY-MM-DD, '3 petang' → 15:00).\n"
-        "4. Always pass actual values — NEVER pass example text as parameter values.\n"
-        "You are responding via WhatsApp. Keep replies concise (under 3 sentences).]"
-    )
+    date_context = _build_date_context()
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,
