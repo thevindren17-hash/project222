@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
-import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap, Bell } from 'lucide-react'
+import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap, Bell, Star } from 'lucide-react'
 
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
@@ -28,6 +28,11 @@ export default function WhatsAppPluginPage() {
   const [reminder3hEnabled, setReminder3hEnabled] = useState(false)
   const [reminder1dTemplate, setReminder1dTemplate] = useState('')
   const [reminder3hTemplate, setReminder3hTemplate] = useState('')
+  const [feedbackEnabled, setFeedbackEnabled] = useState(false)
+  const [googleReviewUrl, setGoogleReviewUrl] = useState('')
+  const [feedbackMsgTemplate, setFeedbackMsgTemplate] = useState('')
+  const [reviewRequestTemplate, setReviewRequestTemplate] = useState('')
+  const [negativeFeedbackMsg, setNegativeFeedbackMsg] = useState('')
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
@@ -41,13 +46,18 @@ export default function WhatsAppPluginPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'llm_config,agent_name,system_prompt,provider_credentials,reminder_1d_enabled,reminder_3h_enabled,reminder_1d_template,reminder_3h_template'
+        'llm_config,agent_name,system_prompt,provider_credentials,reminder_1d_enabled,reminder_3h_enabled,reminder_1d_template,reminder_3h_template,feedback_enabled,google_review_url,feedback_message_template,review_request_template,negative_feedback_message'
       ).eq('tenant_id', tenant.id).maybeSingle()
       if (data) {
         setReminder1dEnabled(!!data.reminder_1d_enabled)
         setReminder3hEnabled(!!data.reminder_3h_enabled)
         setReminder1dTemplate(data.reminder_1d_template || '')
         setReminder3hTemplate(data.reminder_3h_template || '')
+        setFeedbackEnabled(!!data.feedback_enabled)
+        setGoogleReviewUrl(data.google_review_url || '')
+        setFeedbackMsgTemplate(data.feedback_message_template || '')
+        setReviewRequestTemplate(data.review_request_template || '')
+        setNegativeFeedbackMsg(data.negative_feedback_message || '')
       }
       return data
     },
@@ -139,6 +149,23 @@ export default function WhatsAppPluginPage() {
       if (error) throw error
     },
     onSuccess: () => toast.success('Reminder settings saved'),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const saveFeedbackMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenant) throw new Error('No tenant')
+      const { error } = await supabase.from('tenant_settings').upsert({
+        tenant_id: tenant.id,
+        feedback_enabled: feedbackEnabled,
+        google_review_url: googleReviewUrl.trim() || null,
+        feedback_message_template: feedbackMsgTemplate.trim() || null,
+        review_request_template: reviewRequestTemplate.trim() || null,
+        negative_feedback_message: negativeFeedbackMsg.trim() || null,
+      }, { onConflict: 'tenant_id' })
+      if (error) throw error
+    },
+    onSuccess: () => toast.success('Feedback settings saved'),
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -440,6 +467,92 @@ export default function WhatsAppPluginPage() {
           >
             {saveRemindersMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Save Reminder Settings
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Feedback & Reviews */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Star className="h-5 w-5 text-primary" />
+            <div>
+              <CardTitle>Feedback & Reviews</CardTitle>
+              <CardDescription>Automatically ask patients for a rating 2–6 hours after their visit, then invite happy patients to leave a Google review</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Enable post-visit feedback</p>
+              <p className="text-xs text-muted-foreground">Sends a 1–5 star rating request after each appointment</p>
+            </div>
+            <Switch checked={feedbackEnabled} onCheckedChange={setFeedbackEnabled} />
+          </div>
+
+          {feedbackEnabled && (
+            <div className="space-y-5">
+              <div className="text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
+                Available placeholders: <code className="font-mono">{'{name}'}</code> <code className="font-mono">{'{service}'}</code> <code className="font-mono">{'{rating}'}</code> <code className="font-mono">{'{review_link}'}</code>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">Google Review Link <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input
+                  placeholder="https://g.page/r/your-business/review"
+                  value={googleReviewUrl}
+                  onChange={(e) => setGoogleReviewUrl(e.target.value)}
+                  className="text-sm"
+                />
+                <p className="text-[11px] text-muted-foreground">Patients rated 4–5 stars will be sent this link. Leave blank to just send a thank-you message.</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Feedback request message</Label>
+                <Textarea
+                  rows={4}
+                  placeholder={`Hi {name}! 😊 Thank you for visiting us today for your {service}. How was your experience? Please reply with a number:\n1 ⭐ – Poor  2 ⭐⭐ – Fair  3 ⭐⭐⭐ – Good  4 ⭐⭐⭐⭐ – Great  5 ⭐⭐⭐⭐⭐ – Excellent`}
+                  value={feedbackMsgTemplate}
+                  onChange={(e) => setFeedbackMsgTemplate(e.target.value)}
+                  className="text-sm resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">Leave blank to use the default message</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Google review invite (4–5 stars)</Label>
+                <Textarea
+                  rows={3}
+                  placeholder="Thank you for the {rating} stars! ⭐ We really appreciate it. Would you mind sharing your experience on Google? {review_link}"
+                  value={reviewRequestTemplate}
+                  onChange={(e) => setReviewRequestTemplate(e.target.value)}
+                  className="text-sm resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">Sent to patients who rated 4 or 5 stars (only when Google Review Link is set)</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Low-rating response (1–3 stars)</Label>
+                <Textarea
+                  rows={3}
+                  placeholder="We're sorry to hear that, {name}. We take all feedback seriously and our team will reach out to you shortly. 🙏"
+                  value={negativeFeedbackMsg}
+                  onChange={(e) => setNegativeFeedbackMsg(e.target.value)}
+                  className="text-sm resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">Sent to patients who rated 1–3 stars. An escalation alert is also created for your staff.</p>
+              </div>
+            </div>
+          )}
+
+          <Button
+            onClick={() => saveFeedbackMutation.mutate()}
+            disabled={saveFeedbackMutation.isPending}
+            size="sm"
+          >
+            {saveFeedbackMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Save Feedback Settings
           </Button>
         </CardContent>
       </Card>

@@ -365,6 +365,27 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         )
         return
 
+    # ── Feedback campaign intercept ─────────────────────────────────────────────
+    # Check before LLM: if there's a pending feedback campaign and the patient
+    # replied with a 1-5 rating, handle it here and skip the booking AI entirely.
+    if contact.get("id"):
+        from api.campaigns import get_pending_feedback_campaign, extract_rating, handle_feedback_response
+        _pending = await get_pending_feedback_campaign(tenant.tenant_id, contact["id"])
+        if _pending:
+            _rating = extract_rating(message_text)
+            if _rating is not None:
+                await handle_feedback_response(
+                    tenant=tenant,
+                    contact=contact,
+                    thread=thread,
+                    from_number=from_number,
+                    campaign=_pending,
+                    rating=_rating,
+                    message_text=message_text,
+                    language=language,
+                )
+                return
+
     history_result = await _db(lambda: supabase.table("messages").select("role, body").eq(
         "thread_id", thread["id"]
     ).order("created_at", desc=False).limit(20).execute())

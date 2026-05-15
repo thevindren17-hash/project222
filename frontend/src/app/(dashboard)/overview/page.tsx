@@ -21,23 +21,36 @@ export default function OverviewPage() {
       const startOfWeek = new Date()
       startOfWeek.setDate(startOfWeek.getDate() - 7)
 
-      const [bookingsRes, callsRes, threadsRes] = await Promise.all([
+      const start30d = new Date()
+      start30d.setDate(start30d.getDate() - 30)
+
+      const [bookingsRes, callsRes, threadsRes, feedbackRes] = await Promise.all([
         supabase.from('bookings').select('*', { count: 'exact', head: true })
           .eq('tenant_id', tenant.id).gte('created_at', startOfWeek.toISOString()),
         supabase.from('call_logs').select('duration_seconds,auto_escalated')
           .eq('tenant_id', tenant.id).gte('started_at', startOfWeek.toISOString()),
         supabase.from('whatsapp_threads').select('status')
           .eq('tenant_id', tenant.id),
+        supabase.from('campaigns').select('rating,status')
+          .eq('tenant_id', tenant.id).eq('type', 'feedback')
+          .gte('sent_at', start30d.toISOString())
+          .not('rating', 'is', null),
       ])
 
       const calls = callsRes.data || []
       const threads = threadsRes.data || []
+      const feedback = feedbackRes.data || []
       const totalCalls = calls.length
       const avgDuration = totalCalls > 0
         ? calls.reduce((s, c) => s + (c.duration_seconds || 0), 0) / totalCalls
         : 0
       const escalations = calls.filter((c) => c.auto_escalated).length
       const aiThreads = threads.filter((t) => t.status === 'ai').length
+      const avgRating = feedback.length > 0
+        ? (feedback.reduce((s, f) => s + (f.rating || 0), 0) / feedback.length).toFixed(1)
+        : null
+      const fiveStarCount = feedback.filter((f) => f.rating === 5).length
+      const reviewsRequested = feedback.filter((f) => f.status === 'review_sent').length
 
       return {
         bookingsThisWeek: bookingsRes.count || 0,
@@ -46,6 +59,9 @@ export default function OverviewPage() {
         escalations,
         aiHandleRate: threads.length > 0 ? Math.round((aiThreads / threads.length) * 100) : 0,
         waMessages: threads.length,
+        avgRating,
+        fiveStarCount,
+        reviewsRequested,
       }
     },
   })
@@ -85,6 +101,9 @@ export default function OverviewPage() {
         <StatCard title="WA Threads" value={metrics?.waMessages ?? '—'} subtitle="All time" icon="message" />
         <StatCard title="AI Handle Rate" value={`${metrics?.aiHandleRate ?? 0}%`} icon="bot" />
         <StatCard title="Escalations" value={metrics?.escalations ?? '—'} subtitle="This week" icon="alert" />
+        <StatCard title="Avg Rating" value={metrics?.avgRating ? `${metrics.avgRating} ⭐` : '—'} subtitle="Last 30 days" icon="star" />
+        <StatCard title="5-Star Reviews" value={metrics?.fiveStarCount ?? '—'} subtitle="Last 30 days" icon="star" />
+        <StatCard title="Review Requests Sent" value={metrics?.reviewsRequested ?? '—'} subtitle="Last 30 days" icon="message" />
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">

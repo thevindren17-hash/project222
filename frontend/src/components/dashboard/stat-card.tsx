@@ -1,5 +1,5 @@
 import { Card, CardContent } from '@/components/ui/card'
-import { ArrowDown, ArrowUp, Phone, Calendar, Clock, MessageSquare, Bot, AlertTriangle } from 'lucide-react'
+import { ArrowDown, ArrowUp, Phone, Calendar, Clock, MessageSquare, Bot, AlertTriangle, Star } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface StatCardProps {
@@ -8,10 +8,10 @@ interface StatCardProps {
   subtitle?: string
   change?: string
   trend?: 'up' | 'down'
-  icon?: 'phone' | 'calendar' | 'clock' | 'message' | 'bot' | 'alert'
+  icon?: 'phone' | 'calendar' | 'clock' | 'message' | 'bot' | 'alert' | 'star'
 }
 
-const icons = { phone: Phone, calendar: Calendar, clock: Clock, message: MessageSquare, bot: Bot, alert: AlertTriangle }
+const icons = { phone: Phone, calendar: Calendar, clock: Clock, message: MessageSquare, bot: Bot, alert: AlertTriangle, star: Star }
 
 export default function StatCard({ title, value, subtitle, change, trend, icon = 'phone' }: StatCardProps) {
   const Icon = icons[icon]
