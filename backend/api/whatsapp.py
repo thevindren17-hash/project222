@@ -237,16 +237,36 @@ def _parse_embedded_tool_calls(text: str):
     return cleaned, tool_calls
 
 
-def _build_date_context(language: str = "en") -> str:
+def _build_date_context(reply_language: str = "ask", is_new_conversation: bool = False) -> str:
     now = datetime.now()
     tomorrow = now + timedelta(days=1)
+
+    if reply_language == "en":
+        lang_rule = "STRICT LANGUAGE RULE: You MUST always reply in English only, no matter what language the user writes in."
+    elif reply_language == "ms":
+        lang_rule = "PERATURAN BAHASA KETAT: Anda MESTI sentiasa membalas dalam Bahasa Melayu sahaja, tidak kira apa bahasa yang digunakan oleh pengguna."
+    elif reply_language == "zh":
+        lang_rule = "严格语言规则：无论用户使用什么语言，您必须始终只用中文回复。"
+    else:
+        # "ask" mode
+        if is_new_conversation:
+            lang_rule = (
+                "LANGUAGE RULE: This is the very first message. Before doing anything else, greet the user "
+                "and ask which language they prefer: English or Bahasa Melayu (or Chinese if applicable). "
+                "Example: 'Hello! Would you prefer to chat in English or Bahasa Melayu?' "
+                "Do NOT proceed with any other response until the user confirms their language."
+            )
+        else:
+            lang_rule = (
+                "LANGUAGE RULE: Check the conversation history to see which language the user chose. "
+                "Use that language consistently. If no preference was stated, match whatever language "
+                "the user is writing in right now. Never mix languages in one reply."
+            )
+
     return (
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
-        "LANGUAGE RULE: Detect the language of the user's latest message and reply in that exact same language. "
-        "If the user writes in Bahasa Melayu, reply fully in Bahasa Melayu. "
-        "If the user writes in Chinese, reply fully in Chinese. "
-        "If the user writes in English, reply in English. Never mix languages in a single reply.\n"
+        f"{lang_rule}\n"
         "CONVERSATION RULES — follow strictly:\n"
         "1. Read the FULL conversation history before responding. NEVER re-ask for information the user has already provided.\n"
         "2. If name, phone, or service type was given earlier in the conversation, use those values directly — do not ask again.\n"
@@ -367,7 +387,11 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
 
     # Build LLM client using tenant's own API keys
     llm_client = load_llm_client(tenant)
-    date_context = _build_date_context(language)
+    is_new_conversation = len(conversation_history) == 1
+    date_context = _build_date_context(
+        reply_language=getattr(tenant, "reply_language", "ask"),
+        is_new_conversation=is_new_conversation,
+    )
 
     messages_payload = [
         {
@@ -503,7 +527,11 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
     # LLM response
     llm_client = load_llm_client(tenant)
-    date_context = _build_date_context(language)
+    is_new_conversation = len(conversation_history) == 1
+    date_context = _build_date_context(
+        reply_language=getattr(tenant, "reply_language", "ask"),
+        is_new_conversation=is_new_conversation,
+    )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,

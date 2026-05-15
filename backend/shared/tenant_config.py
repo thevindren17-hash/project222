@@ -141,6 +141,8 @@ class TenantConfig:
     voice_reply_enabled: bool = False
     voice_stt_provider: str = "openai"
     voice_tts_voice: str = "nova"
+    # Language policy: "ask" | "en" | "ms" | "zh"
+    reply_language: str = "ask"
 
     def __post_init__(self):
         if not self.system_prompt:
@@ -190,6 +192,7 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         voice_reply_enabled=bool(settings.get("voice_reply_enabled", False)),
         voice_stt_provider=settings.get("voice_stt_provider") or "openai",
         voice_tts_voice=settings.get("voice_tts_voice") or "nova",
+        reply_language=settings.get("reply_language") or "ask",
     )
 
 

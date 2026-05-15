@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LLM_PROVIDERS, OPENAI_TTS_VOICES } from '@/lib/providers'
 import {
-  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check,
+  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check, Languages,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -36,6 +36,7 @@ const SECTIONS = [
   { id: 'instructions', label: 'Instructions', icon: Code },
   { id: 'model', label: 'Model Settings', icon: Brain },
   { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
+  { id: 'language', label: 'Language', icon: Languages },
   { id: 'voice', label: 'Voice', icon: Mic },
   { id: 'handoff', label: 'Handoff', icon: Users },
   { id: 'capabilities', label: 'Capabilities', icon: Zap },
@@ -96,6 +97,7 @@ export default function AgentPluginPage() {
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
   const [voiceTtsVoice, setVoiceTtsVoice] = useState('nova')
   const [voiceSttProvider, setVoiceSttProvider] = useState('openai')
+  const [replyLanguage, setReplyLanguage] = useState('ask')
 
   const [humanTakeover, setHumanTakeover] = useState(true)
   const [escalationKeywords, setEscalationKeywords] = useState<string[]>([
@@ -123,6 +125,7 @@ export default function AgentPluginPage() {
       if (settings.voice_stt_provider) setVoiceSttProvider(settings.voice_stt_provider)
       if (settings.escalation_keywords?.length) setEscalationKeywords(settings.escalation_keywords)
       if (settings.max_turns_before_handoff) setMaxTurns(settings.max_turns_before_handoff)
+      if (settings.reply_language) setReplyLanguage(settings.reply_language)
     }
   }, [tenant, settings, promptSeeded])
 
@@ -168,6 +171,7 @@ export default function AgentPluginPage() {
         voice_stt_provider: voiceSttProvider,
         escalation_keywords: escalationKeywords,
         max_turns_before_handoff: maxTurns,
+        reply_language: replyLanguage,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
     },
@@ -681,6 +685,89 @@ export default function AgentPluginPage() {
                   Open <strong>WhatsApp</strong> from the sidebar, select a conversation, then click <strong>Take Over</strong>. The AI pauses instantly and your typed messages go directly to the customer. Click <strong>Hand Back to AI</strong> when done.
                 </p>
               </div>
+            </>
+          )}
+
+          {/* Language */}
+          {section === 'language' && (
+            <>
+              <div>
+                <h2 className="text-lg font-semibold">Language Settings</h2>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Control which language your AI agent uses. Malaysians often write Manglish (mixed English + Malay) — set a strict policy to avoid confusion.
+                </p>
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Languages className="h-4 w-4 text-primary" />
+                    Reply Language Policy
+                  </CardTitle>
+                  <CardDescription>Choose how the AI decides which language to reply in.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {[
+                    {
+                      value: 'ask',
+                      label: 'Ask user at start of conversation',
+                      desc: 'AI greets and asks "English or Bahasa Melayu?" before doing anything else. Recommended for Malaysian clinics.',
+                    },
+                    {
+                      value: 'ms',
+                      label: 'Always Bahasa Melayu',
+                      desc: 'AI always replies in Bahasa Melayu regardless of what language the user writes in.',
+                    },
+                    {
+                      value: 'en',
+                      label: 'Always English',
+                      desc: 'AI always replies in English regardless of what language the user writes in.',
+                    },
+                    {
+                      value: 'zh',
+                      label: 'Always Mandarin Chinese',
+                      desc: 'AI always replies in Mandarin Chinese regardless of what language the user writes in.',
+                    },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setReplyLanguage(opt.value)}
+                      className={cn(
+                        'w-full text-left p-3 rounded-xl border-2 transition-all',
+                        replyLanguage === opt.value
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border hover:border-muted-foreground/40'
+                      )}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className={cn(
+                          'mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center',
+                          replyLanguage === opt.value ? 'border-primary' : 'border-muted-foreground/40'
+                        )}>
+                          {replyLanguage === opt.value && (
+                            <div className="h-2 w-2 rounded-full bg-primary" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">{opt.label}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{opt.desc}</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </CardContent>
+              </Card>
+
+              {replyLanguage === 'ask' && (
+                <div className="rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-4 text-sm text-blue-800 dark:text-blue-300">
+                  <p className="font-semibold mb-1">How "Ask user" works</p>
+                  <p className="text-xs leading-relaxed">
+                    When a new WhatsApp conversation starts, the AI will greet the user and ask which language they prefer before doing anything else.
+                    Once the user replies (e.g. "English" or "BM"), the AI uses that language for the rest of the conversation.
+                    This is the best option for Malaysia where users freely mix English and Malay (Manglish).
+                  </p>
+                </div>
+              )}
             </>
           )}
 
