@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
-import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap, Bell, Star } from 'lucide-react'
+import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap, Bell, Star, UserRoundCheck } from 'lucide-react'
 
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
@@ -33,6 +33,9 @@ export default function WhatsAppPluginPage() {
   const [feedbackMsgTemplate, setFeedbackMsgTemplate] = useState('')
   const [reviewRequestTemplate, setReviewRequestTemplate] = useState('')
   const [negativeFeedbackMsg, setNegativeFeedbackMsg] = useState('')
+  const [recallEnabled, setRecallEnabled] = useState(false)
+  const [recallIntervalMonths, setRecallIntervalMonths] = useState(6)
+  const [recallMsgTemplate, setRecallMsgTemplate] = useState('')
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
@@ -46,7 +49,7 @@ export default function WhatsAppPluginPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'llm_config,agent_name,system_prompt,provider_credentials,reminder_1d_enabled,reminder_3h_enabled,reminder_1d_template,reminder_3h_template,feedback_enabled,google_review_url,feedback_message_template,review_request_template,negative_feedback_message'
+        'llm_config,agent_name,system_prompt,provider_credentials,reminder_1d_enabled,reminder_3h_enabled,reminder_1d_template,reminder_3h_template,feedback_enabled,google_review_url,feedback_message_template,review_request_template,negative_feedback_message,recall_enabled,recall_interval_months,recall_message_template'
       ).eq('tenant_id', tenant.id).maybeSingle()
       if (data) {
         setReminder1dEnabled(!!data.reminder_1d_enabled)
@@ -58,6 +61,9 @@ export default function WhatsAppPluginPage() {
         setFeedbackMsgTemplate(data.feedback_message_template || '')
         setReviewRequestTemplate(data.review_request_template || '')
         setNegativeFeedbackMsg(data.negative_feedback_message || '')
+        setRecallEnabled(!!data.recall_enabled)
+        setRecallIntervalMonths(data.recall_interval_months || 6)
+        setRecallMsgTemplate(data.recall_message_template || '')
       }
       return data
     },
@@ -149,6 +155,21 @@ export default function WhatsAppPluginPage() {
       if (error) throw error
     },
     onSuccess: () => toast.success('Reminder settings saved'),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const saveRecallMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenant) throw new Error('No tenant')
+      const { error } = await supabase.from('tenant_settings').upsert({
+        tenant_id: tenant.id,
+        recall_enabled: recallEnabled,
+        recall_interval_months: recallIntervalMonths,
+        recall_message_template: recallMsgTemplate.trim() || null,
+      }, { onConflict: 'tenant_id' })
+      if (error) throw error
+    },
+    onSuccess: () => toast.success('Recall settings saved'),
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -553,6 +574,79 @@ export default function WhatsAppPluginPage() {
           >
             {saveFeedbackMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Save Feedback Settings
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Patient Recall & Re-engagement */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <UserRoundCheck className="h-5 w-5 text-primary" />
+            <div>
+              <CardTitle>Patient Recall</CardTitle>
+              <CardDescription>Automatically reach out to patients who haven&apos;t visited in a while and invite them back</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Enable patient recall</p>
+              <p className="text-xs text-muted-foreground">Runs daily — sends one message per dormant patient per recall window</p>
+            </div>
+            <Switch checked={recallEnabled} onCheckedChange={setRecallEnabled} />
+          </div>
+
+          {recallEnabled && (
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Contact patients who haven&apos;t visited in</p>
+                <div className="flex gap-2 flex-wrap">
+                  {[3, 6, 12, 18, 24].map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setRecallIntervalMonths(m)}
+                      className={`px-3 py-1.5 rounded-md text-sm border transition-colors ${
+                        recallIntervalMonths === m
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'bg-background border-input hover:bg-accent'
+                      }`}
+                    >
+                      {m} months
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Patients with no visits in the last {recallIntervalMonths} months will receive one message per {recallIntervalMonths}-month window
+                </p>
+              </div>
+
+              <div className="text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
+                Available placeholders: <code className="font-mono">{'{name}'}</code> <code className="font-mono">{'{clinic}'}</code>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Re-engagement message</Label>
+                <Textarea
+                  rows={4}
+                  placeholder={`Hi {name}! 👋 It's been a while since your last visit at {clinic}. We'd love to see you again! Just reply to book your next appointment. 😊`}
+                  value={recallMsgTemplate}
+                  onChange={(e) => setRecallMsgTemplate(e.target.value)}
+                  className="text-sm resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">Leave blank to use the default message. The AI will handle any replies and book appointments normally.</p>
+              </div>
+            </div>
+          )}
+
+          <Button
+            onClick={() => saveRecallMutation.mutate()}
+            disabled={saveRecallMutation.isPending}
+            size="sm"
+          >
+            {saveRecallMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Save Recall Settings
           </Button>
         </CardContent>
       </Card>

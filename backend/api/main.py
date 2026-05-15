@@ -14,7 +14,7 @@ from api.whatsapp import router as whatsapp_router
 from api.integrations import router as integrations_router
 from api.agent import router as agent_router
 from api.reminders import scheduler, send_appointment_reminders
-from api.campaigns import send_feedback_requests
+from api.campaigns import send_feedback_requests, send_recall_messages
 
 
 @asynccontextmanager
@@ -33,6 +33,14 @@ async def lifespan(app: FastAPI):
         minutes=30,
         next_run_time=datetime.now(),
         id="feedback_requests",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_recall_messages,
+        "interval",
+        hours=24,
+        next_run_time=datetime.now(),
+        id="recall_messages",
         replace_existing=True,
     )
     scheduler.start()

@@ -24,7 +24,7 @@ export default function OverviewPage() {
       const start30d = new Date()
       start30d.setDate(start30d.getDate() - 30)
 
-      const [bookingsRes, callsRes, threadsRes, feedbackRes] = await Promise.all([
+      const [bookingsRes, callsRes, threadsRes, feedbackRes, recallRes] = await Promise.all([
         supabase.from('bookings').select('*', { count: 'exact', head: true })
           .eq('tenant_id', tenant.id).gte('created_at', startOfWeek.toISOString()),
         supabase.from('call_logs').select('duration_seconds,auto_escalated')
@@ -35,6 +35,9 @@ export default function OverviewPage() {
           .eq('tenant_id', tenant.id).eq('type', 'feedback')
           .gte('sent_at', start30d.toISOString())
           .not('rating', 'is', null),
+        supabase.from('campaigns').select('*', { count: 'exact', head: true })
+          .eq('tenant_id', tenant.id).eq('type', 'recall')
+          .gte('sent_at', start30d.toISOString()),
       ])
 
       const calls = callsRes.data || []
@@ -62,6 +65,7 @@ export default function OverviewPage() {
         avgRating,
         fiveStarCount,
         reviewsRequested,
+        recallSent: recallRes.count || 0,
       }
     },
   })
@@ -104,6 +108,7 @@ export default function OverviewPage() {
         <StatCard title="Avg Rating" value={metrics?.avgRating ? `${metrics.avgRating} ⭐` : '—'} subtitle="Last 30 days" icon="star" />
         <StatCard title="5-Star Reviews" value={metrics?.fiveStarCount ?? '—'} subtitle="Last 30 days" icon="star" />
         <StatCard title="Review Requests Sent" value={metrics?.reviewsRequested ?? '—'} subtitle="Last 30 days" icon="message" />
+        <StatCard title="Recall Messages Sent" value={metrics?.recallSent ?? '—'} subtitle="Last 30 days" icon="star" />
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
