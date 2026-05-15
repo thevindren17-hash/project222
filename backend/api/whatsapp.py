@@ -415,6 +415,17 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         if tenant.tool_config.get(t["function"]["name"], True)
     ]
 
+    # Once slots have been shown, remove check_slots so the model cannot call it again.
+    # The user's next reply is a time selection — only book_appointment is needed.
+    _SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot")
+    slots_already_shown = any(
+        any(marker in m["body"].lower() for marker in _SLOT_MARKERS)
+        for m in history_result.data
+        if m["role"] == "assistant"
+    )
+    if slots_already_shown:
+        enabled_tools = [t for t in enabled_tools if t["function"]["name"] != "check_slots"]
+
     response = await llm_client.generate(
         messages=messages_payload,
         tools=enabled_tools or None,
@@ -546,6 +557,14 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         *conversation_history,
     ]
     enabled_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
+    _SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot")
+    slots_already_shown = any(
+        any(marker in m["body"].lower() for marker in _SLOT_MARKERS)
+        for m in history.data
+        if m["role"] == "assistant"
+    )
+    if slots_already_shown:
+        enabled_tools = [t for t in enabled_tools if t["function"]["name"] != "check_slots"]
     response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
     reply_text = response.get("content", "")
