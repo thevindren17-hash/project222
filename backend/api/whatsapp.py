@@ -330,10 +330,10 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     )
     contact = contact_result.get("contact", {})
 
-    # Load / create thread
+    # Load / create thread — order by created_at desc so we always get the latest
     thread_result = supabase.table("whatsapp_threads").select("*").eq(
         "tenant_id", tenant.tenant_id
-    ).eq("contact_number", formatted_phone).execute()
+    ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute()
 
     if thread_result.data:
         thread = thread_result.data[0]
@@ -499,7 +499,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
     thread_result = supabase.table("whatsapp_threads").select("*").eq(
         "tenant_id", tenant.tenant_id
-    ).eq("contact_number", formatted_phone).execute()
+    ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute()
 
     if thread_result.data:
         thread = thread_result.data[0]

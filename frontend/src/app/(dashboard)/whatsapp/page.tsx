@@ -195,10 +195,13 @@ export default function WhatsAppPage() {
   const deleteConversationMutation = useMutation({
     mutationFn: async () => {
       if (!selected) return
-      const { error: msgErr } = await supabase.from('messages').delete().eq('thread_id', selected.id)
-      if (msgErr) throw msgErr
-      const { error: threadErr } = await supabase.from('whatsapp_threads').delete().eq('id', selected.id)
-      if (threadErr) throw threadErr
+      const res = await fetch('/api/whatsapp/delete-conversation', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadId: selected.id }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Delete failed')
     },
     onSuccess: () => {
       toast.success('Conversation deleted')
