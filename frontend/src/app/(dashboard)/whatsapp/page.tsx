@@ -11,7 +11,7 @@ import { toast } from 'sonner'
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns'
 import {
   Send, Bot, User, Phone, MessageSquare, Mic,
-  Search, Copy, Check, Pencil, X, Tag, Plus, Wifi, WifiOff,
+  Search, Copy, Check, Pencil, X, Tag, Plus, Wifi, WifiOff, Trash2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { WhatsAppThread } from '@/lib/types'
@@ -59,6 +59,7 @@ export default function WhatsAppPage() {
   const [nameInput, setNameInput] = useState('')
   const [tagInput, setTagInput] = useState('')
   const [showTagInput, setShowTagInput] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
@@ -188,6 +189,24 @@ export default function WhatsAppPage() {
       if (error) throw error
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['wa-threads'] }),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const deleteConversationMutation = useMutation({
+    mutationFn: async () => {
+      if (!selected) return
+      const { error: msgErr } = await supabase.from('messages').delete().eq('thread_id', selected.id)
+      if (msgErr) throw msgErr
+      const { error: threadErr } = await supabase.from('whatsapp_threads').delete().eq('id', selected.id)
+      if (threadErr) throw threadErr
+    },
+    onSuccess: () => {
+      toast.success('Conversation deleted')
+      setSelected(null)
+      setShowDeleteConfirm(false)
+      queryClient.invalidateQueries({ queryKey: ['wa-threads'] })
+      queryClient.removeQueries({ queryKey: ['wa-messages', selected?.id] })
+    },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -626,6 +645,47 @@ export default function WhatsAppPage() {
                     <p className="text-[10px] text-muted-foreground">Add or remove tags associated with this conversation.</p>
                   )}
                 </div>
+
+                <Separator />
+
+                {/* Delete conversation */}
+                {showDeleteConfirm ? (
+                  <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3 space-y-2">
+                    <p className="text-xs font-semibold text-destructive">Delete this conversation?</p>
+                    <p className="text-[10px] text-muted-foreground">All messages will be permanently removed. This cannot be undone.</p>
+                    <div className="flex gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="flex-1 h-7 text-xs"
+                        onClick={() => deleteConversationMutation.mutate()}
+                        disabled={deleteConversationMutation.isPending}
+                      >
+                        {deleteConversationMutation.isPending
+                          ? <span className="h-3 w-3 mr-1 animate-spin rounded-full border-2 border-white border-t-transparent inline-block" />
+                          : null}
+                        Yes, delete
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1 h-7 text-xs"
+                        onClick={() => setShowDeleteConfirm(false)}
+                        disabled={deleteConversationMutation.isPending}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                    Delete conversation
+                  </button>
+                )}
               </div>
             </div>
           ) : (
