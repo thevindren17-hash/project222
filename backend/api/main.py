@@ -4,6 +4,7 @@ Handles WhatsApp webhooks, Google OAuth callbacks, and health checks.
 """
 
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI
@@ -12,8 +13,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.whatsapp import router as whatsapp_router
 from api.integrations import router as integrations_router
 from api.agent import router as agent_router
+from api.reminders import scheduler, send_appointment_reminders
 
-app = FastAPI(title="AI Receptionist Backend", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start reminder scheduler — runs every 30 minutes
+    scheduler.add_job(
+        send_appointment_reminders,
+        "interval",
+        minutes=30,
+        next_run_time=datetime.now(),  # run once immediately on startup too
+        id="appointment_reminders",
+        replace_existing=True,
+    )
+    scheduler.start()
+    yield
+    scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="AI Receptionist Backend", version="1.0.0", lifespan=lifespan)
 
 _origins = [o for o in [
     os.getenv("FRONTEND_URL"),

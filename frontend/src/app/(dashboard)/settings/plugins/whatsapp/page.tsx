@@ -9,7 +9,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap } from 'lucide-react'
+import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
+import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap, Bell } from 'lucide-react'
 
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
@@ -22,6 +24,10 @@ export default function WhatsAppPluginPage() {
   const [testLoading, setTestLoading] = useState(false)
   const [credError, setCredError] = useState<string | null>(null)
   const [credValid, setCredValid] = useState<{ phone: string; name: string } | null>(null)
+  const [reminder1dEnabled, setReminder1dEnabled] = useState(false)
+  const [reminder3hEnabled, setReminder3hEnabled] = useState(false)
+  const [reminder1dTemplate, setReminder1dTemplate] = useState('')
+  const [reminder3hTemplate, setReminder3hTemplate] = useState('')
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
@@ -35,8 +41,14 @@ export default function WhatsAppPluginPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'llm_config,agent_name,system_prompt,provider_credentials'
+        'llm_config,agent_name,system_prompt,provider_credentials,reminder_1d_enabled,reminder_3h_enabled,reminder_1d_template,reminder_3h_template'
       ).eq('tenant_id', tenant.id).maybeSingle()
+      if (data) {
+        setReminder1dEnabled(!!data.reminder_1d_enabled)
+        setReminder3hEnabled(!!data.reminder_3h_enabled)
+        setReminder1dTemplate(data.reminder_1d_template || '')
+        setReminder3hTemplate(data.reminder_3h_template || '')
+      }
       return data
     },
     enabled: !!tenant,
@@ -111,6 +123,22 @@ export default function WhatsAppPluginPage() {
       queryClient.invalidateQueries({ queryKey: ['tenant'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
     },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const saveRemindersMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenant) throw new Error('No tenant')
+      const { error } = await supabase.from('tenant_settings').upsert({
+        tenant_id: tenant.id,
+        reminder_1d_enabled: reminder1dEnabled,
+        reminder_3h_enabled: reminder3hEnabled,
+        reminder_1d_template: reminder1dTemplate.trim() || null,
+        reminder_3h_template: reminder3hTemplate.trim() || null,
+      }, { onConflict: 'tenant_id' })
+      if (error) throw error
+    },
+    onSuccess: () => toast.success('Reminder settings saved'),
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -338,6 +366,81 @@ export default function WhatsAppPluginPage() {
               <span>{testResult.msg}</span>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Appointment Reminders */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Bell className="h-5 w-5 text-primary" />
+            <div>
+              <CardTitle>Appointment Reminders</CardTitle>
+              <CardDescription>Automatically send WhatsApp reminders to patients before their appointment</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
+            Available placeholders: <code className="font-mono">{'{name}'}</code> <code className="font-mono">{'{service}'}</code> <code className="font-mono">{'{date}'}</code> <code className="font-mono">{'{time}'}</code>
+          </div>
+
+          {/* 1-day reminder */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">1-day reminder</p>
+                <p className="text-xs text-muted-foreground">Sent ~24 hours before the appointment</p>
+              </div>
+              <Switch checked={reminder1dEnabled} onCheckedChange={setReminder1dEnabled} />
+            </div>
+            {reminder1dEnabled && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">Message</Label>
+                <Textarea
+                  rows={3}
+                  placeholder="Hi {name}, reminder: your {service} appointment is tomorrow, {date} at {time}. Reply CANCEL to cancel."
+                  value={reminder1dTemplate}
+                  onChange={(e) => setReminder1dTemplate(e.target.value)}
+                  className="text-sm resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">Leave blank to use default message</p>
+              </div>
+            )}
+          </div>
+
+          {/* 3-hour reminder */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">3-hour reminder</p>
+                <p className="text-xs text-muted-foreground">Sent ~3 hours before the appointment</p>
+              </div>
+              <Switch checked={reminder3hEnabled} onCheckedChange={setReminder3hEnabled} />
+            </div>
+            {reminder3hEnabled && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">Message</Label>
+                <Textarea
+                  rows={3}
+                  placeholder="Hi {name}, your {service} appointment is in 3 hours at {time} today. See you soon!"
+                  value={reminder3hTemplate}
+                  onChange={(e) => setReminder3hTemplate(e.target.value)}
+                  className="text-sm resize-none"
+                />
+                <p className="text-[11px] text-muted-foreground">Leave blank to use default message</p>
+              </div>
+            )}
+          </div>
+
+          <Button
+            onClick={() => saveRemindersMutation.mutate()}
+            disabled={saveRemindersMutation.isPending}
+            size="sm"
+          >
+            {saveRemindersMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Save Reminder Settings
+          </Button>
         </CardContent>
       </Card>
 

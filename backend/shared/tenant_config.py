@@ -143,6 +143,11 @@ class TenantConfig:
     voice_tts_voice: str = "nova"
     # Language policy: "ask" | "en" | "ms" | "zh"
     reply_language: str = "ask"
+    # Appointment reminders
+    reminder_1d_enabled: bool = False
+    reminder_3h_enabled: bool = False
+    reminder_1d_template: str = ""
+    reminder_3h_template: str = ""
 
     def __post_init__(self):
         if not self.system_prompt:
@@ -193,6 +198,10 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         voice_stt_provider=settings.get("voice_stt_provider") or "openai",
         voice_tts_voice=settings.get("voice_tts_voice") or "nova",
         reply_language=settings.get("reply_language") or "ask",
+        reminder_1d_enabled=bool(settings.get("reminder_1d_enabled", False)),
+        reminder_3h_enabled=bool(settings.get("reminder_3h_enabled", False)),
+        reminder_1d_template=settings.get("reminder_1d_template") or "",
+        reminder_3h_template=settings.get("reminder_3h_template") or "",
     )
 
 
