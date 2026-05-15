@@ -80,6 +80,16 @@ def create_stt(provider: str, language: str, tenant) -> Any:
             raise ValueError("Tenant has no OpenAI API key configured")
         return lk_openai.STT(model="whisper-1", api_key=api_key)
 
+    if provider == "whisper_groq":
+        api_key = _cred(tenant, "groq", "api_key")
+        if not api_key:
+            raise ValueError("Tenant has no Groq API key configured")
+        return lk_openai.STT(
+            model="whisper-large-v3-turbo",
+            base_url="https://api.groq.com/openai/v1",
+            api_key=api_key,
+        )
+
     # Default → Deepgram if available
     if HAS_DEEPGRAM:
         return create_stt("deepgram", language, tenant)

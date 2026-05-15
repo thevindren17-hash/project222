@@ -144,7 +144,9 @@ async def _transcribe_audio(audio_bytes: bytes, provider: str, tenant) -> str:
                 content=audio_bytes,
             )
             r.raise_for_status()
-            return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
+            body = r.json()
+            alternatives = body.get("results", {}).get("channels", [{}])[0].get("alternatives", [])
+            return alternatives[0].get("transcript", "") if alternatives else ""
 
     # Default: OpenAI Whisper
     from openai import AsyncOpenAI
@@ -694,12 +696,16 @@ async def validate_whatsapp_credentials(tenant_id: str, request: Request):
     if not phone_number_id or not access_token:
         return {"valid": False, "error": "phone_number_id and access_token are required"}
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(
-            f"https://graph.facebook.com/v21.0/{phone_number_id}",
-            params={"fields": "id,display_phone_number,verified_name", "access_token": access_token},
-        )
-    data = r.json()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"https://graph.facebook.com/v21.0/{phone_number_id}",
+                params={"fields": "id,display_phone_number,verified_name", "access_token": access_token},
+            )
+        data = r.json()
+    except Exception as e:
+        return {"valid": False, "error": f"Could not reach Meta API: {e}"}
+
     if r.is_success and "display_phone_number" in data:
         return {
             "valid": True,
@@ -707,7 +713,7 @@ async def validate_whatsapp_credentials(tenant_id: str, request: Request):
             "verified_name": data.get("verified_name"),
         }
 
-    err_msg = data.get("error", {}).get("message", r.text)
+    err_msg = data.get("error", {}).get("message", r.text) if isinstance(data, dict) else r.text
     hint = ""
     if "does not exist" in err_msg or "missing permissions" in err_msg:
         hint = (
