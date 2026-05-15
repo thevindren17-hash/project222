@@ -267,14 +267,23 @@ def _build_date_context(reply_language: str = "ask", is_new_conversation: bool =
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
         f"{lang_rule}\n"
-        "CONVERSATION RULES — follow strictly:\n"
-        "1. Read the FULL conversation history before responding. NEVER re-ask for information the user has already provided.\n"
-        "2. If name, phone, or service type was given earlier in the conversation, use those values directly — do not ask again.\n"
-        "3. When a time is rejected and the user gives a new time, keep all other collected info (name, phone, service) and only update the time.\n"
-        "4. Only call book_appointment once you have name, phone, service type, date, and time — extracting them from the conversation if already given.\n"
-        "5. Date/time conversions: 'tomorrow'/'esok' → use the exact date shown above, '3pm'/'3 petang' → 15:00, '9am'/'9 pagi' → 09:00.\n"
-        "6. Always pass real values to tools — never pass placeholder text.\n"
-        "You are responding via WhatsApp. Keep replies concise (under 3 sentences).]"
+        "BOOKING FLOW — follow these steps strictly, one question per message:\n"
+        "  Step 1: Ask what SERVICE they need (e.g. scaling, checkup, whitening). Do NOT skip this.\n"
+        "  Step 2: Ask what DATE they prefer. Do NOT skip this.\n"
+        "  Step 3: ONLY after you have BOTH service AND date → call check_slots.\n"
+        "  Step 4: Present the available times clearly. Ask which time they prefer.\n"
+        "  Step 5: If user replies with a number like '10' or '10am', treat it as the time (e.g. 10:00). Do NOT call check_slots again.\n"
+        "  Step 6: Ask for their NAME (if not already given in this conversation).\n"
+        "  Step 7: Ask for their PHONE NUMBER (if not already given).\n"
+        "  Step 8: Confirm: service, date, time, name, phone — then call book_appointment.\n"
+        "HARD RULES:\n"
+        "- NEVER call check_slots unless you already know the specific date the user wants.\n"
+        "- NEVER call book_appointment unless you have all 5: name, phone, service, date, time.\n"
+        "- NEVER re-ask for info already given earlier in this conversation.\n"
+        "- When user picks a time from the shown list, proceed to collect name/phone — do not show slots again.\n"
+        "- Date/time: 'esok'/'tomorrow' → exact date above, '3pm'/'3 petang' → 15:00, '9am' → 09:00, '10' after seeing slots → 10:00.\n"
+        "- Always pass real values to tools — never pass placeholder text.\n"
+        "You are on WhatsApp. Keep replies concise — one question at a time, under 2 sentences.]"
     )
 
 
@@ -619,18 +628,32 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                 source="whatsapp",
             )
             if result["success"]:
-                results.append(
-                    f"Done! Your {args.get('service_type')} appointment is booked for "
-                    f"{args.get('date')} at {args.get('time')}."
-                )
+                svc = args.get('service_type', '')
+                date_ = args.get('date', '')
+                time_ = args.get('time', '')
+                if language == "ms":
+                    results.append(f"Berjaya! Temujanji {svc} anda telah ditetapkan pada {date_} jam {time_}.")
+                elif language == "zh":
+                    results.append(f"成功！您的{svc}预约已定于{date_} {time_}。")
+                else:
+                    results.append(f"Done! Your {svc} appointment is booked for {date_} at {time_}.")
             else:
-                results.append(result.get("message", "Sorry, I couldn't complete that booking."))
+                msg = result.get("message", "")
+                if language == "ms":
+                    results.append(msg or "Maaf, penempahan tidak berjaya. Sila cuba lagi.")
+                elif language == "zh":
+                    results.append(msg or "抱歉，预约未能完成，请再试一次。")
+                else:
+                    results.append(msg or "Sorry, I couldn't complete that booking.")
 
         elif fn_name == "check_slots":
             try:
                 date_obj = datetime.strptime(args["date"], "%Y-%m-%d")
             except (ValueError, KeyError):
-                results.append("Please provide the date in YYYY-MM-DD format.")
+                if language == "ms":
+                    results.append("Sila berikan tarikh yang tepat.")
+                else:
+                    results.append("Please provide the date in YYYY-MM-DD format.")
                 continue
             result = await check_slots(
                 tenant_id=tenant.tenant_id,
@@ -640,9 +663,19 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
             )
             if result["success"] and result["available_slots"]:
                 slots = ", ".join(s["time"] for s in result["available_slots"][:5])
-                results.append(f"Available times on {args['date']}: {slots}")
+                if language == "ms":
+                    results.append(f"Masa yang tersedia pada {args['date']}: {slots}\nPilih masa yang sesuai untuk anda.")
+                elif language == "zh":
+                    results.append(f"{args['date']} 的可用时间：{slots}\n请选择您方便的时间。")
+                else:
+                    results.append(f"Available times on {args['date']}: {slots}\nWhich time works for you?")
             else:
-                results.append(f"No available slots on {args['date']}.")
+                if language == "ms":
+                    results.append(f"Tiada masa yang tersedia pada {args['date']}. Cuba tarikh lain?")
+                elif language == "zh":
+                    results.append(f"{args['date']} 没有可用时间，请尝试其他日期。")
+                else:
+                    results.append(f"No available slots on {args['date']}. Try another date?")
 
         elif fn_name == "cancel_appointment":
             result = await cancel_appointment(
@@ -652,10 +685,19 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
             )
             if result["success"]:
                 from datetime import datetime as dt
-                t = dt.fromisoformat(result["scheduled_at"]).strftime("%B %d at %I:%M %p")
-                results.append(f"Your appointment on {t} has been cancelled.")
+                t = dt.fromisoformat(result["scheduled_at"]).strftime("%d %b, %I:%M %p")
+                if language == "ms":
+                    results.append(f"Temujanji anda pada {t} telah dibatalkan.")
+                elif language == "zh":
+                    results.append(f"您在{t}的预约已取消。")
+                else:
+                    results.append(f"Your appointment on {t} has been cancelled.")
             else:
-                results.append(result.get("message", "I couldn't find that appointment."))
+                msg = result.get("message", "")
+                if language == "ms":
+                    results.append(msg or "Saya tidak dapat mencari temujanji tersebut.")
+                else:
+                    results.append(msg or "I couldn't find that appointment.")
 
         elif fn_name == "reschedule_appointment":
             result = await reschedule_appointment(
@@ -667,10 +709,19 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
             )
             if result["success"]:
                 from datetime import datetime as dt
-                new = dt.fromisoformat(result["new_time"]).strftime("%B %d at %I:%M %p")
-                results.append(f"Rescheduled! Your new appointment is on {new}.")
+                new = dt.fromisoformat(result["new_time"]).strftime("%d %b, %I:%M %p")
+                if language == "ms":
+                    results.append(f"Berjaya ditukar! Temujanji baru anda pada {new}.")
+                elif language == "zh":
+                    results.append(f"改期成功！您的新预约时间是{new}。")
+                else:
+                    results.append(f"Rescheduled! Your new appointment is on {new}.")
             else:
-                results.append(result.get("error", "Couldn't reschedule that appointment."))
+                err = result.get("error", "")
+                if language == "ms":
+                    results.append(err or "Tidak dapat menukar temujanji. Sila hubungi kami.")
+                else:
+                    results.append(err or "Couldn't reschedule that appointment.")
 
         elif fn_name == "get_faq":
             result = await get_faq(tenant, args.get("question", ""))
