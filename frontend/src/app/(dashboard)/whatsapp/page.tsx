@@ -145,16 +145,20 @@ export default function WhatsAppPage() {
   const sendMutation = useMutation({
     mutationFn: async () => {
       if (!selected || !reply.trim()) return
-      const tenant = await getCurrentTenant()
-      if (!tenant) throw new Error('No tenant')
-      const { error } = await supabase.from('messages').insert({
-        thread_id: selected.id,
-        tenant_id: tenant.id,
-        role: 'assistant',
-        handled_by: 'staff',
-        body: reply.trim(),
+      const t = await getCurrentTenant()
+      if (!t) throw new Error('No tenant')
+      const res = await fetch('/api/whatsapp/send-staff-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          threadId: selected.id,
+          tenantId: t.id,
+          contactId: selected.contact_id ?? null,
+          message: reply.trim(),
+        }),
       })
-      if (error) throw error
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Send failed')
       setReply('')
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['wa-messages', selected?.id] }),

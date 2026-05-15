@@ -466,10 +466,10 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         "handled_by": "ai",
     }).execute()
 
-    supabase.table("whatsapp_threads").update({
-        "last_message_at": datetime.now().isoformat(),
-        "language": language,
-    }).eq("id", thread["id"]).execute()
+    thread_update: dict = {"last_message_at": datetime.now().isoformat(), "language": language}
+    if contact.get("name"):
+        thread_update["contact_name"] = contact["name"]
+    supabase.table("whatsapp_threads").update(thread_update).eq("id", thread["id"]).execute()
 
     # Now send to WhatsApp — log exact Meta error if it fails
     try:
@@ -740,6 +740,17 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                 source="whatsapp",
             )
             if result["success"]:
+                # Update contact record with the collected name so dashboard shows correct patient
+                existing_name = (contact.get("name") or "").strip().lower()
+                if contact_name and existing_name in ("", "unknown"):
+                    try:
+                        _sb = get_supabase_client()
+                        _sb.table("contacts").update({"name": contact_name}).eq(
+                            "id", contact.get("id")
+                        ).execute()
+                        contact["name"] = contact_name  # keep local dict in sync
+                    except Exception as _e:
+                        logger.warning(f"Failed to update contact name: {_e}")
                 svc = args.get('service_type', '')
                 date_ = args.get('date', '')
                 time_ = args.get('time', '')

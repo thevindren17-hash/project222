@@ -54,7 +54,7 @@ async def check_booking_rate_limit(tenant_id: str, contact_id: str) -> bool:
         "created_at", today_start.isoformat()
     ).execute()
 
-    return len(result.data) < 3
+    return len(result.data) < 5
 
 
 # ── Appointment tools ──────────────────────────────────────────────────────────
