@@ -621,6 +621,28 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     }).eq("id", thread["id"]).execute()
 
 
+_BOOKING_PLACEHOLDERS = {
+    # English placeholders
+    "name", "your name", "patient name", "patient", "unknown", "n/a", "tba",
+    "[name]", "[patient name]", "[service]", "[service type]", "[phone]",
+    # Malay placeholders
+    "nama", "nama anda", "nama pesakit", "pesakit", "perkhidmatan",
+    "perkhidmatan yang diperlukan", "jenis perkhidmatan", "nombor telefon",
+    # Chinese placeholders
+    "姓名", "服务", "电话",
+}
+
+
+def _is_placeholder(value: str) -> bool:
+    if not value or not value.strip():
+        return True
+    return value.strip().lower() in _BOOKING_PLACEHOLDERS or value.strip().startswith("[")
+
+
+def _is_valid_phone(phone: str) -> bool:
+    return len(re.sub(r"\D", "", phone)) >= 8
+
+
 async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: str) -> str:
     """Execute LLM tool calls and return a combined response string."""
     from api.agent import _resolve_datetime  # NLP date parser (handles natural language + Malay)
@@ -631,16 +653,42 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
         args = tc["function"]["arguments"]
 
         if fn_name == "book_appointment":
+            # Validate all required fields before booking
+            contact_name = args.get("contact_name", "").strip() or contact.get("name", "")
+            contact_phone = args.get("contact_phone", "").strip() or contact.get("phone", "")
+            service_type = args.get("service_type", "").strip()
+
+            missing = []
+            if _is_placeholder(contact_name):
+                missing.append("name" if language == "en" else "nama" if language == "ms" else "姓名")
+            if not _is_valid_phone(contact_phone):
+                missing.append("phone number" if language == "en" else "nombor telefon" if language == "ms" else "电话")
+            if _is_placeholder(service_type):
+                missing.append("service type" if language == "en" else "jenis perkhidmatan" if language == "ms" else "服务类型")
+
+            if missing:
+                missing_str = ", ".join(missing)
+                if language == "ms":
+                    results.append(f"Saya masih perlukan: {missing_str}.")
+                elif language == "zh":
+                    results.append(f"还需要以下信息：{missing_str}。")
+                else:
+                    results.append(f"I still need: {missing_str}.")
+                continue
+
             scheduled_dt = _resolve_datetime(args.get("date", ""), args.get("time", ""))
             if not scheduled_dt:
-                results.append("I couldn't understand the date and time. Please confirm the date and time with the patient.")
+                if language == "ms":
+                    results.append("Saya tidak faham tarikh/masa. Boleh nyatakan semula?")
+                else:
+                    results.append("I couldn't understand the date and time. Please clarify.")
                 continue
             result = await book_appointment(
                 tenant_id=tenant.tenant_id,
                 contact_id=contact.get("id"),
-                contact_name=args.get("contact_name", contact.get("name", "Patient")),
-                contact_phone=args.get("contact_phone", contact.get("phone", "")),
-                service_type=args.get("service_type", ""),
+                contact_name=contact_name,
+                contact_phone=contact_phone,
+                service_type=service_type,
                 scheduled_at=scheduled_dt,
                 tenant_config=tenant,
                 notes=args.get("notes"),
