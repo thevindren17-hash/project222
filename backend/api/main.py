@@ -7,8 +7,19 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.asyncio import AsyncioIntegration
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+if os.getenv("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.getenv("SENTRY_DSN"),
+        integrations=[FastApiIntegration(), AsyncioIntegration()],
+        traces_sample_rate=0.05,
+        environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
+    )
 
 from api.whatsapp import router as whatsapp_router
 from api.integrations import router as integrations_router

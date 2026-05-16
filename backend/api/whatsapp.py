@@ -13,6 +13,8 @@ import sys
 import os
 import re
 import json
+import hmac
+import hashlib
 from datetime import datetime, timedelta
 
 import httpx
@@ -69,8 +71,21 @@ async def whatsapp_webhook(tenant_id: str, request: Request, background_tasks: B
     Heavy processing (LLM call, DB writes, WA send) runs in background_tasks
     so Meta never times out waiting for us.
     """
+    raw_body = await request.body()
+
+    # Verify Meta webhook signature (set WA_APP_SECRET in Railway env vars)
+    app_secret = os.getenv("WA_APP_SECRET", "")
+    if app_secret:
+        sig_header = request.headers.get("X-Hub-Signature-256", "")
+        expected   = "sha256=" + hmac.new(
+            app_secret.encode(), raw_body, hashlib.sha256
+        ).hexdigest()
+        if not sig_header or not hmac.compare_digest(sig_header, expected):
+            logger.warning(f"Rejected webhook with invalid HMAC for tenant {tenant_id}")
+            return {"status": "invalid_signature"}
+
     try:
-        payload = await request.json()
+        payload = json.loads(raw_body)
     except Exception:
         return {"status": "invalid_json"}
 

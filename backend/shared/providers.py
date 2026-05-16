@@ -9,7 +9,16 @@ Text pipeline (WhatsApp):  load_llm_client(tenant)       → LLMClient.generate(
 """
 
 import os
+import asyncio
+import random
+import logging
 from typing import Any, Optional, Tuple, List, Dict
+
+_logger = logging.getLogger(__name__)
+
+# Errors that are worth retrying — transient, not the caller's fault
+_RETRIABLE = ("rate limit", "ratelimit", "429", "503", "502", "timeout",
+              "overloaded", "connection", "server error")
 
 # ── LiveKit plugins ────────────────────────────────────────────────────────────
 from livekit.plugins import openai as lk_openai
@@ -230,6 +239,30 @@ class LLMClient:
         messages: List[Dict[str, str]],
         tools: Optional[List[dict]] = None,
         stream: bool = False,
+        max_retries: int = 3,
+    ) -> Dict[str, Any]:
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                return await self._dispatch(messages, tools)
+            except Exception as exc:
+                err_str = str(exc).lower()
+                is_retriable = any(k in err_str for k in _RETRIABLE)
+                if not is_retriable or attempt == max_retries - 1:
+                    raise
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                _logger.warning(
+                    f"LLM {self.provider} transient error (attempt {attempt + 1}/{max_retries}), "
+                    f"retrying in {wait:.1f}s: {exc}"
+                )
+                last_exc = exc
+                await asyncio.sleep(wait)
+        raise last_exc  # type: ignore[misc]
+
+    async def _dispatch(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[dict]],
     ) -> Dict[str, Any]:
         if self.provider == "openai":
             return await self._call_openai(messages, tools)

@@ -30,9 +30,16 @@ def get_supabase_client() -> Client:
     return _client
 
 
-async def _db(fn):
-    """Run a synchronous Supabase call in a thread pool so it never blocks the event loop."""
-    return await asyncio.to_thread(fn)
+async def _db(fn, timeout: float = 10.0):
+    """
+    Run a synchronous Supabase call in a thread pool so it never blocks the
+    event loop. Raises RuntimeError if the call takes longer than *timeout* seconds
+    — prevents a hung DB connection from stalling an entire background task.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"Supabase call timed out after {timeout}s")
 
 
 # ── Tenant config cache (60 s TTL — settings rarely change) ───────────────────

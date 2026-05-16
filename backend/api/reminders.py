@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from shared.tenant_config import get_supabase_client, _db
+from shared.scheduler_lock import acquire_lock
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ async def _send_wa(to: str, text: str, phone_number_id: str, access_token: str):
 
 async def send_appointment_reminders():
     """Check for upcoming appointments and send WhatsApp reminders."""
+    if not await acquire_lock("appointment_reminders", duration_minutes=25):
+        logger.info("Reminders: lock held by another instance, skipping this run")
+        return
     supabase = get_supabase_client()
     now = datetime.now()
 

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from shared.tenant_config import get_supabase_client, _db
+from shared.scheduler_lock import acquire_lock
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ async def send_feedback_requests():
     Find completed (or past-due) appointments in the 2–6 h window
     that haven't received a feedback message yet, and send one.
     """
+    if not await acquire_lock("feedback_requests", duration_minutes=25):
+        logger.info("Feedback: lock held by another instance, skipping this run")
+        return
     supabase = get_supabase_client()
     now = datetime.now()
     window_start = (now - timedelta(hours=6)).isoformat()
@@ -338,6 +342,9 @@ async def send_recall_messages():
     already been contacted for recall, then send a re-engagement message.
     Capped at 50 contacts per tenant per run to avoid bulk-send limits.
     """
+    if not await acquire_lock("recall_messages", duration_minutes=60):
+        logger.info("Recall: lock held by another instance, skipping this run")
+        return
     supabase = get_supabase_client()
     now = datetime.now()
 
