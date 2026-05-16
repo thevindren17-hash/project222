@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.whatsapp import router as whatsapp_router
@@ -77,6 +77,26 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+# ── Manual job trigger (for testing) ─────────────────────────────────────────
+# Protected by TRIGGER_SECRET env var. Set it in Railway → Variables.
+
+_JOBS = {
+    "reminders": send_appointment_reminders,
+    "feedback":  send_feedback_requests,
+    "recall":    send_recall_messages,
+}
+
+@app.post("/admin/trigger/{job}")
+async def trigger_job(job: str, x_trigger_secret: str = Header(default="")):
+    secret = os.getenv("TRIGGER_SECRET", "")
+    if not secret or x_trigger_secret != secret:
+        raise HTTPException(status_code=403, detail="Invalid or missing X-Trigger-Secret header")
+    if job not in _JOBS:
+        raise HTTPException(status_code=404, detail=f"Unknown job '{job}'. Valid: {list(_JOBS)}")
+    await _JOBS[job]()
+    return {"status": "ok", "job": job, "ran_at": datetime.now().isoformat()}
 
 
 if __name__ == "__main__":
