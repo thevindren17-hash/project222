@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
-import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap, Bell, Star, UserRoundCheck } from 'lucide-react'
+import { CheckCircle2, XCircle, Copy, Loader2, RefreshCw, AlertCircle, Send, Bot, Zap, Bell, Star, UserRoundCheck, FlaskConical } from 'lucide-react'
 
 export default function WhatsAppPluginPage() {
   const queryClient = useQueryClient()
@@ -45,6 +45,11 @@ export default function WhatsAppPluginPage() {
   const [csvResult, setCsvResult] = useState<{ sent: number; skipped: number; failed: number } | null>(null)
   const [csvDragOver, setCsvDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // Test message state
+  const [testPhone, setTestPhone] = useState('')
+  const [testSending, setTestSending] = useState<string | null>(null)
+  const [testResult, setTestResult] = useState<{ type: string; message: string; to: string } | null>(null)
+  const [testError, setTestError] = useState('')
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
@@ -274,6 +279,30 @@ export default function WhatsAppPluginPage() {
       toast.error('Network error')
     } finally {
       setCsvSending(false)
+    }
+  }
+
+  async function sendTestMessage(type: 'reminder' | 'feedback' | 'recall') {
+    if (!tenant || !testPhone.trim()) {
+      setTestError('Enter a WhatsApp number first')
+      return
+    }
+    setTestSending(type)
+    setTestResult(null)
+    setTestError('')
+    try {
+      const res = await fetch('/api/test/send-template', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenant.id, phone: testPhone.trim(), type }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setTestError(data.error || 'Send failed'); return }
+      setTestResult({ type, message: data.message, to: data.to })
+    } catch {
+      setTestError('Network error')
+    } finally {
+      setTestSending(null)
     }
   }
 
@@ -864,6 +893,103 @@ export default function WhatsAppPluginPage() {
               </div>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Test Messages */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <FlaskConical className="h-5 w-5 text-primary" />
+            <div>
+              <CardTitle>Test Messages</CardTitle>
+              <CardDescription>Send a real test message to any WhatsApp number to verify your templates look correct before going live</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <Label className="text-sm font-medium">WhatsApp number to send test to</Label>
+            <Input
+              placeholder="+60123456789"
+              value={testPhone}
+              onChange={(e) => { setTestPhone(e.target.value); setTestResult(null); setTestError('') }}
+              className="font-mono"
+            />
+            <p className="text-[11px] text-muted-foreground">Include country code, e.g. +60 for Malaysia</p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!!testSending || !isConnected}
+              onClick={() => sendTestMessage('reminder')}
+              className="w-full"
+            >
+              {testSending === 'reminder'
+                ? <><Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />Sending…</>
+                : <><Bell className="mr-2 h-3.5 w-3.5" />Test Reminder</>}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!!testSending || !isConnected}
+              onClick={() => sendTestMessage('feedback')}
+              className="w-full"
+            >
+              {testSending === 'feedback'
+                ? <><Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />Sending…</>
+                : <><Star className="mr-2 h-3.5 w-3.5" />Test Feedback</>}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!!testSending || !isConnected}
+              onClick={() => sendTestMessage('recall')}
+              className="w-full"
+            >
+              {testSending === 'recall'
+                ? <><Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />Sending…</>
+                : <><UserRoundCheck className="mr-2 h-3.5 w-3.5" />Test Recall</>}
+            </Button>
+          </div>
+
+          {!isConnected && (
+            <p className="text-xs text-destructive">Connect WhatsApp first before testing.</p>
+          )}
+
+          {testError && (
+            <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/10 rounded-md p-3">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              {testError}
+            </div>
+          )}
+
+          {testResult && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>
+                  <span className="font-medium capitalize">{testResult.type}</span> message sent to{' '}
+                  <span className="font-mono">{testResult.to}</span>
+                </span>
+              </div>
+              <div className="rounded-md bg-muted/50 border p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
+                {testResult.message}
+              </div>
+              {testResult.type === 'feedback' && (
+                <p className="text-[11px] text-muted-foreground">
+                  Reply with 1–5 on WhatsApp to test the full feedback flow — a rating of 4–5 will trigger the Google review link, 1–3 will create an escalation alert.
+                </p>
+              )}
+              {testResult.type === 'recall' && (
+                <p className="text-[11px] text-muted-foreground">
+                  Reply anything on WhatsApp — the AI will take over and offer to book an appointment.
+                </p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
