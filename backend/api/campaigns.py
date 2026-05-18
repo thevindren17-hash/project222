@@ -462,6 +462,35 @@ async def send_recall_messages():
                 logger.error(f"Recall send failed | tenant={tenant_id} | contact={contact_id} | {e}")
 
 
+# ── Campaign cleanup ──────────────────────────────────────────────────────────
+
+async def cleanup_expired_campaigns():
+    """
+    Mark stale 'sent' campaigns as 'expired' so they don't pollute queries.
+    - Feedback campaigns: expire after 24 h (reply window is 12 h)
+    - Recall campaigns:   expire after 30 days
+    Runs every 6 h via APScheduler.
+    """
+    supabase = get_supabase_client()
+    now = datetime.now()
+
+    feedback_cutoff = (now - timedelta(hours=24)).isoformat()
+    recall_cutoff   = (now - timedelta(days=30)).isoformat()
+
+    try:
+        await _db(lambda: supabase.table("campaigns").update(
+            {"status": "expired"}
+        ).eq("type", "feedback").eq("status", "sent").lt("sent_at", feedback_cutoff).execute())
+
+        await _db(lambda: supabase.table("campaigns").update(
+            {"status": "expired"}
+        ).eq("type", "recall").eq("status", "sent").lt("sent_at", recall_cutoff).execute())
+
+        logger.info("Campaign cleanup done")
+    except Exception as e:
+        logger.error(f"Campaign cleanup error: {e}")
+
+
 # ── Internal WA sender ────────────────────────────────────────────────────────
 
 async def _send_wa(to: str, text: str, phone_number_id: str, access_token: str):

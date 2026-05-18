@@ -68,6 +68,26 @@ def _is_rate_limited(key: str) -> bool:
 _MAX_MSG_CHARS = 4000
 
 
+# ── Contact audit log helper ──────────────────────────────────────────────────
+async def _log_contact_change(
+    tenant_id: str, contact_id: str,
+    field: str, old_value: str, new_value: str,
+    changed_by: str = "system",
+) -> None:
+    try:
+        supabase = get_supabase_client()
+        await _db(lambda: supabase.table("contact_audit_log").insert({
+            "tenant_id": tenant_id,
+            "contact_id": contact_id,
+            "changed_by": changed_by,
+            "field": field,
+            "old_value": old_value,
+            "new_value": new_value,
+        }).execute())
+    except Exception as _e:
+        logger.warning(f"Audit log write failed: {_e}")
+
+
 # ── Opt-out / unsubscribe ─────────────────────────────────────────────────────
 
 _OPT_OUT_RE = re.compile(
@@ -297,8 +317,13 @@ def _build_date_context(
     reply_language: str = "ask",
     is_new_conversation: bool = False,
     conversation_language: str = "en",
+    timezone: str = "Asia/Kuala_Lumpur",
 ) -> str:
-    now = datetime.now()
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(tz=ZoneInfo(timezone))
+    except Exception:
+        now = datetime.now()
     tomorrow = now + timedelta(days=1)
 
     if reply_language == "en":
@@ -448,6 +473,10 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             await _db(lambda: supabase.table("contacts").update(
                 {"opted_out": True}
             ).eq("id", _optcid).execute())
+            await _log_contact_change(
+                tenant_id=tenant.tenant_id, contact_id=_optcid,
+                field="opted_out", old_value="false", new_value="true",
+            )
         ack = _OPT_OUT_REPLIES.get(detected_lang, _OPT_OUT_REPLIES["en"])
         try:
             await send_whatsapp_message(
@@ -506,8 +535,16 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         "thread_id", thread["id"]
     ).order("created_at", desc=False).limit(20).execute())
 
+    # Cap total history size sent to LLM at 50 KB to control token cost
+    _MAX_HISTORY_BYTES = 50_000
+    history_messages = history_result.data
+    total_bytes = sum(len((m.get("body") or "").encode()) for m in history_messages)
+    while history_messages and total_bytes > _MAX_HISTORY_BYTES:
+        removed = history_messages.pop(0)
+        total_bytes -= len((removed.get("body") or "").encode())
+
     conversation_history = [
-        {"role": m["role"], "content": m["body"]} for m in history_result.data
+        {"role": m["role"], "content": m["body"]} for m in history_messages
     ]
     conversation_history.append({"role": "user", "content": message_text})
 
@@ -528,6 +565,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         reply_language=getattr(tenant, "reply_language", "ask"),
         is_new_conversation=is_new_conversation,
         conversation_language=language,
+        timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
     )
 
     messages_payload = [
@@ -536,7 +574,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     ]
 
     all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
-    enabled_tools = _select_tools(all_tools, history_result.data, message_text)
+    enabled_tools = _select_tools(all_tools, history_messages, message_text)
 
     response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
@@ -654,6 +692,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         reply_language=getattr(tenant, "reply_language", "ask"),
         is_new_conversation=is_new_conversation,
         conversation_language=language,
+        timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
@@ -829,10 +868,15 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                     try:
                         supabase = get_supabase_client()
                         _cid = contact.get("id")
+                        _safe_name = contact_name[:100]
                         await _db(lambda: supabase.table("contacts").update(
-                            {"name": contact_name}
+                            {"name": _safe_name}
                         ).eq("id", _cid).execute())
-                        contact["name"] = contact_name
+                        await _log_contact_change(
+                            tenant_id=tenant.tenant_id, contact_id=_cid,
+                            field="name", old_value=existing_name, new_value=_safe_name,
+                        )
+                        contact["name"] = _safe_name
                     except Exception as _e:
                         logger.warning(f"Failed to update contact name: {_e}")
 
@@ -944,6 +988,8 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                 reason=args.get("reason", "user_requested"),
                 context="WA tool escalation",
                 source="whatsapp",
+                contact_name=contact.get("name", ""),
+                contact_phone=contact.get("phone", ""),
             )
             results.append("I'm connecting you with one of our staff members now. They'll be in touch shortly.")
 
@@ -961,6 +1007,8 @@ async def _handle_wa_escalation(tenant, thread: dict, contact: dict, from_number
         reason=reason,
         context=f"WhatsApp escalation — thread {thread['id']}",
         source="whatsapp",
+        contact_name=contact.get("name", ""),
+        contact_phone=contact.get("phone", ""),
     )
 
     await send_whatsapp_message(

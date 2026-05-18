@@ -5,19 +5,33 @@ Guardrails: double-booking prevention, rate limiting, business-hours validation.
 All Supabase calls use _db() to avoid blocking the async event loop.
 """
 
+import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
+
+import httpx
 
 from shared.tenant_config import get_supabase_client, TenantConfig, _db
 from shared.google_integrations import get_google_calendar, get_google_sheets
 
+logger = logging.getLogger(__name__)
+
 
 # ── Guardrail helpers ──────────────────────────────────────────────────────────
 
-def validate_booking_time(scheduled_at: datetime, business_hours: Dict) -> Dict[str, Any]:
-    if scheduled_at < datetime.now():
+def validate_booking_time(
+    scheduled_at: datetime,
+    business_hours: Dict,
+    timezone: str = "Asia/Kuala_Lumpur",
+) -> Dict[str, Any]:
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(tz=ZoneInfo(timezone)).replace(tzinfo=None)
+    except Exception:
+        now = datetime.now()
+    if scheduled_at < now:
         return {"valid": False, "error": "Cannot book appointments in the past."}
-    if scheduled_at > datetime.now() + timedelta(days=90):
+    if scheduled_at > now + timedelta(days=90):
         return {"valid": False, "error": "For bookings more than 3 months out, please contact us directly."}
 
     day_name = scheduled_at.strftime("%a").lower()
@@ -62,7 +76,10 @@ async def book_appointment(
     supabase = get_supabase_client()
 
     if tenant_config:
-        validation = validate_booking_time(scheduled_at, tenant_config.business_hours)
+        validation = validate_booking_time(
+            scheduled_at, tenant_config.business_hours,
+            timezone=getattr(tenant_config, "timezone", "Asia/Kuala_Lumpur"),
+        )
         if not validation["valid"]:
             return {"success": False, "error": "invalid_time", "message": validation["error"]}
 
@@ -402,6 +419,8 @@ async def escalate_to_human(
     reason: str,
     context: str,
     source: str = "voice",
+    contact_name: str = "",
+    contact_phone: str = "",
 ) -> Dict[str, Any]:
     supabase = get_supabase_client()
     await _db(lambda: supabase.table("escalations").insert({
@@ -411,6 +430,32 @@ async def escalate_to_human(
         "source": source,
         "created_at": datetime.now().isoformat(),
     }).execute())
+
+    # Notify staff via WhatsApp if escalation_number is configured
+    from shared.tenant_config import get_tenant_by_id
+    tenant = await get_tenant_by_id(tenant_id)
+    if tenant and tenant.escalation_number and tenant.wa_phone_number_id and tenant.wa_access_token:
+        who = f"{contact_name} ({contact_phone})" if contact_name else contact_phone or "Unknown"
+        alert = (
+            f"🚨 *Escalation Alert*\n"
+            f"Reason: {reason}\n"
+            f"Contact: {who}\n"
+            f"Context: {context}\n"
+            f"Source: {source}"
+        )
+        to = tenant.escalation_number.replace("+", "").replace(" ", "")
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"https://graph.facebook.com/v21.0/{tenant.wa_phone_number_id}/messages",
+                    headers={"Authorization": f"Bearer {tenant.wa_access_token}",
+                             "Content-Type": "application/json"},
+                    json={"messaging_product": "whatsapp", "to": to,
+                          "type": "text", "text": {"body": alert}},
+                )
+        except Exception as _e:
+            logger.warning(f"Escalation WA notification failed: {_e}")
+
     return {
         "success": True,
         "action": "transfer" if source == "voice" else "notify_staff",
