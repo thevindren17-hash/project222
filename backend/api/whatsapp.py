@@ -15,6 +15,8 @@ import re
 import json
 import hmac
 import hashlib
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 import httpx
@@ -45,6 +47,39 @@ from shared.utils import (
 
 router = APIRouter()
 
+# ── Per-contact rate limiter ──────────────────────────────────────────────────
+# Keeps an in-memory deque of message timestamps per (tenant, phone) pair.
+# Limits to 5 messages per contact per 60 seconds to prevent spam/credit burn.
+_rate_limit_store: dict = defaultdict(lambda: deque(maxlen=10))
+_RATE_WINDOW   = 60   # seconds
+_RATE_MAX_MSGS = 5    # max messages per window
+
+def _is_rate_limited(key: str) -> bool:
+    now = time.monotonic()
+    q = _rate_limit_store[key]
+    while q and now - q[0] > _RATE_WINDOW:
+        q.popleft()
+    if len(q) >= _RATE_MAX_MSGS:
+        return True
+    q.append(now)
+    return False
+
+# ── Maximum inbound message length before LLM ────────────────────────────────
+_MAX_MSG_CHARS = 4000
+
+
+# ── Opt-out / unsubscribe ─────────────────────────────────────────────────────
+
+_OPT_OUT_RE = re.compile(
+    r'\b(stop|unsubscribe|opt[\s-]?out|berhenti|退订|停止)\b',
+    re.IGNORECASE,
+)
+_OPT_OUT_REPLIES = {
+    "en": "You've been unsubscribed from our messages. You won't receive further automated notifications. Reply START to re-subscribe.",
+    "ms": "Anda telah berhenti langgan mesej kami. Anda tidak akan menerima pemberitahuan lanjut. Balas MULA untuk langgan semula.",
+    "zh": "您已取消订阅我们的消息。您将不再收到自动通知。回复"开始"以重新订阅。",
+}
+
 
 # ── Webhook verification ───────────────────────────────────────────────────────
 
@@ -57,8 +92,16 @@ async def whatsapp_verify(tenant_id: str, request: Request):
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
-    if mode == "subscribe" and token == _derive_verify_token(tenant_id):
-        return Response(content=challenge, media_type="text/plain")
+    if mode == "subscribe":
+        tenant = await get_tenant_by_id(tenant_id)
+        # Use stored random verify token if set, fall back to derived for legacy setups
+        expected = (
+            tenant.wa_verify_token
+            if tenant and tenant.wa_verify_token
+            else _derive_verify_token(tenant_id)
+        )
+        if token == expected:
+            return Response(content=challenge, media_type="text/plain")
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
@@ -101,16 +144,32 @@ async def whatsapp_webhook(tenant_id: str, request: Request, background_tasks: B
         message = messages[0]
         wa_message_id = message.get("id", "")
 
-        # Dedup check — synchronous before returning 200 so we don't spawn
-        # duplicate background tasks for the same WA message.
+        # Atomic dedup — INSERT into webhook_dedup (unique PRIMARY KEY).
+        # A conflict = the same message_id is already being processed.
+        # Degrades gracefully to a SELECT check if the table isn't created yet.
         supabase = get_supabase_client()
         if wa_message_id:
-            already = await _db(lambda: supabase.table("messages").select("id").eq(
-                "wa_message_id", wa_message_id
-            ).limit(1).execute())
-            if already.data:
-                logger.info(f"Duplicate WA message skipped: {wa_message_id}")
-                return {"status": "duplicate"}
+            try:
+                insert_result = await _db(lambda: supabase.table("webhook_dedup").insert(
+                    {"wa_message_id": wa_message_id}
+                ).execute())
+                if not insert_result.data:
+                    logger.info(f"Duplicate WA message skipped: {wa_message_id}")
+                    return {"status": "duplicate"}
+            except Exception as _dedup_exc:
+                _s = str(_dedup_exc).lower()
+                if "23505" in _s or "unique" in _s or "duplicate" in _s:
+                    logger.info(f"Duplicate WA message skipped: {wa_message_id}")
+                    return {"status": "duplicate"}
+                # Table not yet created — fall back to legacy SELECT check
+                if "42p01" not in _s:
+                    logger.warning(f"webhook_dedup unexpected error: {_dedup_exc}")
+                _already = await _db(lambda: supabase.table("messages").select("id").eq(
+                    "wa_message_id", wa_message_id
+                ).limit(1).execute())
+                if _already.data:
+                    logger.info(f"Duplicate WA message skipped (legacy): {wa_message_id}")
+                    return {"status": "duplicate"}
 
         tenant = await get_tenant_by_id(tenant_id)
         if not tenant or not tenant.is_active:
@@ -318,8 +377,31 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     if not message_text:
         return
 
+    # Drop oversized messages before doing anything expensive
+    if len(message_text) > _MAX_MSG_CHARS:
+        logger.warning(
+            f"Oversized message ({len(message_text)} chars) from {from_number} "
+            f"tenant={tenant.tenant_id} — dropping"
+        )
+        try:
+            await send_whatsapp_message(
+                to=from_number,
+                text="Sorry, your message is too long for me to process. Please send a shorter message.",
+                phone_number_id=tenant.wa_phone_number_id,
+                access_token=tenant.wa_access_token,
+            )
+        except Exception:
+            pass
+        return
+
     detected_lang = detect_language(message_text)
     formatted_phone = format_phone_number(from_number)
+
+    # Rate limit: 5 messages per contact per 60 s
+    _rl_key = f"{tenant.tenant_id}:{formatted_phone}"
+    if _is_rate_limited(_rl_key):
+        logger.warning(f"Rate limited: {formatted_phone} tenant={tenant.tenant_id}")
+        return
 
     contact_result = await get_or_create_contact(
         tenant_id=tenant.tenant_id, phone=formatted_phone, source="whatsapp",
@@ -358,6 +440,25 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             "last_message_at": datetime.now().isoformat(),
         }).execute())
         thread = new_thread.data[0]
+
+    # ── Opt-out / unsubscribe ──────────────────────────────────────────────────
+    if _OPT_OUT_RE.search(message_text):
+        if contact.get("id"):
+            _optcid = contact["id"]
+            await _db(lambda: supabase.table("contacts").update(
+                {"opted_out": True}
+            ).eq("id", _optcid).execute())
+        ack = _OPT_OUT_REPLIES.get(detected_lang, _OPT_OUT_REPLIES["en"])
+        try:
+            await send_whatsapp_message(
+                to=from_number, text=ack,
+                phone_number_id=tenant.wa_phone_number_id,
+                access_token=tenant.wa_access_token,
+            )
+        except Exception as _e:
+            logger.warning(f"Opt-out ack failed: {_e}")
+        logger.info(f"WA opt-out | tenant={tenant.tenant_id} | contact={contact.get('id')}")
+        return
 
     # ── Guardrails ──────────────────────────────────────────────────────────────
     if check_emergency(message_text):

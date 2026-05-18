@@ -217,9 +217,10 @@ async def cancel_appointment(
     supabase = get_supabase_client()
 
     if booking_id:
+        _bid_lookup = booking_id
         booking = await _db(lambda: supabase.table("bookings").select("*").eq(
-            "id", booking_id
-        ).maybe_single().execute())
+            "id", _bid_lookup
+        ).eq("tenant_id", tenant_id).maybe_single().execute())
     elif contact_phone:
         contact = await _db(lambda: supabase.table("contacts").select("id").eq(
             "tenant_id", tenant_id
@@ -272,9 +273,10 @@ async def reschedule_appointment(
         return {"success": False, "error": "Invalid date or time format"}
 
     if booking_id:
+        _bid_lookup = booking_id
         booking = await _db(lambda: supabase.table("bookings").select("*").eq(
-            "id", booking_id
-        ).maybe_single().execute())
+            "id", _bid_lookup
+        ).eq("tenant_id", tenant_id).maybe_single().execute())
     elif contact_phone:
         contact = await _db(lambda: supabase.table("contacts").select("id").eq(
             "tenant_id", tenant_id

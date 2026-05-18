@@ -119,7 +119,7 @@ async def send_feedback_requests():
             _cid = contact_id
             contact_res = await _db(lambda: supabase.table("contacts").select(
                 "name, phone"
-            ).eq("id", _cid).maybe_single().execute())
+            ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
             if not contact_res.data:
                 continue
 
@@ -409,7 +409,7 @@ async def send_recall_messages():
             _cid = contact_id
             contact_res = await _db(lambda: supabase.table("contacts").select(
                 "name, phone"
-            ).eq("id", _cid).maybe_single().execute())
+            ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
             if not contact_res.data:
                 continue
 

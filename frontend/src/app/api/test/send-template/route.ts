@@ -1,10 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
+
+async function verifyTenantAccess(tenantId: string): Promise<boolean> {
+  const cookieStore = await cookies()
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() { return cookieStore.getAll() },
+        setAll(toSet) { try { toSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options)) } catch {} },
+      },
+    }
+  )
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return false
+
+  const { data: owned } = await supabaseAdmin
+    .from('tenants').select('id').eq('id', tenantId).eq('owner_id', user.id).maybeSingle()
+  if (owned) return true
+
+  const { data: staff } = await supabaseAdmin
+    .from('staff_profiles').select('id').eq('tenant_id', tenantId).eq('user_id', user.id).maybeSingle()
+  return !!staff
+}
 
 const DEFAULT_REMINDER =
   'Hi {name}, this is a TEST reminder that your {service} appointment is tomorrow, ' +
@@ -46,6 +72,10 @@ export async function POST(req: NextRequest) {
 
     if (!tenant_id || !rawPhone || !type) {
       return NextResponse.json({ error: 'tenant_id, phone, and type are required' }, { status: 400 })
+    }
+
+    if (!await verifyTenantAccess(tenant_id)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
     }
 
     const phone = normalizePhone(rawPhone)

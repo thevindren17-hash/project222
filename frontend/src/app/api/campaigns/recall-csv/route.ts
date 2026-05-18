@@ -1,10 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
+
+async function verifyTenantAccess(tenantId: string): Promise<boolean> {
+  const cookieStore = await cookies()
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() { return cookieStore.getAll() },
+        setAll(toSet) { try { toSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options)) } catch {} },
+      },
+    }
+  )
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return false
+
+  const { data: owned } = await supabaseAdmin
+    .from('tenants').select('id').eq('id', tenantId).eq('owner_id', user.id).maybeSingle()
+  if (owned) return true
+
+  const { data: staff } = await supabaseAdmin
+    .from('staff_profiles').select('id').eq('tenant_id', tenantId).eq('user_id', user.id).maybeSingle()
+  return !!staff
+}
 
 function normalizePhone(raw: string): string | null {
   // Keep digits and a leading +
@@ -41,10 +67,11 @@ async function sendOneRecall(params: {
         { tenant_id, phone, name, source: 'csv_import' },
         { onConflict: 'tenant_id,phone' }
       )
-      .select('id')
+      .select('id, opted_out')
       .single()
 
     if (upsertErr || !contactRow) return 'failed'
+    if (contactRow.opted_out) return 'skipped'
 
     const contact_id = contactRow.id
 
@@ -137,6 +164,10 @@ export async function POST(req: NextRequest) {
 
     if (!tenant_id || !Array.isArray(contacts) || contacts.length === 0) {
       return NextResponse.json({ error: 'tenant_id and contacts are required' }, { status: 400 })
+    }
+
+    if (!await verifyTenantAccess(tenant_id)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
     }
     if (contacts.length > 500) {
       return NextResponse.json({ error: 'Maximum 500 contacts per upload' }, { status: 400 })

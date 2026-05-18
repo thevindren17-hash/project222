@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
     yield
-    scheduler.shutdown(wait=False)
+    scheduler.shutdown(wait=True)
 
 
 app = FastAPI(title="AI Receptionist Backend", version="1.0.0", lifespan=lifespan)
