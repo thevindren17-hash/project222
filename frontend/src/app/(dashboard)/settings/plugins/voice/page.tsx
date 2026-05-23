@@ -373,7 +373,7 @@ export default function VoiceConfigPage() {
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
                     <Label>Model</Label>
-                    <Select value={llmModel} onValueChange={setLlmModel}>
+                    <Select value={llmModel} onValueChange={(v) => v && setLlmModel(v)}>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
@@ -536,7 +536,7 @@ export default function VoiceConfigPage() {
                   {selectedTtsDef.voices.length > 0 && (
                     <div className="space-y-2">
                       <Label>Voice</Label>
-                      <Select value={ttsVoiceId} onValueChange={setTtsVoiceId}>
+                      <Select value={ttsVoiceId} onValueChange={(v) => v && setTtsVoiceId(v)}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
