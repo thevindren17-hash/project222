@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'next/navigation'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -219,8 +218,7 @@ function ProviderCard({
 
 export default function VoiceConfigPage() {
   const queryClient = useQueryClient()
-  const searchParams = useSearchParams()
-  const [section, setSection] = useState(searchParams.get('section') || 'llm')
+  const [section, setSection] = useState('llm')
 
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
   const { data: settings, isLoading } = useQuery({

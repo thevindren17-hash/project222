@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'next/navigation'
 import { getCurrentTenant } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -199,10 +198,7 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function TestAgentPage() {
-  const searchParams = useSearchParams()
-  const [activeTab, setActiveTab] = useState<'text' | 'voice'>(
-    searchParams.get('tab') === 'voice' ? 'voice' : 'text'
-  )
+  const [activeTab, setActiveTab] = useState<'text' | 'voice'>('text')
   const [messages, setMessages] = useState<Message[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [input, setInput] = useState('')
