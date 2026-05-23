@@ -72,17 +72,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AI Receptionist Backend", version="1.0.0", lifespan=lifespan)
 
 _origins = [o for o in [
-    os.getenv("FRONTEND_URL"),
+    os.getenv("FRONTEND_URL", "").strip().rstrip("/"),
     "http://localhost:3000",
 ] if o]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["POST", "GET", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Internal-Secret"],
 )
 
 app.include_router(whatsapp_router, prefix="/webhook", tags=["WhatsApp"])
