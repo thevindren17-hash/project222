@@ -225,9 +225,10 @@ export default function VoiceConfigPage() {
     queryKey: ['tenant-settings', 'voice'],
     queryFn: async () => {
       if (!tenant) return null
+      // Exclude voice_provider_credentials — keys never leave the server
       const { data } = await supabase
         .from('tenant_settings')
-        .select('voice_llm_config,voice_stt_config,voice_tts_config,voice_provider_credentials,voice_language')
+        .select('voice_llm_config,voice_stt_config,voice_tts_config,voice_language')
         .eq('tenant_id', tenant.id)
         .maybeSingle()
       return data
@@ -236,19 +237,30 @@ export default function VoiceConfigPage() {
     staleTime: 0,
   })
 
+  // Credential existence flags — only booleans, never actual key values
+  const { data: credExistence } = useQuery({
+    queryKey: ['voice-cred-existence'],
+    queryFn: async () => {
+      const res = await fetch('/api/credentials?type=voice')
+      return res.ok ? (await res.json() as Record<string, boolean>) : {}
+    },
+    enabled: !!tenant,
+    staleTime: 30_000,
+  })
+
   // ── LLM state ────────────────────────────────────────────────────────────
   const [llmProvider, setLlmProvider] = useState('groq')
   const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
-  const [llmCreds, setLlmCreds] = useState<Record<string, string>>({})
+  const [newLlmKey, setNewLlmKey] = useState('')
 
   // ── STT state ────────────────────────────────────────────────────────────
   const [sttProvider, setSttProvider] = useState('deepgram')
-  const [sttCreds, setSttCreds] = useState<Record<string, string>>({})
+  const [newSttKey, setNewSttKey] = useState('')
 
   // ── TTS state ────────────────────────────────────────────────────────────
   const [ttsProvider, setTtsProvider] = useState('elevenlabs')
   const [ttsVoiceId, setTtsVoiceId] = useState('21m00Tcm4TlvDq8ikWAM')
-  const [ttsCreds, setTtsCreds] = useState<Record<string, string>>({})
+  const [newTtsKey, setNewTtsKey] = useState('')
 
   // Seed state from DB
   useEffect(() => {
@@ -264,32 +276,44 @@ export default function VoiceConfigPage() {
       setTtsProvider(settings.voice_tts_config.provider || 'elevenlabs')
       setTtsVoiceId(settings.voice_tts_config.voice_id || '21m00Tcm4TlvDq8ikWAM')
     }
-    if (settings.voice_provider_credentials) {
-      const creds = settings.voice_provider_credentials as Record<string, string>
-      setLlmCreds((prev) => ({ ...prev, ...creds }))
-      setSttCreds((prev) => ({ ...prev, ...creds }))
-      setTtsCreds((prev) => ({ ...prev, ...creds }))
-    }
   }, [settings])
+
+  async function saveProviderKey(provider: string, key: string) {
+    if (!key.trim()) return
+    const res = await fetch('/api/credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, api_key: key.trim(), type: 'voice' }),
+    })
+    if (!res.ok) throw new Error('Failed to save API key')
+  }
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('Not logged in')
-      // Merge all provider credentials into one map
-      const allCreds = { ...llmCreds, ...sttCreds, ...ttsCreds }
       const { error } = await supabase.from('tenant_settings').upsert({
         tenant_id: tenant.id,
         voice_llm_config: { provider: llmProvider, model: llmModel },
         voice_stt_config: { provider: sttProvider },
         voice_tts_config: { provider: ttsProvider, voice_id: ttsVoiceId },
-        voice_provider_credentials: allCreds,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
+
+      // Save API keys separately — never included in the main upsert
+      await Promise.all([
+        saveProviderKey(llmProvider, newLlmKey),
+        saveProviderKey(sttProvider, newSttKey),
+        saveProviderKey(ttsProvider, newTtsKey),
+      ])
+      setNewLlmKey('')
+      setNewSttKey('')
+      setNewTtsKey('')
     },
     onSuccess: () => {
       toast.success('Voice config saved')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'voice'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
+      queryClient.invalidateQueries({ queryKey: ['voice-cred-existence'] })
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -390,6 +414,11 @@ export default function VoiceConfigPage() {
                       <Label className="flex items-center gap-1.5">
                         <Key className="h-3.5 w-3.5" />
                         API Key
+                        {credExistence?.[llmProvider] && !newLlmKey && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                            <Check className="h-2.5 w-2.5" />Key saved
+                          </Badge>
+                        )}
                       </Label>
                       {selectedLlmDef.keyUrl && (
                         <a
@@ -404,12 +433,12 @@ export default function VoiceConfigPage() {
                     </div>
                     <Input
                       type="password"
-                      placeholder={selectedLlmDef.keyPlaceholder}
-                      value={llmCreds[llmProvider] ?? ''}
-                      onChange={(e) => setLlmCreds((c) => ({ ...c, [llmProvider]: e.target.value }))}
+                      placeholder={credExistence?.[llmProvider] ? 'Enter new key to replace…' : selectedLlmDef.keyPlaceholder}
+                      value={newLlmKey}
+                      onChange={(e) => setNewLlmKey(e.target.value)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Stored encrypted. Never sent to browser clients.
+                      Stored server-side only. Never sent to the browser.
                     </p>
                   </div>
                 </CardContent>
@@ -464,6 +493,11 @@ export default function VoiceConfigPage() {
                       <Label className="flex items-center gap-1.5">
                         <Key className="h-3.5 w-3.5" />
                         API Key
+                        {credExistence?.[sttProvider] && !newSttKey && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                            <Check className="h-2.5 w-2.5" />Key saved
+                          </Badge>
+                        )}
                       </Label>
                       {selectedSttDef.keyUrl && (
                         <a
@@ -478,14 +512,14 @@ export default function VoiceConfigPage() {
                     </div>
                     <Input
                       type="password"
-                      placeholder={selectedSttDef.keyPlaceholder}
-                      value={sttCreds[sttProvider] ?? ''}
-                      onChange={(e) => setSttCreds((c) => ({ ...c, [sttProvider]: e.target.value }))}
+                      placeholder={credExistence?.[sttProvider] ? 'Enter new key to replace…' : selectedSttDef.keyPlaceholder}
+                      value={newSttKey}
+                      onChange={(e) => setNewSttKey(e.target.value)}
                     />
                     <p className="text-xs text-muted-foreground">
                       {sttProvider === 'groq'
-                        ? 'Uses your Groq API key from the LLM section — no extra cost.'
-                        : 'Stored encrypted. Never sent to browser clients.'}
+                        ? 'Uses your Groq key from the LLM section — no extra cost.'
+                        : 'Stored server-side only. Never sent to the browser.'}
                     </p>
                   </div>
                 </CardContent>
@@ -554,6 +588,11 @@ export default function VoiceConfigPage() {
                       <Label className="flex items-center gap-1.5">
                         <Key className="h-3.5 w-3.5" />
                         API Key
+                        {credExistence?.[ttsProvider] && !newTtsKey && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                            <Check className="h-2.5 w-2.5" />Key saved
+                          </Badge>
+                        )}
                       </Label>
                       {selectedTtsDef.keyUrl && (
                         <a
@@ -568,12 +607,12 @@ export default function VoiceConfigPage() {
                     </div>
                     <Input
                       type="password"
-                      placeholder={selectedTtsDef.keyPlaceholder}
-                      value={ttsCreds[ttsProvider] ?? ''}
-                      onChange={(e) => setTtsCreds((c) => ({ ...c, [ttsProvider]: e.target.value }))}
+                      placeholder={credExistence?.[ttsProvider] ? 'Enter new key to replace…' : selectedTtsDef.keyPlaceholder}
+                      value={newTtsKey}
+                      onChange={(e) => setNewTtsKey(e.target.value)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Stored encrypted. Never sent to browser clients.
+                      Stored server-side only. Never sent to the browser.
                     </p>
                   </div>
                 </CardContent>

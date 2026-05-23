@@ -61,13 +61,27 @@ export default function AgentPluginPage() {
     queryKey: ['tenant-settings', 'full'],
     queryFn: async () => {
       if (!tenant) return null
-      const { data, error } = await supabase.from('tenant_settings').select('*').eq('tenant_id', tenant.id).maybeSingle()
+      // Exclude provider_credentials — keys never leave the server
+      const { data, error } = await supabase.from('tenant_settings')
+        .select('agent_name,system_prompt,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_voice,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language')
+        .eq('tenant_id', tenant.id).maybeSingle()
       if (error) throw error
       return data
     },
     enabled: !!tenant,
     staleTime: 0,
     refetchOnMount: true,
+  })
+
+  // Credential existence flags — only booleans, never actual key values
+  const { data: credExistence } = useQuery({
+    queryKey: ['agent-cred-existence'],
+    queryFn: async () => {
+      const res = await fetch('/api/credentials?type=agent')
+      return res.ok ? (await res.json() as Record<string, boolean>) : {}
+    },
+    enabled: !!tenant,
+    staleTime: 30_000,
   })
 
   const [agentName, setAgentName] = useState('Maya')
@@ -92,7 +106,7 @@ export default function AgentPluginPage() {
 
   const [llmProvider, setLlmProvider] = useState('groq')
   const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
-  const [creds, setCreds] = useState<Record<string, Record<string, string>>>({})
+  const [newApiKey, setNewApiKey] = useState('')
 
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
   const [voiceTtsVoice, setVoiceTtsVoice] = useState('nova')
@@ -114,7 +128,6 @@ export default function AgentPluginPage() {
       setPromptSeeded(true)
       setLlmProvider(settings.llm_config?.provider || 'groq')
       setLlmModel(settings.llm_config?.model || 'llama-3.3-70b-versatile')
-      setCreds(settings.provider_credentials || {})
       setTemperature(settings.llm_config?.temperature ?? 0.7)
       setMaxTokens(settings.llm_config?.max_tokens ?? 1024)
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
@@ -163,7 +176,6 @@ export default function AgentPluginPage() {
         agent_name: agentName,
         system_prompt: prompt,
         llm_config: { provider: llmProvider, model: llmModel, temperature, max_tokens: maxTokens },
-        provider_credentials: creds,
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
         voice_reply_enabled: voiceReplyEnabled,
@@ -174,12 +186,24 @@ export default function AgentPluginPage() {
         reply_language: replyLanguage,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
+
+      // Save API key separately — never included in the main upsert
+      if (newApiKey.trim()) {
+        const res = await fetch('/api/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: llmProvider, api_key: newApiKey.trim(), type: 'agent' }),
+        })
+        if (!res.ok) throw new Error('Failed to save API key')
+        setNewApiKey('')
+      }
     },
     onSuccess: () => {
       toast.success('Agent configuration saved')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'full'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-cred-existence'] })
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -490,17 +514,17 @@ export default function AgentPluginPage() {
                           <div className="space-y-1.5">
                             <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
                               <Key className="h-3 w-3" />API Key
+                              {credExistence?.[llmProvider] && !newApiKey && (
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                                  <Check className="h-2.5 w-2.5" />Key saved
+                                </Badge>
+                              )}
                             </Label>
                             <Input
                               type="password"
-                              placeholder={LLM_CRED_FIELDS[llmProvider].placeholder}
-                              value={creds[llmProvider]?.api_key || ''}
-                              onChange={(e) =>
-                                setCreds((prev) => ({
-                                  ...prev,
-                                  [llmProvider]: { ...(prev[llmProvider] || {}), api_key: e.target.value },
-                                }))
-                              }
+                              placeholder={credExistence?.[llmProvider] ? 'Enter new key to replace…' : LLM_CRED_FIELDS[llmProvider].placeholder}
+                              value={newApiKey}
+                              onChange={(e) => setNewApiKey(e.target.value)}
                             />
                           </div>
                         )}
