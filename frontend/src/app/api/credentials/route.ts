@@ -80,7 +80,8 @@ export async function POST(req: NextRequest) {
   // Read current, merge, write back
   const { data: existing } = await supabase
     .from('tenant_settings').select(field).eq('tenant_id', tenantId).maybeSingle()
-  const current = (existing?.[field as keyof typeof existing] ?? {}) as Record<string, unknown>
+  const raw = existing?.[field as keyof typeof existing]
+  const current = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const updated = { ...current, [provider]: { api_key: apiKey } }
 
   const { error } = await supabase.from('tenant_settings').upsert(
@@ -105,7 +106,8 @@ export async function DELETE(req: NextRequest) {
   const field = FIELD[type] ?? FIELD.agent
   const { data: existing } = await supabase
     .from('tenant_settings').select(field).eq('tenant_id', tenantId).maybeSingle()
-  const current = { ...(existing?.[field as keyof typeof existing] ?? {}) } as Record<string, unknown>
+  const rawDel = existing?.[field as keyof typeof existing]
+  const current = { ...(rawDel && typeof rawDel === 'object' ? rawDel : {}) } as Record<string, unknown>
   delete current[provider]
 
   await supabase.from('tenant_settings').upsert(

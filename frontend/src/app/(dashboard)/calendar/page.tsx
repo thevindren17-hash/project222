@@ -187,12 +187,14 @@ export default function CalendarPage() {
               right: 'dayGridMonth,timeGridWeek,timeGridDay',
             }}
             events={[...bookingEvents, ...gcalEvents]}
-            eventClick={(info) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            eventClick={(info: any) => {
               if (!info.event.extendedProps.gcal) {
                 setSelectedBooking(info.event.extendedProps.booking)
               }
             }}
-            dateClick={(info) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            dateClick={(info: any) => {
               setSelectedDate(new Date(info.dateStr))
               setShowAddModal(true)
             }}
@@ -203,7 +205,8 @@ export default function CalendarPage() {
             nowIndicator
             editable
             selectable
-            dayHeaderContent={(args) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            dayHeaderContent={(args: any) => {
               const dayAbbr = args.date.toLocaleDateString('en', { weekday: 'short' }).toUpperCase()
               const dayNum = args.date.getDate()
               return (
