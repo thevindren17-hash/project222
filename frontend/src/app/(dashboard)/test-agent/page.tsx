@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getCurrentTenant } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
-import { Send, RotateCcw, Bot, User, Wrench, AlertCircle, Loader2, ChevronDown, ChevronUp } from 'lucide-react'
+import { Send, RotateCcw, Bot, User, Wrench, AlertCircle, Loader2, ChevronDown, ChevronUp, Phone, PhoneOff, Mic, MicOff, MessageSquare } from 'lucide-react'
 
 interface Message {
   role: 'user' | 'assistant' | 'system'
@@ -21,7 +21,184 @@ interface HistoryEntry {
   content: string
 }
 
+// ─── Voice Call Tab ────────────────────────────────────────────────────────────
+
+type CallState = 'idle' | 'connecting' | 'connected' | 'error'
+
+function VoiceCallTab({ tenantId }: { tenantId: string }) {
+  const [callState, setCallState] = useState<CallState>('idle')
+  const [agentSpeaking, setAgentSpeaking] = useState(false)
+  const [micMuted, setMicMuted] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+  const [errorMsg, setErrorMsg] = useState('')
+  const roomRef = useRef<import('livekit-client').Room | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      timerRef.current && clearInterval(timerRef.current)
+      roomRef.current?.disconnect()
+    }
+  }, [])
+
+  const startCall = useCallback(async () => {
+    setCallState('connecting')
+    setErrorMsg('')
+    setElapsed(0)
+
+    try {
+      const { Room, RoomEvent } = await import('livekit-client')
+
+      const res = await fetch('/api/voice-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenantId, participant_name: 'Dashboard Test' }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || `Token error ${res.status}`)
+      }
+      const { token, url } = await res.json()
+
+      const room = new Room({ adaptiveStream: true, dynacast: true })
+      roomRef.current = room
+
+      // Detect agent speaking via active speakers
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers: import('livekit-client').Participant[]) => {
+        const localId = room.localParticipant.identity
+        setAgentSpeaking(speakers.some((s) => s.identity !== localId))
+      })
+
+      room.on(RoomEvent.Disconnected, () => {
+        setCallState('idle')
+        setAgentSpeaking(false)
+        timerRef.current && clearInterval(timerRef.current)
+      })
+
+      // Attach remote audio tracks so we can hear the agent
+      room.on(RoomEvent.TrackSubscribed, (track: import('livekit-client').RemoteTrack) => {
+        if (track.kind === 'audio') {
+          const el = track.attach() as HTMLAudioElement
+          el.autoplay = true
+          document.body.appendChild(el)
+        }
+      })
+      room.on(RoomEvent.TrackUnsubscribed, (track: import('livekit-client').RemoteTrack) => {
+        if (track.kind === 'audio') track.detach()
+      })
+
+      await room.connect(url, token)
+      await room.localParticipant.setMicrophoneEnabled(true)
+
+      setCallState('connected')
+      timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000)
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to start call')
+      setCallState('error')
+    }
+  }, [tenantId])
+
+  const endCall = useCallback(async () => {
+    timerRef.current && clearInterval(timerRef.current)
+    await roomRef.current?.disconnect()
+    roomRef.current = null
+    setCallState('idle')
+    setAgentSpeaking(false)
+    setElapsed(0)
+  }, [])
+
+  const toggleMic = useCallback(async () => {
+    const lp = roomRef.current?.localParticipant
+    if (!lp) return
+    await lp.setMicrophoneEnabled(micMuted)
+    setMicMuted((m) => !m)
+  }, [micMuted])
+
+  const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+
+  return (
+    <div className="flex-1 flex items-center justify-center px-6 py-12">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center pb-2">
+          <div className="flex justify-center mb-3">
+            <div className={cn(
+              'h-20 w-20 rounded-full flex items-center justify-center transition-all duration-300',
+              callState === 'connected' && agentSpeaking
+                ? 'bg-primary/20 ring-4 ring-primary/30 animate-pulse'
+                : callState === 'connected'
+                ? 'bg-primary/10'
+                : 'bg-muted'
+            )}>
+              <Bot className={cn('h-10 w-10', callState === 'connected' ? 'text-primary' : 'text-muted-foreground')} />
+            </div>
+          </div>
+          <CardTitle className="text-lg">Maya — Voice Receptionist</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            {callState === 'idle' && 'Click to start a live voice call'}
+            {callState === 'connecting' && 'Connecting to Maya…'}
+            {callState === 'connected' && !agentSpeaking && `Connected · ${fmt(elapsed)}`}
+            {callState === 'connected' && agentSpeaking && `Maya is speaking · ${fmt(elapsed)}`}
+            {callState === 'error' && 'Connection failed'}
+          </p>
+        </CardHeader>
+        <CardContent className="flex flex-col items-center gap-4 pt-4">
+          {callState === 'error' && errorMsg && (
+            <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg w-full">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {errorMsg}
+            </div>
+          )}
+
+          {callState === 'connected' && (
+            <div className="flex gap-3 w-full">
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1 gap-2"
+                onClick={toggleMic}
+              >
+                {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                {micMuted ? 'Unmute' : 'Mute'}
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="flex-1 gap-2"
+                onClick={endCall}
+              >
+                <PhoneOff className="h-4 w-4" />
+                End Call
+              </Button>
+            </div>
+          )}
+
+          {(callState === 'idle' || callState === 'error') && (
+            <Button className="w-full gap-2" onClick={startCall}>
+              <Phone className="h-4 w-4" />
+              Start Voice Call
+            </Button>
+          )}
+
+          {callState === 'connecting' && (
+            <Button disabled className="w-full gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Connecting…
+            </Button>
+          )}
+
+          <p className="text-xs text-muted-foreground text-center">
+            Speaks in English, Malay, Tamil or Mandarin — just talk naturally.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ─── Main Page ─────────────────────────────────────────────────────────────────
+
 export default function TestAgentPage() {
+  const [activeTab, setActiveTab] = useState<'text' | 'voice'>('text')
   const [messages, setMessages] = useState<Message[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [input, setInput] = useState('')
@@ -147,7 +324,7 @@ export default function TestAgentPage() {
             <p className="font-semibold text-sm">{agentName}</p>
             <p className="text-xs text-muted-foreground">Test Environment — no data is saved</p>
           </div>
-          {(providerInfo || settings?.llm_config) && (
+          {activeTab === 'text' && (providerInfo || settings?.llm_config) && (
             <Badge variant="secondary" className="text-xs capitalize ml-1">
               {providerInfo?.provider ?? activeProvider}
               {(providerInfo?.model ?? activeModel) ? ` · ${providerInfo?.model ?? activeModel}` : ''}
@@ -155,16 +332,50 @@ export default function TestAgentPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" className="text-xs gap-1.5" onClick={() => setShowPrompt((p) => !p)}>
-            {showPrompt ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            System Prompt
-          </Button>
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={reset} disabled={messages.length === 0}>
-            <RotateCcw className="h-3.5 w-3.5" />
-            Reset
-          </Button>
+          {/* Tab switcher */}
+          <div className="flex items-center rounded-lg border border-border bg-muted p-0.5 gap-0.5">
+            <button
+              onClick={() => setActiveTab('text')}
+              className={cn('flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+                activeTab === 'text' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />Text
+            </button>
+            <button
+              onClick={() => setActiveTab('voice')}
+              className={cn('flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+                activeTab === 'voice' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <Phone className="h-3.5 w-3.5" />Voice
+            </button>
+          </div>
+          {activeTab === 'text' && (
+            <>
+              <Button variant="ghost" size="sm" className="text-xs gap-1.5" onClick={() => setShowPrompt((p) => !p)}>
+                {showPrompt ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                System Prompt
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={reset} disabled={messages.length === 0}>
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset
+              </Button>
+            </>
+          )}
         </div>
       </div>
+
+      {/* ── Voice Tab ── */}
+      {activeTab === 'voice' && tenant && (
+        <VoiceCallTab tenantId={tenant.id} />
+      )}
+      {activeTab === 'voice' && !tenant && (
+        <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">Loading…</div>
+      )}
+
+      {/* ── Text Tab content (hidden when on voice tab) ── */}
+      {activeTab === 'text' && <>
 
       {/* ── System prompt preview ── */}
       {showPrompt && (
@@ -331,6 +542,8 @@ export default function TestAgentPage() {
           Messages are processed using your live agent configuration. Nothing is saved to the database.
         </p>
       </div>
+
+      </> /* end activeTab === 'text' */}
     </div>
   )
 }

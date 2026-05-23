@@ -3,8 +3,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
-import { subDays, format, startOfDay } from 'date-fns'
+import { Badge } from '@/components/ui/badge'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
+import { subDays, format, differenceInSeconds } from 'date-fns'
 import StatCard from '@/components/dashboard/stat-card'
 
 export default function AnalyticsPage() {
@@ -63,7 +64,46 @@ export default function AnalyticsPage() {
     },
   })
 
+  const { data: voiceStats } = useQuery({
+    queryKey: ['voice-analytics'],
+    queryFn: async () => {
+      const tenant = await getCurrentTenant()
+      if (!tenant) return null
+
+      const last30 = subDays(new Date(), 30).toISOString()
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+
+      const { data: sessions } = await supabase
+        .from('voice_sessions')
+        .select('id, status, started_at, ended_at')
+        .eq('tenant_id', tenant.id)
+        .gte('started_at', last30)
+        .order('started_at', { ascending: false })
+
+      const all = sessions || []
+      const ended = all.filter((s) => s.status === 'ended' && s.ended_at)
+      const todaySessions = all.filter((s) => new Date(s.started_at) >= todayStart)
+      const active = all.filter((s) => s.status === 'active')
+
+      const avgDurationSec = ended.length > 0
+        ? Math.round(ended.reduce((sum, s) => sum + differenceInSeconds(new Date(s.ended_at), new Date(s.started_at)), 0) / ended.length)
+        : 0
+
+      // Daily voice sessions (last 7 days)
+      const dailyVoice = Array.from({ length: 7 }, (_, i) => {
+        const day = subDays(new Date(), 6 - i)
+        const dayStr = format(day, 'MMM d')
+        const count = all.filter((s) => format(new Date(s.started_at), 'MMM d') === dayStr).length
+        return { date: dayStr, calls: count }
+      })
+
+      return { all, todaySessions, active, avgDurationSec, dailyVoice, total: all.length }
+    },
+  })
+
   const COLORS = ['oklch(0.58 0.22 255)', 'oklch(0.64 0.17 145)', 'oklch(0.78 0.18 75)', 'oklch(0.62 0.22 25)', 'oklch(0.58 0.22 300)']
+
+  const fmtDur = (s: number) => s > 0 ? `${Math.floor(s / 60)}m ${s % 60}s` : '—'
 
   return (
     <div className="space-y-6">
@@ -144,6 +184,69 @@ export default function AnalyticsPage() {
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* ── Voice Sessions ── */}
+      <div>
+        <h2 className="text-xl font-semibold mb-4">Voice Sessions</h2>
+        <div className="grid gap-4 md:grid-cols-4 mb-6">
+          <StatCard title="Total Voice Calls" value={voiceStats?.total ?? '—'} subtitle="Last 30 days" icon="phone" />
+          <StatCard title="Today's Calls" value={voiceStats?.todaySessions.length ?? '—'} icon="phone" />
+          <StatCard title="Active Now" value={voiceStats?.active.length ?? 0} icon="phone" />
+          <StatCard title="Avg Duration" value={fmtDur(voiceStats?.avgDurationSec ?? 0)} subtitle="Completed calls" icon="clock" />
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card>
+            <CardHeader><CardTitle>Daily Voice Calls (Last 7 Days)</CardTitle></CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={voiceStats?.dailyVoice}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                  <XAxis dataKey="date" className="text-xs" />
+                  <YAxis className="text-xs" allowDecimals={false} />
+                  <Tooltip />
+                  <Bar dataKey="calls" fill="oklch(0.64 0.17 145)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Recent Voice Sessions</CardTitle></CardHeader>
+            <CardContent className="p-0">
+              <div className="divide-y divide-border">
+                {!voiceStats?.all.length && (
+                  <p className="text-sm text-muted-foreground text-center py-8">No voice sessions yet</p>
+                )}
+                {voiceStats?.all.slice(0, 6).map((s) => {
+                  const dur = s.ended_at
+                    ? fmtDur(differenceInSeconds(new Date(s.ended_at), new Date(s.started_at)))
+                    : null
+                  return (
+                    <div key={s.id} className="flex items-center justify-between px-4 py-3 text-sm">
+                      <div>
+                        <p className="font-mono text-xs text-muted-foreground">{s.id.slice(0, 8)}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {format(new Date(s.started_at), 'MMM d, h:mm a')}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {dur && <span className="text-xs text-muted-foreground">{dur}</span>}
+                        <Badge variant={
+                          s.status === 'active' ? 'default' :
+                          s.status === 'ended' ? 'secondary' : 'outline'
+                        } className="text-xs capitalize">
+                          {s.status}
+                        </Badge>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   )
