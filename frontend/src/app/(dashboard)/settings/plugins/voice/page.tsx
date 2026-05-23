@@ -54,8 +54,10 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
         body: JSON.stringify({ tenant_id: tenantId, participant_name: 'Dashboard Test' }),
       })
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || `Token error ${res.status}`)
+        const text = await res.text().catch(() => '')
+        let detail = `Token error ${res.status}`
+        try { detail = JSON.parse(text).detail || detail } catch { /* non-JSON */ }
+        throw new Error(detail)
       }
       const { token, url } = await res.json()
       const room = new Room({ adaptiveStream: true, dynacast: true })
