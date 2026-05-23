@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const VOICEAI_URL = process.env.VOICEAI_URL || ''
+const raw = (process.env.VOICEAI_URL || '').trim().replace(/\/$/, '')
+const VOICEAI_URL = raw && !raw.startsWith('http') ? `https://${raw}` : raw
 
 export async function POST(req: NextRequest) {
   if (!VOICEAI_URL) {
