@@ -2,6 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
+// GET — diagnostic probe, no auth required
+export async function GET() {
+  const rawUrl = (process.env.VOICEAI_URL || '').trim().replace(/\/$/, '')
+  const voiceaiUrl = rawUrl && !rawUrl.startsWith('http') ? `https://${rawUrl}` : rawUrl
+  return NextResponse.json({
+    route: 'voice-token v3',
+    voiceai_url_set: !!voiceaiUrl,
+    voiceai_url_prefix: voiceaiUrl ? voiceaiUrl.slice(0, 30) + '...' : null,
+    internal_secret_set: !!process.env.INTERNAL_API_SECRET,
+  })
+}
+
 export async function POST(req: NextRequest) {
   try {
     // ── 1. Verify the user is logged in ────────────────────────────────────
