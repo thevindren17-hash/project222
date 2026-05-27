@@ -25,14 +25,27 @@ interface HistoryEntry {
 
 type CallState = 'idle' | 'connecting' | 'connected' | 'error'
 
+interface TranscriptLine {
+  id: string
+  speaker: 'user' | 'agent'
+  text: string
+  isFinal: boolean
+}
+
 function VoiceCallTab({ tenantId }: { tenantId: string }) {
   const [callState, setCallState] = useState<CallState>('idle')
   const [agentSpeaking, setAgentSpeaking] = useState(false)
   const [micMuted, setMicMuted] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [errorMsg, setErrorMsg] = useState('')
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([])
   const roomRef = useRef<import('livekit-client').Room | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const transcriptEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [transcript])
 
   useEffect(() => {
     return () => {
@@ -45,6 +58,7 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
     setCallState('connecting')
     setErrorMsg('')
     setElapsed(0)
+    setTranscript([])
 
     try {
       const { Room, RoomEvent } = await import('livekit-client')
@@ -62,6 +76,30 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
 
       const room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
+
+      // Live transcription
+      room.on(RoomEvent.TranscriptionReceived, (
+        segments: import('livekit-client').TranscriptionSegment[],
+        participant?: import('livekit-client').Participant,
+      ) => {
+        const isAgent = !participant || participant.identity !== room.localParticipant.identity
+        setTranscript((prev) => {
+          let next = [...prev]
+          for (const seg of segments) {
+            if (!seg.text.trim()) continue
+            const idx = next.findIndex((t) => t.id === seg.id)
+            const line: TranscriptLine = {
+              id: seg.id,
+              speaker: isAgent ? 'agent' : 'user',
+              text: seg.text,
+              isFinal: seg.final,
+            }
+            if (idx >= 0) next[idx] = line
+            else next = [...next, line]
+          }
+          return next
+        })
+      })
 
       // Detect agent speaking via active speakers
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers: import('livekit-client').Participant[]) => {
@@ -116,9 +154,15 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
 
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 
+  const showTranscript = callState === 'connected' || transcript.length > 0
+
   return (
-    <div className="flex-1 flex items-center justify-center px-6 py-12">
-      <Card className="w-full max-w-sm">
+    <div className={cn(
+      'flex-1 flex gap-6 px-6 py-8',
+      showTranscript ? 'items-start justify-center' : 'items-center justify-center'
+    )}>
+      {/* Call card */}
+      <Card className="w-full max-w-sm shrink-0">
         <CardHeader className="text-center pb-2">
           <div className="flex justify-center mb-3">
             <div className={cn(
@@ -191,6 +235,59 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
           </p>
         </CardContent>
       </Card>
+
+      {/* Transcript panel */}
+      {showTranscript && (
+        <div className="flex flex-col w-full max-w-md h-[calc(100vh-12rem)] min-h-64">
+          <div className="flex items-center justify-between mb-2 shrink-0">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live Transcript</p>
+            {callState === 'connected' && (
+              <span className="flex items-center gap-1.5 text-xs text-emerald-500">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Live
+              </span>
+            )}
+          </div>
+          <div className="flex-1 rounded-lg border border-border bg-muted/30 overflow-y-auto p-4">
+            {transcript.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic text-center pt-8">
+                Transcript will appear here as you speak…
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {transcript.map((line) => (
+                  <div
+                    key={line.id}
+                    className={cn(
+                      'flex gap-2',
+                      line.speaker === 'user' ? 'flex-row-reverse' : 'flex-row'
+                    )}
+                  >
+                    <div className={cn(
+                      'h-5 w-5 rounded-full flex items-center justify-center shrink-0 mt-0.5',
+                      line.speaker === 'user' ? 'bg-primary text-primary-foreground' : 'bg-background border border-border'
+                    )}>
+                      {line.speaker === 'user'
+                        ? <User className="h-3 w-3" />
+                        : <Bot className="h-3 w-3 text-primary" />}
+                    </div>
+                    <p className={cn(
+                      'text-sm leading-snug max-w-[85%] px-3 py-1.5 rounded-xl',
+                      line.speaker === 'user'
+                        ? 'bg-primary text-primary-foreground rounded-tr-sm'
+                        : 'bg-background border border-border rounded-tl-sm',
+                      !line.isFinal && 'opacity-60 italic'
+                    )}>
+                      {line.text}
+                    </p>
+                  </div>
+                ))}
+                <div ref={transcriptEndRef} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
