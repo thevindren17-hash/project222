@@ -42,9 +42,9 @@ const sections: Section[] = [
   {
     label: 'CONFIGURE',
     items: [
-      { name: 'Agent Config',  href: '/settings/plugins/agent', icon: Bot,          statusKey: 'agent' },
-      { name: 'Voice Config',  href: '/settings/plugins/voice', icon: Mic,          statusKey: 'voice' },
-      { name: 'Test Agent',    href: '/test-agent',             icon: FlaskConical },
+      { name: 'Agent Config', href: '/settings/plugins/agent', icon: Bot,         statusKey: 'agent' },
+      { name: 'Voice Config', href: '/settings/plugins/voice', icon: Mic },
+      { name: 'Test Agent',   href: '/test-agent',           icon: FlaskConical },
     ],
   },
   {
@@ -73,7 +73,7 @@ function usePluginStatus() {
       if (!tenant) return {}
       const { data: settings } = await supabase
         .from('tenant_settings')
-        .select('system_prompt,google_calendar_id,provider_credentials,voice_llm_config')
+        .select('system_prompt,google_calendar_id,provider_credentials')
         .eq('tenant_id', tenant.id)
         .single()
       return {
@@ -81,7 +81,6 @@ function usePluginStatus() {
         phone:    !!tenant.sip_uri,
         calendar: !!settings?.google_calendar_id,
         agent:    !!settings?.system_prompt,
-        voice:    !!(settings?.voice_llm_config as { provider?: string } | null)?.provider,
       }
     },
   })

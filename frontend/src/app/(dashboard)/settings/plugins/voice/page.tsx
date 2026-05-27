@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 import { VOICE_LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS } from '@/lib/providers'
 import {
   Brain, Mic, Volume2, FlaskConical, Loader2, Check, Key, ExternalLink,
-  Bot, Phone, PhoneOff, MicOff, AlertCircle,
+  Bot, Phone, PhoneOff, MicOff, AlertCircle, CheckCircle2,
 } from 'lucide-react'
 
 const SECTIONS = [
@@ -26,7 +26,36 @@ const SECTIONS = [
 
 // ── Inline voice call widget ──────────────────────────────────────────────────
 
-type CallState = 'idle' | 'connecting' | 'connected' | 'error'
+type CallState = 'idle' | 'requesting-mic' | 'connecting' | 'connected' | 'error'
+
+interface TranscriptLine {
+  id: string
+  speaker: 'user' | 'agent'
+  text: string
+  isFinal: boolean
+}
+
+function MicMeter({ level }: { level: number }) {
+  const bars = 8
+  return (
+    <div className="flex items-end gap-0.5 h-5">
+      {Array.from({ length: bars }).map((_, i) => {
+        const threshold = i / bars
+        const active = level > threshold
+        return (
+          <div
+            key={i}
+            className={cn(
+              'w-1.5 rounded-sm transition-all duration-75',
+              active ? (level > 0.6 ? 'bg-red-400' : 'bg-green-400') : 'bg-muted-foreground/20',
+            )}
+            style={{ height: `${Math.round(((i + 1) / bars) * 100)}%` }}
+          />
+        )
+      })}
+    </div>
+  )
+}
 
 function VoiceTestWidget({ tenantId }: { tenantId: string }) {
   const [callState, setCallState] = useState<CallState>('idle')
@@ -34,18 +63,64 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
   const [micMuted, setMicMuted] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [errorMsg, setErrorMsg] = useState('')
-  const roomRef = useRef<import('livekit-client').Room | null>(null)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [micLevel, setMicLevel] = useState(0)
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([])
+  const [micWarning, setMicWarning] = useState(false)
+
+  const roomRef        = useRef<import('livekit-client').Room | null>(null)
+  const timerRef       = useRef<ReturnType<typeof setInterval> | null>(null)
+  const animRef        = useRef<number>(0)
+  const silenceRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const transcriptEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => () => {
     timerRef.current && clearInterval(timerRef.current)
+    cancelAnimationFrame(animRef.current)
+    silenceRef.current && clearTimeout(silenceRef.current)
     roomRef.current?.disconnect()
   }, [])
 
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [transcript])
+
   const startCall = useCallback(async () => {
-    setCallState('connecting')
+    setCallState('requesting-mic')
     setErrorMsg('')
-    setElapsed(0)
+    setTranscript([])
+    setMicWarning(false)
+
+    // 1. Request mic — gives us the stream for level monitoring
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    } catch {
+      setErrorMsg('Microphone access denied. Click the mic/lock icon in your address bar and allow access, then try again.')
+      setCallState('error')
+      return
+    }
+
+    // 2. Web Audio API level monitor
+    const audioCtx = new AudioContext()
+    const analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 256
+    audioCtx.createMediaStreamSource(stream).connect(analyser)
+    const data = new Uint8Array(analyser.frequencyBinCount)
+    const tick = () => {
+      analyser.getByteFrequencyData(data)
+      const level = data.reduce((a, b) => a + b, 0) / data.length / 255
+      setMicLevel(level)
+      if (level > 0.02) {
+        setMicWarning(false)
+        silenceRef.current && clearTimeout(silenceRef.current)
+      }
+      animRef.current = requestAnimationFrame(tick)
+    }
+    animRef.current = requestAnimationFrame(tick)
+    silenceRef.current = setTimeout(() => setMicWarning(true), 5000)
+
+    // 3. Fetch token + connect to LiveKit
+    setCallState('connecting')
     try {
       const { Room, RoomEvent } = await import('livekit-client')
       const res = await fetch('/api/voice-token', {
@@ -62,12 +137,39 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
       const { token, url } = await res.json()
       const room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
+
+      // Live transcription
+      room.on(RoomEvent.TranscriptionReceived, (
+        segments: import('livekit-client').TranscriptionSegment[],
+        participant?: import('livekit-client').Participant,
+      ) => {
+        const isAgent = !participant || participant.identity !== room.localParticipant.identity
+        setTranscript((prev) => {
+          let next = [...prev]
+          for (const seg of segments) {
+            if (!seg.text.trim()) continue
+            const idx = next.findIndex((t) => t.id === seg.id)
+            const line: TranscriptLine = {
+              id: seg.id,
+              speaker: isAgent ? 'agent' : 'user',
+              text: seg.text,
+              isFinal: seg.final,
+            }
+            if (idx >= 0) next[idx] = line
+            else next = [...next, line]
+          }
+          return next
+        })
+      })
+
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers: import('livekit-client').Participant[]) => {
         setAgentSpeaking(speakers.some((s) => s.identity !== room.localParticipant.identity))
       })
       room.on(RoomEvent.Disconnected, () => {
         setCallState('idle')
         setAgentSpeaking(false)
+        setMicLevel(0)
+        cancelAnimationFrame(animRef.current)
         timerRef.current && clearInterval(timerRef.current)
       })
       room.on(RoomEvent.TrackSubscribed, (track: import('livekit-client').RemoteTrack) => {
@@ -80,6 +182,7 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
       room.on(RoomEvent.TrackUnsubscribed, (track: import('livekit-client').RemoteTrack) => {
         if (track.kind === 'audio') track.detach()
       })
+
       await room.connect(url, token)
       await room.localParticipant.setMicrophoneEnabled(true)
       setCallState('connected')
@@ -87,11 +190,17 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to connect')
       setCallState('error')
+      cancelAnimationFrame(animRef.current)
+      stream.getTracks().forEach((t) => t.stop())
     }
   }, [tenantId])
 
   const endCall = useCallback(async () => {
     timerRef.current && clearInterval(timerRef.current)
+    cancelAnimationFrame(animRef.current)
+    silenceRef.current && clearTimeout(silenceRef.current)
+    setMicLevel(0)
+    setMicWarning(false)
     await roomRef.current?.disconnect()
     roomRef.current = null
     setCallState('idle')
@@ -109,71 +218,178 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
   const fmt = (s: number) =>
     `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 
-  return (
-    <div className="flex flex-col items-center gap-6 py-6">
-      {/* Avatar */}
-      <div className={cn(
-        'h-24 w-24 rounded-full flex items-center justify-center transition-all duration-300',
-        callState === 'connected' && agentSpeaking
-          ? 'bg-primary/20 ring-4 ring-primary/40 animate-pulse'
-          : callState === 'connected'
-          ? 'bg-primary/10 ring-2 ring-primary/20'
-          : 'bg-muted',
-      )}>
-        <Bot className={cn('h-12 w-12', callState === 'connected' ? 'text-primary' : 'text-muted-foreground')} />
-      </div>
+  const isConnected = callState === 'connected'
 
-      {/* Status */}
-      <div className="text-center">
-        <p className="font-semibold text-lg">Maya — Voice Receptionist</p>
-        <p className="text-sm text-muted-foreground mt-1">
-          {callState === 'idle' && 'Click to start a live voice call with Maya'}
-          {callState === 'connecting' && 'Connecting to Maya…'}
-          {callState === 'connected' && !agentSpeaking && `Connected · ${fmt(elapsed)}`}
-          {callState === 'connected' && agentSpeaking && `Maya is speaking · ${fmt(elapsed)}`}
-          {callState === 'error' && 'Connection failed'}
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-0 divide-y md:divide-y-0 md:divide-x">
+
+      {/* ── Left: call controls ── */}
+      <div className="flex flex-col items-center gap-5 py-6 px-4">
+        <div className={cn(
+          'h-24 w-24 rounded-full flex items-center justify-center transition-all duration-300',
+          isConnected && agentSpeaking
+            ? 'bg-primary/20 ring-4 ring-primary/40 animate-pulse'
+            : isConnected
+            ? 'bg-primary/10 ring-2 ring-primary/20'
+            : 'bg-muted',
+        )}>
+          <Bot className={cn('h-12 w-12', isConnected ? 'text-primary' : 'text-muted-foreground')} />
+        </div>
+
+        <div className="text-center">
+          <p className="font-semibold text-lg">Maya — Voice Receptionist</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {(callState === 'idle' || callState === 'error') && 'Click to start a live voice call'}
+            {callState === 'requesting-mic' && 'Requesting microphone access…'}
+            {callState === 'connecting' && 'Connecting to Maya…'}
+            {isConnected && !agentSpeaking && `Connected · ${fmt(elapsed)}`}
+            {isConnected && agentSpeaking && `Maya is speaking · ${fmt(elapsed)}`}
+          </p>
+        </div>
+
+        {/* Mic level meter */}
+        {isConnected && (
+          <div className="flex flex-col items-center gap-2 w-full max-w-xs">
+            <div className="flex items-center gap-3">
+              <MicMeter level={micMuted ? 0 : micLevel} />
+              <span className="text-xs text-muted-foreground w-24">
+                {micMuted ? 'Muted' : micLevel > 0.03 ? 'Mic capturing' : 'No audio detected'}
+              </span>
+            </div>
+            {micWarning && !micMuted && (
+              <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 w-full">
+                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                No audio from mic — check OS sound input settings.
+              </div>
+            )}
+          </div>
+        )}
+
+        {errorMsg && (
+          <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/10 px-4 py-2.5 rounded-lg w-full max-w-sm">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            {errorMsg}
+          </div>
+        )}
+
+        <div className="flex gap-3 w-full max-w-sm">
+          {isConnected && (
+            <>
+              <Button variant="outline" className="flex-1 gap-2" onClick={toggleMic}>
+                {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                {micMuted ? 'Unmute' : 'Mute'}
+              </Button>
+              <Button variant="destructive" className="flex-1 gap-2" onClick={endCall}>
+                <PhoneOff className="h-4 w-4" />
+                End Call
+              </Button>
+            </>
+          )}
+          {(callState === 'idle' || callState === 'error') && (
+            <Button className="w-full gap-2" size="lg" onClick={startCall}>
+              <Phone className="h-5 w-5" />
+              Start Voice Call
+            </Button>
+          )}
+          {(callState === 'connecting' || callState === 'requesting-mic') && (
+            <Button disabled className="w-full gap-2" size="lg">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {callState === 'requesting-mic' ? 'Requesting mic…' : 'Connecting…'}
+            </Button>
+          )}
+        </div>
+
+        <p className="text-xs text-muted-foreground text-center max-w-xs">
+          Speaks in English, Malay, Tamil or Mandarin — just talk naturally.
+          Make sure your microphone is allowed in the browser.
         </p>
       </div>
 
-      {errorMsg && (
-        <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 px-4 py-2.5 rounded-lg w-full max-w-sm">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          {errorMsg}
+      {/* ── Right: transcription panel ── */}
+      <div className="flex flex-col min-h-[300px]">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <p className="text-sm font-semibold flex items-center gap-2">
+            <Mic className="h-4 w-4 text-primary" />
+            Live Transcription
+          </p>
+          {isConnected && (
+            <Badge
+              variant="outline"
+              className={cn(
+                'text-xs gap-1',
+                micLevel > 0.03 && !micMuted ? 'border-green-500 text-green-600' : 'text-muted-foreground',
+              )}
+            >
+              <span className={cn(
+                'h-1.5 w-1.5 rounded-full',
+                micLevel > 0.03 && !micMuted ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/30',
+              )} />
+              {micLevel > 0.03 && !micMuted ? 'STT active' : 'Waiting…'}
+            </Badge>
+          )}
         </div>
-      )}
 
-      {/* Controls */}
-      <div className="flex gap-3 w-full max-w-sm">
-        {callState === 'connected' && (
-          <>
-            <Button variant="outline" className="flex-1 gap-2" onClick={toggleMic}>
-              {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              {micMuted ? 'Unmute' : 'Mute'}
-            </Button>
-            <Button variant="destructive" className="flex-1 gap-2" onClick={endCall}>
-              <PhoneOff className="h-4 w-4" />
-              End Call
-            </Button>
-          </>
-        )}
-        {(callState === 'idle' || callState === 'error') && (
-          <Button className="w-full gap-2" size="lg" onClick={startCall}>
-            <Phone className="h-5 w-5" />
-            Start Voice Call
-          </Button>
-        )}
-        {callState === 'connecting' && (
-          <Button disabled className="w-full gap-2" size="lg">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Connecting…
-          </Button>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-64">
+          {transcript.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground py-8 select-none">
+              {isConnected ? (
+                <>
+                  <Mic className="h-7 w-7 mb-2 opacity-20" />
+                  <p className="text-sm">Speak — transcription appears here</p>
+                  <p className="text-xs mt-1 max-w-[200px]">
+                    Nothing showing? STT is not receiving your audio.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Phone className="h-7 w-7 mb-2 opacity-20" />
+                  <p className="text-sm">Start a call to see live transcription</p>
+                </>
+              )}
+            </div>
+          ) : (
+            transcript.map((line) => (
+              <div
+                key={line.id}
+                className={cn(
+                  'rounded-lg px-3 py-2 text-sm max-w-[90%]',
+                  line.speaker === 'user' ? 'bg-primary/10 ml-auto text-right' : 'bg-muted',
+                  !line.isFinal && 'opacity-60 italic',
+                )}
+              >
+                <span className="text-[10px] font-semibold text-muted-foreground block mb-0.5">
+                  {line.speaker === 'user' ? 'You' : 'Maya'}
+                </span>
+                {line.text}
+                {!line.isFinal && <span className="text-muted-foreground ml-1">…</span>}
+              </div>
+            ))
+          )}
+          <div ref={transcriptEndRef} />
+        </div>
+
+        {/* STT / LLM / TTS status row */}
+        {isConnected && (
+          <div className="border-t grid grid-cols-3 divide-x text-center shrink-0">
+            {[
+              { label: 'STT', ok: transcript.some((t) => t.speaker === 'user'),               hint: 'Your voice' },
+              { label: 'LLM', ok: transcript.some((t) => t.speaker === 'agent'),              hint: 'AI reply' },
+              { label: 'TTS', ok: transcript.some((t) => t.speaker === 'agent' && t.isFinal), hint: 'Spoken' },
+            ].map(({ label, ok, hint }) => (
+              <div key={label} className="py-2 flex flex-col items-center gap-0.5">
+                <div className="flex items-center gap-1">
+                  {ok
+                    ? <CheckCircle2 className="h-3 w-3 text-green-500" />
+                    : <div className="h-3 w-3 rounded-full border-2 border-muted-foreground/30" />
+                  }
+                  <span className="text-xs font-semibold">{label}</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">{hint}</span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
-
-      <p className="text-xs text-muted-foreground text-center max-w-xs">
-        Speaks in English, Malay, Tamil or Mandarin — just talk naturally.
-        Make sure your microphone is allowed in the browser.
-      </p>
     </div>
   )
 }
@@ -630,7 +846,7 @@ export default function VoiceConfigPage() {
 
         {/* ── Test section ── */}
         {section === 'test' && (
-          <div className="space-y-6 max-w-lg">
+          <div className="space-y-6 max-w-3xl">
             <div>
               <h2 className="text-xl font-semibold">Test Voice Call</h2>
               <p className="text-sm text-muted-foreground mt-1">
