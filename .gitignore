@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+env/
+.env
+*.env
+
+# Google OAuth tokens (never commit)
+google_token.json
+token.json
+
+# Node
+node_modules/
+.next/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# KMS keys / secrets
+KMS/
+*.key
+*.pem
+*.p12
