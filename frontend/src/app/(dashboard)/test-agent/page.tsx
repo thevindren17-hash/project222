@@ -42,6 +42,7 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
   const roomRef = useRef<import('livekit-client').Room | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement>(null)
+  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map())
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -108,6 +109,8 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
       })
 
       room.on(RoomEvent.Disconnected, () => {
+        audioElementsRef.current.forEach((el) => el.remove())
+        audioElementsRef.current.clear()
         setCallState('idle')
         setAgentSpeaking(false)
         timerRef.current && clearInterval(timerRef.current)
@@ -119,10 +122,18 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
           const el = track.attach() as HTMLAudioElement
           el.autoplay = true
           document.body.appendChild(el)
+          audioElementsRef.current.set(track.sid, el)
         }
       })
       room.on(RoomEvent.TrackUnsubscribed, (track: import('livekit-client').RemoteTrack) => {
-        if (track.kind === 'audio') track.detach()
+        if (track.kind === 'audio') {
+          track.detach()
+          const el = audioElementsRef.current.get(track.sid)
+          if (el) {
+            el.remove()
+            audioElementsRef.current.delete(track.sid)
+          }
+        }
       })
 
       await room.connect(url, token)
@@ -140,6 +151,8 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
     timerRef.current && clearInterval(timerRef.current)
     await roomRef.current?.disconnect()
     roomRef.current = null
+    audioElementsRef.current.forEach((el) => el.remove())
+    audioElementsRef.current.clear()
     setCallState('idle')
     setAgentSpeaking(false)
     setElapsed(0)

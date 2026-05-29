@@ -26,7 +26,7 @@ const SECTIONS = [
 
 // ── Inline voice call widget ──────────────────────────────────────────────────
 
-type CallState = 'idle' | 'requesting-mic' | 'connecting' | 'connected' | 'error'
+type CallState = 'idle' | 'connecting' | 'connected' | 'error'
 
 interface TranscriptLine {
   id: string
@@ -67,11 +67,12 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
   const [transcript, setTranscript] = useState<TranscriptLine[]>([])
   const [micWarning, setMicWarning] = useState(false)
 
-  const roomRef        = useRef<import('livekit-client').Room | null>(null)
-  const timerRef       = useRef<ReturnType<typeof setInterval> | null>(null)
-  const animRef        = useRef<number>(0)
-  const silenceRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const roomRef          = useRef<import('livekit-client').Room | null>(null)
+  const timerRef         = useRef<ReturnType<typeof setInterval> | null>(null)
+  const animRef          = useRef<number>(0)
+  const silenceRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement>(null)
+  const audioElemsRef    = useRef<Map<string, HTMLAudioElement>>(new Map())
 
   useEffect(() => () => {
     timerRef.current && clearInterval(timerRef.current)
@@ -85,42 +86,38 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
   }, [transcript])
 
   const startCall = useCallback(async () => {
-    setCallState('requesting-mic')
+    setCallState('connecting')
     setErrorMsg('')
     setTranscript([])
     setMicWarning(false)
 
-    // 1. Request mic — gives us the stream for level monitoring
-    let stream: MediaStream
+    // 1. Try to get mic stream for the level meter (optional — call proceeds even without it).
+    // LiveKit will request its own mic permission when setMicrophoneEnabled is called below.
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-    } catch {
-      setErrorMsg('Microphone access denied. Click the mic/lock icon in your address bar and allow access, then try again.')
-      setCallState('error')
-      return
-    }
-
-    // 2. Web Audio API level monitor
-    const audioCtx = new AudioContext()
-    const analyser = audioCtx.createAnalyser()
-    analyser.fftSize = 256
-    audioCtx.createMediaStreamSource(stream).connect(analyser)
-    const data = new Uint8Array(analyser.frequencyBinCount)
-    const tick = () => {
-      analyser.getByteFrequencyData(data)
-      const level = data.reduce((a, b) => a + b, 0) / data.length / 255
-      setMicLevel(level)
-      if (level > 0.02) {
-        setMicWarning(false)
-        silenceRef.current && clearTimeout(silenceRef.current)
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      const audioCtx = new AudioContext()
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 256
+      audioCtx.createMediaStreamSource(stream).connect(analyser)
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      const tick = () => {
+        analyser.getByteFrequencyData(data)
+        const level = data.reduce((a, b) => a + b, 0) / data.length / 255
+        setMicLevel(level)
+        if (level > 0.02) {
+          setMicWarning(false)
+          silenceRef.current && clearTimeout(silenceRef.current)
+        }
+        animRef.current = requestAnimationFrame(tick)
       }
       animRef.current = requestAnimationFrame(tick)
+      silenceRef.current = setTimeout(() => setMicWarning(true), 5000)
+    } catch {
+      // Level meter unavailable — call continues without it
     }
-    animRef.current = requestAnimationFrame(tick)
-    silenceRef.current = setTimeout(() => setMicWarning(true), 5000)
 
-    // 3. Fetch token + connect to LiveKit
-    setCallState('connecting')
+    // 2. Fetch token + connect to LiveKit
+    // (LiveKit will request mic permission itself via setMicrophoneEnabled)
     try {
       const { Room, RoomEvent } = await import('livekit-client')
       const res = await fetch('/api/voice-token', {
@@ -166,6 +163,8 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
         setAgentSpeaking(speakers.some((s) => s.identity !== room.localParticipant.identity))
       })
       room.on(RoomEvent.Disconnected, () => {
+        audioElemsRef.current.forEach((el) => el.remove())
+        audioElemsRef.current.clear()
         setCallState('idle')
         setAgentSpeaking(false)
         setMicLevel(0)
@@ -177,10 +176,15 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
           const el = track.attach() as HTMLAudioElement
           el.autoplay = true
           document.body.appendChild(el)
+          audioElemsRef.current.set(track.sid, el)
         }
       })
       room.on(RoomEvent.TrackUnsubscribed, (track: import('livekit-client').RemoteTrack) => {
-        if (track.kind === 'audio') track.detach()
+        if (track.kind === 'audio') {
+          track.detach()
+          const el = audioElemsRef.current.get(track.sid)
+          if (el) { el.remove(); audioElemsRef.current.delete(track.sid) }
+        }
       })
 
       await room.connect(url, token)
@@ -191,7 +195,6 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to connect')
       setCallState('error')
       cancelAnimationFrame(animRef.current)
-      stream.getTracks().forEach((t) => t.stop())
     }
   }, [tenantId])
 
@@ -203,6 +206,8 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
     setMicWarning(false)
     await roomRef.current?.disconnect()
     roomRef.current = null
+    audioElemsRef.current.forEach((el) => el.remove())
+    audioElemsRef.current.clear()
     setCallState('idle')
     setAgentSpeaking(false)
     setElapsed(0)
@@ -240,7 +245,6 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
           <p className="font-semibold text-lg">Maya — Voice Receptionist</p>
           <p className="text-sm text-muted-foreground mt-1">
             {(callState === 'idle' || callState === 'error') && 'Click to start a live voice call'}
-            {callState === 'requesting-mic' && 'Requesting microphone access…'}
             {callState === 'connecting' && 'Connecting to Maya…'}
             {isConnected && !agentSpeaking && `Connected · ${fmt(elapsed)}`}
             {isConnected && agentSpeaking && `Maya is speaking · ${fmt(elapsed)}`}
@@ -291,10 +295,10 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
               Start Voice Call
             </Button>
           )}
-          {(callState === 'connecting' || callState === 'requesting-mic') && (
+          {callState === 'connecting' && (
             <Button disabled className="w-full gap-2" size="lg">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {callState === 'requesting-mic' ? 'Requesting mic…' : 'Connecting…'}
+              Connecting…
             </Button>
           )}
         </div>
@@ -472,12 +476,17 @@ export default function VoiceConfigPage() {
   const [newLlmKey, setNewLlmKey] = useState('')
 
   // ── STT state ────────────────────────────────────────────────────────────
-  const [sttProvider, setSttProvider] = useState('deepgram')
+  const [sttProvider, setSttProvider] = useState('groq')
   const [newSttKey, setNewSttKey] = useState('')
 
   // ── TTS state ────────────────────────────────────────────────────────────
   const [ttsProvider, setTtsProvider] = useState('elevenlabs')
-  const [ttsVoiceId, setTtsVoiceId] = useState('21m00Tcm4TlvDq8ikWAM')
+  const [ttsVoiceIds, setTtsVoiceIds] = useState({
+    en: 'kdmDKE6EkgrWrrykO9Qt',
+    ms: 'qAJVXEQ6QgjOQ25KuoU8',
+    zh: 'tOuLUAIdXShmWH7PEUrU',
+    ta: 'mGboHvCVOXWYeFL8KTR0',
+  })
   const [newTtsKey, setNewTtsKey] = useState('')
 
   // Seed state from DB
@@ -488,11 +497,17 @@ export default function VoiceConfigPage() {
       setLlmModel(settings.voice_llm_config.model || 'llama-3.3-70b-versatile')
     }
     if (settings.voice_stt_config) {
-      setSttProvider(settings.voice_stt_config.provider || 'deepgram')
+      setSttProvider(settings.voice_stt_config.provider || 'groq')
     }
     if (settings.voice_tts_config) {
-      setTtsProvider(settings.voice_tts_config.provider || 'elevenlabs')
-      setTtsVoiceId(settings.voice_tts_config.voice_id || '21m00Tcm4TlvDq8ikWAM')
+      const cfg = settings.voice_tts_config
+      setTtsProvider(cfg.provider || 'elevenlabs')
+      setTtsVoiceIds({
+        en: cfg.voice_id_en || cfg.voice_id || 'kdmDKE6EkgrWrrykO9Qt',
+        ms: cfg.voice_id_ms || 'qAJVXEQ6QgjOQ25KuoU8',
+        zh: cfg.voice_id_zh || 'tOuLUAIdXShmWH7PEUrU',
+        ta: cfg.voice_id_ta || 'mGboHvCVOXWYeFL8KTR0',
+      })
     }
   }, [settings])
 
@@ -513,7 +528,15 @@ export default function VoiceConfigPage() {
         tenant_id: tenant.id,
         voice_llm_config: { provider: llmProvider, model: llmModel },
         voice_stt_config: { provider: sttProvider },
-        voice_tts_config: { provider: ttsProvider, voice_id: ttsVoiceId },
+        voice_tts_config: {
+          provider: ttsProvider,
+          voice_id_en: ttsVoiceIds.en,
+          voice_id_ms: ttsVoiceIds.ms,
+          voice_id_zh: ttsVoiceIds.zh,
+          voice_id_ta: ttsVoiceIds.ta,
+          // legacy field kept for backward compat
+          voice_id: ttsVoiceIds.en,
+        },
       }, { onConflict: 'tenant_id' })
       if (error) throw error
 
@@ -695,6 +718,23 @@ export default function VoiceConfigPage() {
               ))}
             </div>
 
+            {/* Multilingual warning for providers that don't support Malay/Tamil */}
+            {selectedSttDef && !selectedSttDef.multilingual && (
+              <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
+                <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                    Limited language support
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
+                    {selectedSttDef.name} does not support Bahasa Melayu or Tamil.
+                    Callers speaking those languages will not be understood.
+                    Switch to <strong>Groq Whisper</strong> for full multilingual support.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {selectedSttDef && (
               <Card>
                 <CardHeader className="pb-3">
@@ -773,7 +813,11 @@ export default function VoiceConfigPage() {
                   description={p.description}
                   onSelect={() => {
                     setTtsProvider(p.id)
-                    setTtsVoiceId(p.voices[0]?.id ?? '')
+                    if (p.voiceDefaults) {
+                      setTtsVoiceIds(p.voiceDefaults as typeof ttsVoiceIds)
+                    } else if (p.voices[0]) {
+                      setTtsVoiceIds((prev) => ({ ...prev, en: p.voices[0].id }))
+                    }
                   }}
                 />
               ))}
@@ -783,12 +827,47 @@ export default function VoiceConfigPage() {
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">{selectedTtsDef.name} Settings</CardTitle>
+                  {selectedTtsDef.perLangVoices && (
+                    <CardDescription>
+                      Each language uses its own voice. Pick multilingual voices for the most natural accent across all languages.
+                    </CardDescription>
+                  )}
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {selectedTtsDef.voices.length > 0 && (
+                  {/* Per-language voice selectors (ElevenLabs) */}
+                  {selectedTtsDef.perLangVoices && selectedTtsDef.voices.length > 0 && (
+                    <div className="space-y-3">
+                      {([
+                        { lang: 'en' as const, label: '🇬🇧 English' },
+                        { lang: 'ms' as const, label: '🇲🇾 Bahasa Melayu' },
+                        { lang: 'zh' as const, label: '🇨🇳 Mandarin' },
+                        { lang: 'ta' as const, label: '🇮🇳 Tamil' },
+                      ] as const).map(({ lang, label }) => (
+                        <div key={lang} className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">{label}</Label>
+                          <Select
+                            value={ttsVoiceIds[lang]}
+                            onValueChange={(v) => v && setTtsVoiceIds((prev) => ({ ...prev, [lang]: v }))}
+                          >
+                            <SelectTrigger className="text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {selectedTtsDef.voices.map((v) => (
+                                <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Single voice selector (non-ElevenLabs providers) */}
+                  {!selectedTtsDef.perLangVoices && selectedTtsDef.voices.length > 0 && (
                     <div className="space-y-2">
                       <Label>Voice</Label>
-                      <Select value={ttsVoiceId} onValueChange={(v) => v && setTtsVoiceId(v)}>
+                      <Select value={ttsVoiceIds.en} onValueChange={(v) => v && setTtsVoiceIds((prev) => ({ ...prev, en: v }))}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
