@@ -483,8 +483,38 @@ export default function VoiceConfigPage() {
     enabled: !!tenant && !!credExistence?.elevenlabs,
     staleTime: 60_000,
   })
-  // Map of voice_id → name for instant resolution
+  // Map of voice_id → voice object for instant resolution from account list
   const elVoiceMap = new Map((elVoicesData?.voices ?? []).map((v) => [v.voice_id, v]))
+
+  // Cache of individually resolved voice IDs (for IDs not in the account list)
+  const [resolvedNames, setResolvedNames] = useState<Record<string, { name: string; category: string }>>({})
+  const [resolving, setResolving] = useState<Set<string>>(new Set())
+
+  // Debounced lookup: when a voice ID is pasted that isn't in the account list, resolve it
+  useEffect(() => {
+    const ids = Object.values(ttsVoiceIds).filter(
+      (id) => id && id.length > 10 && !elVoiceMap.has(id) && !resolvedNames[id] && !resolving.has(id)
+    )
+    if (!ids.length) return
+    const timer = setTimeout(async () => {
+      const unique = [...new Set(ids)]
+      setResolving((prev) => new Set([...prev, ...unique]))
+      await Promise.all(unique.map(async (voiceId) => {
+        try {
+          const res = await fetch(`/api/voice-resolve?voice_id=${voiceId}`)
+          if (res.ok) {
+            const data = await res.json()
+            setResolvedNames((prev) => ({ ...prev, [voiceId]: { name: data.name, category: data.category } }))
+          }
+        } catch { /* silent — just won't show name */ }
+        finally {
+          setResolving((prev) => { const next = new Set(prev); next.delete(voiceId); return next })
+        }
+      }))
+    }, 600)
+    return () => clearTimeout(timer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsVoiceIds, elVoicesData])
 
   // Track what's actually saved in DB to show persistent warnings
   const [savedSttProvider, setSavedSttProvider] = useState<string | null>(null)
@@ -903,16 +933,25 @@ export default function VoiceConfigPage() {
                         { lang: 'zh' as const, label: 'Mandarin', flag: '🇨🇳' },
                         { lang: 'ta' as const, label: 'Tamil', flag: '🇮🇳' },
                       ] as const).map(({ lang, label, flag }) => {
-                        // Resolve current ID against dynamic list, then static list
+                        // Resolve current ID: dynamic list → individually resolved → static preset
                         const currentId = ttsVoiceIds[lang]
                         const resolvedVoice = elVoiceMap.get(currentId)
                         const staticMatch = selectedTtsDef.voices.find((v) => v.id === currentId)
-                        const resolvedName = resolvedVoice?.name ?? staticMatch?.name
+                        const individuallyResolved = resolvedNames[currentId]
+                        const resolvedName = resolvedVoice?.name ?? individuallyResolved?.name ?? staticMatch?.name
+                        const resolvedCategory = resolvedVoice?.category ?? individuallyResolved?.category
+                        const isResolving = resolving.has(currentId)
 
-                        // Voices to show in dropdown: dynamic list takes priority over static
-                        const dropdownVoices = elVoicesData?.voices ?? selectedTtsDef.voices.map((v) => ({
+                        // Voices to show in dropdown: dynamic list + any individually-resolved IDs not already in the list
+                        const baseVoices = elVoicesData?.voices ?? selectedTtsDef.voices.map((v) => ({
                           voice_id: v.id, name: v.name, category: 'premade', labels: {} as Record<string, string>,
                         }))
+                        const baseIds = new Set(baseVoices.map((v) => v.voice_id))
+                        // Add resolved-but-not-in-list voices (e.g. community voices used directly by ID)
+                        const pinnedVoices = Object.entries(resolvedNames)
+                          .filter(([id]) => !baseIds.has(id))
+                          .map(([id, v]) => ({ voice_id: id, name: v.name, category: v.category, labels: {} as Record<string, string> }))
+                        const dropdownVoices = [...baseVoices, ...pinnedVoices]
 
                         // For the Select value — only set if current ID is in the dropdown list
                         const inDropdown = dropdownVoices.some((v) => v.voice_id === currentId)
@@ -930,11 +969,25 @@ export default function VoiceConfigPage() {
                                 <SelectValue placeholder={elVoicesLoading ? 'Loading voices…' : 'Select a voice…'} />
                               </SelectTrigger>
                               <SelectContent>
-                                {/* Own / cloned voices first (highlighted) */}
-                                {dropdownVoices.filter((v) => v.category !== 'premade').length > 0 && (
+                                {/* Pinned — voices resolved by pasting ID (community voices not in account) */}
+                                {pinnedVoices.length > 0 && (
                                   <>
-                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Your Voices</div>
-                                    {dropdownVoices.filter((v) => v.category !== 'premade').map((v) => (
+                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Pinned by ID</div>
+                                    {pinnedVoices.map((v) => (
+                                      <SelectItem key={v.voice_id} value={v.voice_id}>
+                                        <span className="flex items-center gap-1.5">
+                                          {v.name}
+                                          <span className="text-[10px] text-amber-600 font-medium">pinned</span>
+                                        </span>
+                                      </SelectItem>
+                                    ))}
+                                  </>
+                                )}
+                                {/* Own / cloned voices from account */}
+                                {baseVoices.filter((v) => v.category !== 'premade').length > 0 && (
+                                  <>
+                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide border-t mt-1">Your Voices</div>
+                                    {baseVoices.filter((v) => v.category !== 'premade').map((v) => (
                                       <SelectItem key={v.voice_id} value={v.voice_id}>
                                         <span className="flex items-center gap-1.5">
                                           {v.name}
@@ -942,12 +995,17 @@ export default function VoiceConfigPage() {
                                         </span>
                                       </SelectItem>
                                     ))}
-                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide border-t mt-1">All Voices</div>
                                   </>
                                 )}
-                                {dropdownVoices.filter((v) => v.category === 'premade').map((v) => (
-                                  <SelectItem key={v.voice_id} value={v.voice_id}>{v.name}</SelectItem>
-                                ))}
+                                {/* All premade voices */}
+                                {baseVoices.filter((v) => v.category === 'premade').length > 0 && (
+                                  <>
+                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide border-t mt-1">All Voices</div>
+                                    {baseVoices.filter((v) => v.category === 'premade').map((v) => (
+                                      <SelectItem key={v.voice_id} value={v.voice_id}>{v.name}</SelectItem>
+                                    ))}
+                                  </>
+                                )}
                               </SelectContent>
                             </Select>
 
@@ -963,18 +1021,23 @@ export default function VoiceConfigPage() {
                                 onChange={(e) => setTtsVoiceIds((prev) => ({ ...prev, [lang]: e.target.value.trim() }))}
                               />
                               {/* Resolved name badge */}
-                              {currentId && resolvedName && (
+                              {currentId && isResolving && (
+                                <p className="text-[11px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                                  <Loader2 className="h-3 w-3 animate-spin" /> Looking up voice…
+                                </p>
+                              )}
+                              {currentId && !isResolving && resolvedName && (
                                 <p className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-0.5">
                                   <CheckCircle2 className="h-3 w-3" />
                                   {resolvedName}
-                                  {resolvedVoice?.category && resolvedVoice.category !== 'premade' && (
-                                    <span className="text-muted-foreground">· {resolvedVoice.category}</span>
+                                  {resolvedCategory && resolvedCategory !== 'premade' && (
+                                    <span className="text-muted-foreground">· {resolvedCategory}</span>
                                   )}
                                 </p>
                               )}
-                              {currentId && !resolvedName && !elVoicesLoading && (
+                              {currentId && !isResolving && !resolvedName && !elVoicesLoading && (
                                 <p className="text-[11px] text-muted-foreground mt-0.5">
-                                  ID saved — voice name will show once your ElevenLabs key is configured
+                                  {credExistence?.elevenlabs ? 'Voice ID not found in your ElevenLabs account' : 'Save your ElevenLabs key to resolve voice names'}
                                 </p>
                               )}
                             </div>
