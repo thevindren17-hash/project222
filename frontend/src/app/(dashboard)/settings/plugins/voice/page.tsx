@@ -472,6 +472,20 @@ export default function VoiceConfigPage() {
     staleTime: 30_000,
   })
 
+  // Dynamic ElevenLabs voice list — fetched server-side using saved API key
+  const { data: elVoicesData, isLoading: elVoicesLoading } = useQuery({
+    queryKey: ['elevenlabs-voices'],
+    queryFn: async () => {
+      const res = await fetch('/api/voice-voices')
+      if (!res.ok) return null
+      return res.json() as Promise<{ voices: { voice_id: string; name: string; category: string; labels: Record<string, string> }[] }>
+    },
+    enabled: !!tenant && !!credExistence?.elevenlabs,
+    staleTime: 60_000,
+  })
+  // Map of voice_id → name for instant resolution
+  const elVoiceMap = new Map((elVoicesData?.voices ?? []).map((v) => [v.voice_id, v]))
+
   // Track what's actually saved in DB to show persistent warnings
   const [savedSttProvider, setSavedSttProvider] = useState<string | null>(null)
 
@@ -563,6 +577,7 @@ export default function VoiceConfigPage() {
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'voice'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
       queryClient.invalidateQueries({ queryKey: ['voice-cred-existence'] })
+      queryClient.invalidateQueries({ queryKey: ['elevenlabs-voices'] })
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -860,58 +875,108 @@ export default function VoiceConfigPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {/* Per-language voice selectors (ElevenLabs) */}
-                  {selectedTtsDef.perLangVoices && selectedTtsDef.voices.length > 0 && (
+                  {selectedTtsDef.perLangVoices && (
                     <div className="space-y-4">
-                      <p className="text-xs text-muted-foreground">
-                        Pick a preset voice or paste any ElevenLabs Voice ID directly — ideal for cloned Malaysian voices.{' '}
-                        <a
-                          href="https://elevenlabs.io/voice-library"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline inline-flex items-center gap-0.5"
-                        >
-                          Browse voice library <ExternalLink className="h-3 w-3" />
-                        </a>
-                      </p>
+
+                      {/* Header — dynamic vs static state */}
+                      {ttsProvider === 'elevenlabs' && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          {elVoicesLoading ? (
+                            <><Loader2 className="h-3 w-3 animate-spin" /> Loading your ElevenLabs voices…</>
+                          ) : elVoicesData ? (
+                            <><CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                              <span><strong className="text-foreground">{elVoicesData.voices.length}</strong> voices loaded from your ElevenLabs account</span>
+                            </>
+                          ) : (
+                            <>
+                              <ExternalLink className="h-3 w-3" />
+                              Save your ElevenLabs API key above to auto-load your voice library (including cloned voices).{' '}
+                              <a href="https://elevenlabs.io/voice-library" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Browse voices</a>
+                            </>
+                          )}
+                        </div>
+                      )}
+
                       {([
                         { lang: 'en' as const, label: 'English', flag: '🇬🇧' },
                         { lang: 'ms' as const, label: 'Bahasa Melayu', flag: '🇲🇾' },
                         { lang: 'zh' as const, label: 'Mandarin', flag: '🇨🇳' },
                         { lang: 'ta' as const, label: 'Tamil', flag: '🇮🇳' },
                       ] as const).map(({ lang, label, flag }) => {
-                        const presetMatch = selectedTtsDef.voices.find((v) => v.id === ttsVoiceIds[lang])
+                        // Resolve current ID against dynamic list, then static list
+                        const currentId = ttsVoiceIds[lang]
+                        const resolvedVoice = elVoiceMap.get(currentId)
+                        const staticMatch = selectedTtsDef.voices.find((v) => v.id === currentId)
+                        const resolvedName = resolvedVoice?.name ?? staticMatch?.name
+
+                        // Voices to show in dropdown: dynamic list takes priority over static
+                        const dropdownVoices = elVoicesData?.voices ?? selectedTtsDef.voices.map((v) => ({
+                          voice_id: v.id, name: v.name, category: 'premade', labels: {} as Record<string, string>,
+                        }))
+
+                        // For the Select value — only set if current ID is in the dropdown list
+                        const inDropdown = dropdownVoices.some((v) => v.voice_id === currentId)
+
                         return (
                           <div key={lang} className="rounded-lg border p-3 space-y-2">
                             <Label className="text-xs font-semibold">{flag} {label}</Label>
 
-                            {/* Preset picker */}
+                            {/* Dynamic / static dropdown */}
                             <Select
-                              value={presetMatch ? ttsVoiceIds[lang] : ''}
+                              value={inDropdown ? currentId : ''}
                               onValueChange={(v) => v && setTtsVoiceIds((prev) => ({ ...prev, [lang]: v }))}
                             >
                               <SelectTrigger className="text-sm h-8">
-                                <SelectValue placeholder="Select a preset voice…" />
+                                <SelectValue placeholder={elVoicesLoading ? 'Loading voices…' : 'Select a voice…'} />
                               </SelectTrigger>
                               <SelectContent>
-                                {selectedTtsDef.voices.map((v) => (
-                                  <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                                {/* Own / cloned voices first (highlighted) */}
+                                {dropdownVoices.filter((v) => v.category !== 'premade').length > 0 && (
+                                  <>
+                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Your Voices</div>
+                                    {dropdownVoices.filter((v) => v.category !== 'premade').map((v) => (
+                                      <SelectItem key={v.voice_id} value={v.voice_id}>
+                                        <span className="flex items-center gap-1.5">
+                                          {v.name}
+                                          <span className="text-[10px] text-emerald-600 font-medium">{v.category}</span>
+                                        </span>
+                                      </SelectItem>
+                                    ))}
+                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide border-t mt-1">All Voices</div>
+                                  </>
+                                )}
+                                {dropdownVoices.filter((v) => v.category === 'premade').map((v) => (
+                                  <SelectItem key={v.voice_id} value={v.voice_id}>{v.name}</SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>
 
-                            {/* Custom voice ID — the canonical value that gets saved */}
+                            {/* Voice ID text field — canonical value that gets saved */}
                             <div className="space-y-1">
                               <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">
-                                Voice ID {!presetMatch && ttsVoiceIds[lang] && (
-                                  <span className="ml-1 text-primary font-medium">· custom</span>
-                                )}
+                                Voice ID
                               </Label>
                               <Input
                                 className="h-8 text-xs font-mono"
-                                placeholder="Paste voice ID here to use a custom / cloned voice"
-                                value={ttsVoiceIds[lang]}
+                                placeholder="Paste voice ID from ElevenLabs"
+                                value={currentId}
                                 onChange={(e) => setTtsVoiceIds((prev) => ({ ...prev, [lang]: e.target.value.trim() }))}
                               />
+                              {/* Resolved name badge */}
+                              {currentId && resolvedName && (
+                                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-0.5">
+                                  <CheckCircle2 className="h-3 w-3" />
+                                  {resolvedName}
+                                  {resolvedVoice?.category && resolvedVoice.category !== 'premade' && (
+                                    <span className="text-muted-foreground">· {resolvedVoice.category}</span>
+                                  )}
+                                </p>
+                              )}
+                              {currentId && !resolvedName && !elVoicesLoading && (
+                                <p className="text-[11px] text-muted-foreground mt-0.5">
+                                  ID saved — voice name will show once your ElevenLabs key is configured
+                                </p>
+                              )}
                             </div>
                           </div>
                         )
