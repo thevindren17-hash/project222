@@ -486,36 +486,6 @@ export default function VoiceConfigPage() {
   // Map of voice_id → voice object for instant resolution from account list
   const elVoiceMap = new Map((elVoicesData?.voices ?? []).map((v) => [v.voice_id, v]))
 
-  // Cache of individually resolved voice IDs (for IDs not in the account list)
-  const [resolvedNames, setResolvedNames] = useState<Record<string, { name: string; category: string }>>({})
-  const [resolving, setResolving] = useState<Set<string>>(new Set())
-
-  // Debounced lookup: when a voice ID is pasted that isn't in the account list, resolve it
-  useEffect(() => {
-    const ids = Object.values(ttsVoiceIds).filter(
-      (id) => id && id.length > 10 && !elVoiceMap.has(id) && !resolvedNames[id] && !resolving.has(id)
-    )
-    if (!ids.length) return
-    const timer = setTimeout(async () => {
-      const unique = [...new Set(ids)]
-      setResolving((prev) => new Set([...prev, ...unique]))
-      await Promise.all(unique.map(async (voiceId) => {
-        try {
-          const res = await fetch(`/api/voice-resolve?voice_id=${voiceId}`)
-          if (res.ok) {
-            const data = await res.json()
-            setResolvedNames((prev) => ({ ...prev, [voiceId]: { name: data.name, category: data.category } }))
-          }
-        } catch { /* silent — just won't show name */ }
-        finally {
-          setResolving((prev) => { const next = new Set(prev); next.delete(voiceId); return next })
-        }
-      }))
-    }, 600)
-    return () => clearTimeout(timer)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsVoiceIds, elVoicesData])
-
   // Track what's actually saved in DB to show persistent warnings
   const [savedSttProvider, setSavedSttProvider] = useState<string | null>(null)
 
@@ -537,6 +507,36 @@ export default function VoiceConfigPage() {
     ta: 'mGboHvCVOXWYeFL8KTR0',
   })
   const [newTtsKey, setNewTtsKey] = useState('')
+
+  // Cache of individually resolved voice IDs (for IDs not in the account list)
+  const [resolvedNames, setResolvedNames] = useState<Record<string, { name: string; category: string }>>({})
+  const [resolving, setResolving] = useState<Set<string>>(new Set())
+
+  // Debounced lookup: when a voice ID is pasted that isn't in the account list, resolve it
+  useEffect(() => {
+    const ids = Object.values(ttsVoiceIds).filter(
+      (id) => id && id.length > 10 && !elVoiceMap.has(id) && !resolvedNames[id] && !resolving.has(id)
+    )
+    if (!ids.length) return
+    const timer = setTimeout(async () => {
+      const unique = [...new Set(ids)]
+      setResolving((prev) => new Set([...prev, ...unique]))
+      await Promise.all(unique.map(async (voiceId) => {
+        try {
+          const res = await fetch(`/api/voice-resolve?voice_id=${voiceId}`)
+          if (res.ok) {
+            const data = await res.json()
+            setResolvedNames((prev) => ({ ...prev, [voiceId]: { name: data.name, category: data.category } }))
+          }
+        } catch { /* silent */ }
+        finally {
+          setResolving((prev) => { const next = new Set(prev); next.delete(voiceId); return next })
+        }
+      }))
+    }, 600)
+    return () => clearTimeout(timer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsVoiceIds, elVoicesData])
 
   // Seed state from DB
   useEffect(() => {
