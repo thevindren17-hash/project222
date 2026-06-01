@@ -172,18 +172,20 @@ function VoiceTestWidget({ tenantId }: { tenantId: string }) {
         timerRef.current && clearInterval(timerRef.current)
       })
       room.on(RoomEvent.TrackSubscribed, (track: import('livekit-client').RemoteTrack) => {
-        if (track.kind === 'audio') {
+        if (track.kind === 'audio' && track.sid) {
           const el = track.attach() as HTMLAudioElement
           el.autoplay = true
           document.body.appendChild(el)
-          audioElemsRef.current.set(track.sid, el)
+          audioElemsRef.current.set(track.sid!, el)
         }
       })
       room.on(RoomEvent.TrackUnsubscribed, (track: import('livekit-client').RemoteTrack) => {
         if (track.kind === 'audio') {
           track.detach()
-          const el = audioElemsRef.current.get(track.sid)
-          if (el) { el.remove(); audioElemsRef.current.delete(track.sid) }
+          if (track.sid) {
+            const el = audioElemsRef.current.get(track.sid)
+            if (el) { el.remove(); audioElemsRef.current.delete(track.sid) }
+          }
         }
       })
 
@@ -470,6 +472,9 @@ export default function VoiceConfigPage() {
     staleTime: 30_000,
   })
 
+  // Track what's actually saved in DB to show persistent warnings
+  const [savedSttProvider, setSavedSttProvider] = useState<string | null>(null)
+
   // ── LLM state ────────────────────────────────────────────────────────────
   const [llmProvider, setLlmProvider] = useState('groq')
   const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
@@ -497,7 +502,9 @@ export default function VoiceConfigPage() {
       setLlmModel(settings.voice_llm_config.model || 'llama-3.3-70b-versatile')
     }
     if (settings.voice_stt_config) {
-      setSttProvider(settings.voice_stt_config.provider || 'groq')
+      const savedStt = settings.voice_stt_config.provider || 'groq'
+      setSttProvider(savedStt)
+      setSavedSttProvider(savedStt)
     }
     if (settings.voice_tts_config) {
       const cfg = settings.voice_tts_config
@@ -552,6 +559,7 @@ export default function VoiceConfigPage() {
     },
     onSuccess: () => {
       toast.success('Voice config saved')
+      setSavedSttProvider(sttProvider)
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'voice'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
       queryClient.invalidateQueries({ queryKey: ['voice-cred-existence'] })
@@ -704,6 +712,23 @@ export default function VoiceConfigPage() {
               </p>
             </div>
 
+            {/* Persistent warning: saved STT is English-only but agent is multilingual */}
+            {savedSttProvider && ['deepgram', 'assemblyai', 'nvidia'].includes(savedSttProvider) && sttProvider === savedSttProvider && (
+              <div className="flex items-start gap-3 rounded-lg border border-red-400/50 bg-red-50 dark:bg-red-950/30 p-4">
+                <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                    Your saved STT will break multilingual calls
+                  </p>
+                  <p className="text-xs text-red-600 dark:text-red-500 mt-1">
+                    <strong>{VOICE_STT_PROVIDERS.find(p => p.id === savedSttProvider)?.name}</strong> is currently saved
+                    and does not understand Bahasa Melayu or Tamil — callers in those languages will not be heard.
+                    Switch to <strong>Groq Whisper</strong> and save to fix this.
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               {VOICE_STT_PROVIDERS.map((p) => (
                 <ProviderCard
@@ -836,30 +861,61 @@ export default function VoiceConfigPage() {
                 <CardContent className="space-y-4">
                   {/* Per-language voice selectors (ElevenLabs) */}
                   {selectedTtsDef.perLangVoices && selectedTtsDef.voices.length > 0 && (
-                    <div className="space-y-3">
+                    <div className="space-y-4">
+                      <p className="text-xs text-muted-foreground">
+                        Pick a preset voice or paste any ElevenLabs Voice ID directly — ideal for cloned Malaysian voices.{' '}
+                        <a
+                          href="https://elevenlabs.io/voice-library"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline inline-flex items-center gap-0.5"
+                        >
+                          Browse voice library <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </p>
                       {([
-                        { lang: 'en' as const, label: '🇬🇧 English' },
-                        { lang: 'ms' as const, label: '🇲🇾 Bahasa Melayu' },
-                        { lang: 'zh' as const, label: '🇨🇳 Mandarin' },
-                        { lang: 'ta' as const, label: '🇮🇳 Tamil' },
-                      ] as const).map(({ lang, label }) => (
-                        <div key={lang} className="space-y-1.5">
-                          <Label className="text-xs text-muted-foreground">{label}</Label>
-                          <Select
-                            value={ttsVoiceIds[lang]}
-                            onValueChange={(v) => v && setTtsVoiceIds((prev) => ({ ...prev, [lang]: v }))}
-                          >
-                            <SelectTrigger className="text-sm">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {selectedTtsDef.voices.map((v) => (
-                                <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      ))}
+                        { lang: 'en' as const, label: 'English', flag: '🇬🇧' },
+                        { lang: 'ms' as const, label: 'Bahasa Melayu', flag: '🇲🇾' },
+                        { lang: 'zh' as const, label: 'Mandarin', flag: '🇨🇳' },
+                        { lang: 'ta' as const, label: 'Tamil', flag: '🇮🇳' },
+                      ] as const).map(({ lang, label, flag }) => {
+                        const presetMatch = selectedTtsDef.voices.find((v) => v.id === ttsVoiceIds[lang])
+                        return (
+                          <div key={lang} className="rounded-lg border p-3 space-y-2">
+                            <Label className="text-xs font-semibold">{flag} {label}</Label>
+
+                            {/* Preset picker */}
+                            <Select
+                              value={presetMatch ? ttsVoiceIds[lang] : ''}
+                              onValueChange={(v) => v && setTtsVoiceIds((prev) => ({ ...prev, [lang]: v }))}
+                            >
+                              <SelectTrigger className="text-sm h-8">
+                                <SelectValue placeholder="Select a preset voice…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {selectedTtsDef.voices.map((v) => (
+                                  <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+
+                            {/* Custom voice ID — the canonical value that gets saved */}
+                            <div className="space-y-1">
+                              <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                                Voice ID {!presetMatch && ttsVoiceIds[lang] && (
+                                  <span className="ml-1 text-primary font-medium">· custom</span>
+                                )}
+                              </Label>
+                              <Input
+                                className="h-8 text-xs font-mono"
+                                placeholder="Paste voice ID here to use a custom / cloned voice"
+                                value={ttsVoiceIds[lang]}
+                                onChange={(e) => setTtsVoiceIds((prev) => ({ ...prev, [lang]: e.target.value.trim() }))}
+                              />
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
 
@@ -877,6 +933,16 @@ export default function VoiceConfigPage() {
                           ))}
                         </SelectContent>
                       </Select>
+                      {/* Custom voice ID for single-voice providers */}
+                      <div className="space-y-1 pt-1">
+                        <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Or paste custom Voice ID</Label>
+                        <Input
+                          className="h-8 text-xs font-mono"
+                          placeholder="Custom voice ID from provider"
+                          value={ttsVoiceIds.en}
+                          onChange={(e) => setTtsVoiceIds((prev) => ({ ...prev, en: e.target.value.trim() }))}
+                        />
+                      </div>
                     </div>
                   )}
 

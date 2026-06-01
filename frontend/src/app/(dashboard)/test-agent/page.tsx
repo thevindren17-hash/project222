@@ -14,6 +14,7 @@ interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
   toolCalls?: { tool: string; args: Record<string, unknown>; result: string }[]
+  latencyMs?: number  // only set on assistant messages — time from user send to response
 }
 
 interface HistoryEntry {
@@ -30,6 +31,7 @@ interface TranscriptLine {
   speaker: 'user' | 'agent'
   text: string
   isFinal: boolean
+  latencyMs?: number  // ms from last user final word → this agent segment first appeared
 }
 
 function VoiceCallTab({ tenantId }: { tenantId: string }) {
@@ -43,6 +45,10 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement>(null)
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  // Latency tracking: timestamp of last final user segment
+  const lastUserFinalTsRef = useRef<number | null>(null)
+  // Once we assign latency to the first new agent segment, block further assignments until next user turn
+  const agentLatencyAssignedRef = useRef(false)
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -78,23 +84,46 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
       const room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
 
-      // Live transcription
+      // Live transcription + latency measurement
       room.on(RoomEvent.TranscriptionReceived, (
         segments: import('livekit-client').TranscriptionSegment[],
         participant?: import('livekit-client').Participant,
       ) => {
         const isAgent = !participant || participant.identity !== room.localParticipant.identity
+        const now = Date.now()
+
+        // Track user turn end so we can measure agent response latency
+        if (!isAgent) {
+          for (const seg of segments) {
+            if (seg.final && seg.text.trim()) {
+              lastUserFinalTsRef.current = now
+              agentLatencyAssignedRef.current = false  // ready to measure next agent turn
+            }
+          }
+        }
+
         setTranscript((prev) => {
           let next = [...prev]
           for (const seg of segments) {
             if (!seg.text.trim()) continue
             const idx = next.findIndex((t) => t.id === seg.id)
+            const isNewSegment = idx < 0
+
             const line: TranscriptLine = {
               id: seg.id,
               speaker: isAgent ? 'agent' : 'user',
               text: seg.text,
               isFinal: seg.final,
+              // Preserve existing latencyMs when updating a segment
+              latencyMs: idx >= 0 ? next[idx].latencyMs : undefined,
             }
+
+            // Attach latency to the FIRST new agent segment after a user final turn
+            if (isAgent && isNewSegment && !agentLatencyAssignedRef.current && lastUserFinalTsRef.current !== null) {
+              line.latencyMs = now - lastUserFinalTsRef.current
+              agentLatencyAssignedRef.current = true
+            }
+
             if (idx >= 0) next[idx] = line
             else next = [...next, line]
           }
@@ -118,7 +147,7 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
 
       // Attach remote audio tracks so we can hear the agent
       room.on(RoomEvent.TrackSubscribed, (track: import('livekit-client').RemoteTrack) => {
-        if (track.kind === 'audio') {
+        if (track.kind === 'audio' && track.sid) {
           const el = track.attach() as HTMLAudioElement
           el.autoplay = true
           document.body.appendChild(el)
@@ -128,10 +157,12 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
       room.on(RoomEvent.TrackUnsubscribed, (track: import('livekit-client').RemoteTrack) => {
         if (track.kind === 'audio') {
           track.detach()
-          const el = audioElementsRef.current.get(track.sid)
-          if (el) {
-            el.remove()
-            audioElementsRef.current.delete(track.sid)
+          if (track.sid) {
+            const el = audioElementsRef.current.get(track.sid)
+            if (el) {
+              el.remove()
+              audioElementsRef.current.delete(track.sid)
+            }
           }
         }
       })
@@ -166,6 +197,20 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
   }, [micMuted])
 
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+
+  // Latency badge helpers
+  function fmtLatency(ms: number) {
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
+  }
+  function latencyColor(ms: number) {
+    if (ms < 500)  return 'text-emerald-500'
+    if (ms < 1500) return 'text-amber-500'
+    return 'text-red-500'
+  }
+
+  // Session average latency across all measured agent turns
+  const latencies = transcript.filter((t) => t.speaker === 'agent' && t.latencyMs !== undefined).map((t) => t.latencyMs!)
+  const avgLatency = latencies.length > 0 ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null
 
   const showTranscript = callState === 'connected' || transcript.length > 0
 
@@ -254,12 +299,20 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
         <div className="flex flex-col w-full max-w-md h-[calc(100vh-12rem)] min-h-64">
           <div className="flex items-center justify-between mb-2 shrink-0">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live Transcript</p>
-            {callState === 'connected' && (
-              <span className="flex items-center gap-1.5 text-xs text-emerald-500">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Live
-              </span>
-            )}
+            <div className="flex items-center gap-3">
+              {/* Session average latency */}
+              {avgLatency !== null && (
+                <span className={`text-xs font-mono font-medium ${latencyColor(avgLatency)}`}>
+                  avg {fmtLatency(avgLatency)}
+                </span>
+              )}
+              {callState === 'connected' && (
+                <span className="flex items-center gap-1.5 text-xs text-emerald-500">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Live
+                </span>
+              )}
+            </div>
           </div>
           <div className="flex-1 rounded-lg border border-border bg-muted/30 overflow-y-auto p-4">
             {transcript.length === 0 ? (
@@ -284,15 +337,23 @@ function VoiceCallTab({ tenantId }: { tenantId: string }) {
                         ? <User className="h-3 w-3" />
                         : <Bot className="h-3 w-3 text-primary" />}
                     </div>
-                    <p className={cn(
-                      'text-sm leading-snug max-w-[85%] px-3 py-1.5 rounded-xl',
-                      line.speaker === 'user'
-                        ? 'bg-primary text-primary-foreground rounded-tr-sm'
-                        : 'bg-background border border-border rounded-tl-sm',
-                      !line.isFinal && 'opacity-60 italic'
-                    )}>
-                      {line.text}
-                    </p>
+                    <div className="flex flex-col gap-0.5">
+                      <p className={cn(
+                        'text-sm leading-snug max-w-[85%] px-3 py-1.5 rounded-xl',
+                        line.speaker === 'user'
+                          ? 'bg-primary text-primary-foreground rounded-tr-sm'
+                          : 'bg-background border border-border rounded-tl-sm',
+                        !line.isFinal && 'opacity-60 italic'
+                      )}>
+                        {line.text}
+                      </p>
+                      {/* Latency badge — only on final agent segments that have a measured latency */}
+                      {line.speaker === 'agent' && line.isFinal && line.latencyMs !== undefined && (
+                        <span className={`text-[10px] font-mono ml-1 ${latencyColor(line.latencyMs)}`}>
+                          ⚡ {fmtLatency(line.latencyMs)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 ))}
                 <div ref={transcriptEndRef} />
@@ -350,6 +411,7 @@ export default function TestAgentPage() {
     setInput('')
     setError('')
     setLoading(true)
+    const sendTs = Date.now()
 
     const userMsg: Message = { role: 'user', content: text }
     setMessages((prev) => [...prev, userMsg])
@@ -388,6 +450,7 @@ export default function TestAgentPage() {
         role: 'assistant',
         content: data.reply,
         toolCalls: data.tool_calls?.length ? data.tool_calls : undefined,
+        latencyMs: Date.now() - sendTs,
       }
       setMessages((prev) => [...prev, assistantMsg])
 
@@ -584,6 +647,16 @@ export default function TestAgentPage() {
               )}>
                 {msg.content}
               </div>
+
+              {/* Latency badge for assistant messages */}
+              {msg.role === 'assistant' && msg.latencyMs !== undefined && (() => {
+                const ms = msg.latencyMs
+                const color = ms < 1000 ? 'text-emerald-500' : ms < 3000 ? 'text-amber-500' : 'text-red-500'
+                const label = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
+                return (
+                  <span className={`text-[10px] font-mono ml-1 ${color}`}>⚡ {label}</span>
+                )
+              })()}
 
               {/* Tool calls */}
               {msg.toolCalls?.map((tc, j) => (
