@@ -187,6 +187,15 @@ export default function AgentPluginPage() {
       }, { onConflict: 'tenant_id' })
       if (error) throw error
 
+      // Keep tenants.name in sync so voice agent greeting uses the right clinic name
+      if (clinicName.trim()) {
+        const { error: tenantError } = await supabase
+          .from('tenants')
+          .update({ name: clinicName.trim() })
+          .eq('id', tenant.id)
+        if (tenantError) throw tenantError
+      }
+
       // Save API key separately — never included in the main upsert
       if (newApiKey.trim()) {
         const res = await fetch('/api/credentials', {
