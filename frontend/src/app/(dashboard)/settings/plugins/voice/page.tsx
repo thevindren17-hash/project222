@@ -11,17 +11,16 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { VOICE_LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS } from '@/lib/providers'
+import { VOICE_LLM_PROVIDERS, VOICE_STT_FIXED, VOICE_TTS_FIXED } from '@/lib/providers'
 import {
   Brain, Mic, Volume2, FlaskConical, Loader2, Check, Key, ExternalLink,
   Bot, Phone, PhoneOff, MicOff, AlertCircle, CheckCircle2,
 } from 'lucide-react'
 
 const SECTIONS = [
-  { id: 'llm',  label: 'LLM (Brain)',   icon: Brain },
-  { id: 'stt',  label: 'STT (Ears)',    icon: Mic },
-  { id: 'tts',  label: 'TTS (Voice)',   icon: Volume2 },
-  { id: 'test', label: 'Test Call',     icon: FlaskConical },
+  { id: 'llm',  label: 'LLM (Brain)',        icon: Brain },
+  { id: 'tts',  label: 'Voice (Ears + Voice)', icon: Volume2 },
+  { id: 'test', label: 'Test Call',          icon: FlaskConical },
 ]
 
 // ── Inline voice call widget ──────────────────────────────────────────────────
@@ -452,7 +451,7 @@ export default function VoiceConfigPage() {
       // Exclude voice_provider_credentials — keys never leave the server
       const { data } = await supabase
         .from('tenant_settings')
-        .select('voice_llm_config,voice_stt_config,voice_tts_config,voice_language')
+        .select('voice_llm_config,voice_language')
         .eq('tenant_id', tenant.id)
         .maybeSingle()
       return data
@@ -472,71 +471,10 @@ export default function VoiceConfigPage() {
     staleTime: 30_000,
   })
 
-  // Dynamic ElevenLabs voice list — fetched server-side using saved API key
-  const { data: elVoicesData, isLoading: elVoicesLoading } = useQuery({
-    queryKey: ['elevenlabs-voices'],
-    queryFn: async () => {
-      const res = await fetch('/api/voice-voices')
-      if (!res.ok) return null
-      return res.json() as Promise<{ voices: { voice_id: string; name: string; category: string; labels: Record<string, string> }[] }>
-    },
-    enabled: !!tenant && !!credExistence?.elevenlabs,
-    staleTime: 60_000,
-  })
-  // Map of voice_id → voice object for instant resolution from account list
-  const elVoiceMap = new Map((elVoicesData?.voices ?? []).map((v) => [v.voice_id, v]))
-
-  // Track what's actually saved in DB to show persistent warnings
-  const [savedSttProvider, setSavedSttProvider] = useState<string | null>(null)
-
   // ── LLM state ────────────────────────────────────────────────────────────
   const [llmProvider, setLlmProvider] = useState('groq')
   const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
   const [newLlmKey, setNewLlmKey] = useState('')
-
-  // ── STT state ────────────────────────────────────────────────────────────
-  const [sttProvider, setSttProvider] = useState('groq')
-  const [newSttKey, setNewSttKey] = useState('')
-
-  // ── TTS state ────────────────────────────────────────────────────────────
-  const [ttsProvider, setTtsProvider] = useState('elevenlabs')
-  const [ttsVoiceIds, setTtsVoiceIds] = useState({
-    en: 'kdmDKE6EkgrWrrykO9Qt',
-    ms: 'qAJVXEQ6QgjOQ25KuoU8',
-    zh: 'tOuLUAIdXShmWH7PEUrU',
-    ta: 'mGboHvCVOXWYeFL8KTR0',
-  })
-  const [newTtsKey, setNewTtsKey] = useState('')
-
-  // Cache of individually resolved voice IDs (for IDs not in the account list)
-  const [resolvedNames, setResolvedNames] = useState<Record<string, { name: string; category: string }>>({})
-  const [resolving, setResolving] = useState<Set<string>>(new Set())
-
-  // Debounced lookup: when a voice ID is pasted that isn't in the account list, resolve it
-  useEffect(() => {
-    const ids = Object.values(ttsVoiceIds).filter(
-      (id) => id && id.length > 10 && !elVoiceMap.has(id) && !resolvedNames[id] && !resolving.has(id)
-    )
-    if (!ids.length) return
-    const timer = setTimeout(async () => {
-      const unique = [...new Set(ids)]
-      setResolving((prev) => new Set([...prev, ...unique]))
-      await Promise.all(unique.map(async (voiceId) => {
-        try {
-          const res = await fetch(`/api/voice-resolve?voice_id=${voiceId}`)
-          if (res.ok) {
-            const data = await res.json()
-            setResolvedNames((prev) => ({ ...prev, [voiceId]: { name: data.name, category: data.category } }))
-          }
-        } catch { /* silent */ }
-        finally {
-          setResolving((prev) => { const next = new Set(prev); next.delete(voiceId); return next })
-        }
-      }))
-    }, 600)
-    return () => clearTimeout(timer)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsVoiceIds, elVoicesData])
 
   // Seed state from DB
   useEffect(() => {
@@ -544,21 +482,6 @@ export default function VoiceConfigPage() {
     if (settings.voice_llm_config) {
       setLlmProvider(settings.voice_llm_config.provider || 'groq')
       setLlmModel(settings.voice_llm_config.model || 'llama-3.3-70b-versatile')
-    }
-    if (settings.voice_stt_config) {
-      const savedStt = settings.voice_stt_config.provider || 'groq'
-      setSttProvider(savedStt)
-      setSavedSttProvider(savedStt)
-    }
-    if (settings.voice_tts_config) {
-      const cfg = settings.voice_tts_config
-      setTtsProvider(cfg.provider || 'elevenlabs')
-      setTtsVoiceIds({
-        en: cfg.voice_id_en || cfg.voice_id || 'kdmDKE6EkgrWrrykO9Qt',
-        ms: cfg.voice_id_ms || 'qAJVXEQ6QgjOQ25KuoU8',
-        zh: cfg.voice_id_zh || 'tOuLUAIdXShmWH7PEUrU',
-        ta: cfg.voice_id_ta || 'mGboHvCVOXWYeFL8KTR0',
-      })
     }
   }, [settings])
 
@@ -578,43 +501,23 @@ export default function VoiceConfigPage() {
       const { error } = await supabase.from('tenant_settings').upsert({
         tenant_id: tenant.id,
         voice_llm_config: { provider: llmProvider, model: llmModel },
-        voice_stt_config: { provider: sttProvider },
-        voice_tts_config: {
-          provider: ttsProvider,
-          voice_id_en: ttsVoiceIds.en,
-          voice_id_ms: ttsVoiceIds.ms,
-          voice_id_zh: ttsVoiceIds.zh,
-          voice_id_ta: ttsVoiceIds.ta,
-          // legacy field kept for backward compat
-          voice_id: ttsVoiceIds.en,
-        },
       }, { onConflict: 'tenant_id' })
       if (error) throw error
 
-      // Save API keys separately — never included in the main upsert
-      await Promise.all([
-        saveProviderKey(llmProvider, newLlmKey),
-        saveProviderKey(sttProvider, newSttKey),
-        saveProviderKey(ttsProvider, newTtsKey),
-      ])
+      // Save API key separately — never included in the main upsert
+      await saveProviderKey(llmProvider, newLlmKey)
       setNewLlmKey('')
-      setNewSttKey('')
-      setNewTtsKey('')
     },
     onSuccess: () => {
       toast.success('Voice config saved')
-      setSavedSttProvider(sttProvider)
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'voice'] })
       queryClient.invalidateQueries({ queryKey: ['plugin-status'] })
       queryClient.invalidateQueries({ queryKey: ['voice-cred-existence'] })
-      queryClient.invalidateQueries({ queryKey: ['elevenlabs-voices'] })
     },
     onError: (e: Error) => toast.error(e.message),
   })
 
   const selectedLlmDef = VOICE_LLM_PROVIDERS.find((p) => p.provider === llmProvider)
-  const selectedSttDef = VOICE_STT_PROVIDERS.find((p) => p.id === sttProvider)
-  const selectedTtsDef = VOICE_TTS_PROVIDERS.find((p) => p.id === ttsProvider)
 
   if (isLoading) {
     return (
@@ -746,374 +649,61 @@ export default function VoiceConfigPage() {
           </div>
         )}
 
-        {/* ── STT section ── */}
-        {section === 'stt' && (
-          <div className="space-y-6 max-w-2xl">
-            <div>
-              <h2 className="text-xl font-semibold">STT — Ears</h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                Speech-to-text converts caller audio into text for the AI to understand.
-                Choose based on your primary language.
-              </p>
-            </div>
-
-            {/* Persistent warning: saved STT is English-only but agent is multilingual */}
-            {savedSttProvider && ['deepgram', 'assemblyai', 'nvidia'].includes(savedSttProvider) && sttProvider === savedSttProvider && (
-              <div className="flex items-start gap-3 rounded-lg border border-red-400/50 bg-red-50 dark:bg-red-950/30 p-4">
-                <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-semibold text-red-700 dark:text-red-400">
-                    Your saved STT will break multilingual calls
-                  </p>
-                  <p className="text-xs text-red-600 dark:text-red-500 mt-1">
-                    <strong>{VOICE_STT_PROVIDERS.find(p => p.id === savedSttProvider)?.name}</strong> is currently saved
-                    and does not understand Bahasa Melayu or Tamil — callers in those languages will not be heard.
-                    Switch to <strong>Groq Whisper</strong> and save to fix this.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              {VOICE_STT_PROVIDERS.map((p) => (
-                <ProviderCard
-                  key={p.id}
-                  selected={sttProvider === p.id}
-                  recommended={p.recommended}
-                  name={p.name}
-                  badge={p.badge}
-                  description={p.description}
-                  onSelect={() => setSttProvider(p.id)}
-                />
-              ))}
-            </div>
-
-            {/* Multilingual warning for providers that don't support Malay/Tamil */}
-            {selectedSttDef && !selectedSttDef.multilingual && (
-              <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
-                <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
-                    Limited language support
-                  </p>
-                  <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
-                    {selectedSttDef.name} does not support Bahasa Melayu or Tamil.
-                    Callers speaking those languages will not be understood.
-                    Switch to <strong>Groq Whisper</strong> for full multilingual support.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {selectedSttDef && (
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">{selectedSttDef.name} Settings</CardTitle>
-                  {selectedSttDef.supportsLanguages.length > 0 && (
-                    <CardDescription>
-                      Languages: {selectedSttDef.supportsLanguages.join(', ')}
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="flex items-center gap-1.5">
-                        <Key className="h-3.5 w-3.5" />
-                        API Key
-                        {credExistence?.[sttProvider] && !newSttKey && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
-                            <Check className="h-2.5 w-2.5" />Key saved
-                          </Badge>
-                        )}
-                      </Label>
-                      {selectedSttDef.keyUrl && (
-                        <a
-                          href={selectedSttDef.keyUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-primary flex items-center gap-1 hover:underline"
-                        >
-                          Get key <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
-                    </div>
-                    <Input
-                      type="password"
-                      placeholder={credExistence?.[sttProvider] ? 'Enter new key to replace…' : selectedSttDef.keyPlaceholder}
-                      value={newSttKey}
-                      onChange={(e) => setNewSttKey(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {sttProvider === 'groq'
-                        ? 'Uses your Groq key from the LLM section — no extra cost.'
-                        : 'Stored server-side only. Never sent to the browser.'}
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} className="gap-2">
-              {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Save Changes
-            </Button>
-          </div>
-        )}
-
-        {/* ── TTS section ── */}
+        {/* ── Voice (STT + TTS) section ── */}
         {section === 'tts' && (
           <div className="space-y-6 max-w-2xl">
             <div>
-              <h2 className="text-xl font-semibold">TTS — Voice</h2>
+              <h2 className="text-xl font-semibold">Voice — Ears &amp; Voice</h2>
               <p className="text-sm text-muted-foreground mt-1">
-                Text-to-speech converts Maya&apos;s text responses into spoken audio.
-                ElevenLabs gives the most natural sound; Cartesia has the lowest latency.
+                Speech-to-text (understanding callers) and text-to-speech (Maya&apos;s voice) are
+                fixed for every clinic — nothing to configure here.
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              {VOICE_TTS_PROVIDERS.map((p) => (
-                <ProviderCard
-                  key={p.id}
-                  selected={ttsProvider === p.id}
-                  recommended={p.recommended}
-                  name={p.name}
-                  badge={p.badge}
-                  description={p.description}
-                  onSelect={() => {
-                    setTtsProvider(p.id)
-                    if (p.voiceDefaults) {
-                      setTtsVoiceIds(p.voiceDefaults as typeof ttsVoiceIds)
-                    } else if (p.voices[0]) {
-                      setTtsVoiceIds((prev) => ({ ...prev, en: p.voices[0].id }))
-                    }
-                  }}
-                />
-              ))}
+            {/* Fixed-engine notice — provider choice removed after Deepgram/AssemblyAI/NVIDIA
+                broke Malay & Tamil for a tenant whose saved STT silently didn't cover those
+                languages. Groq Whisper + ElevenLabs is the only stack verified for en/ms/zh/ta.
+                The ElevenLabs voice ID per language is likewise fixed (VoiceAI/config.py
+                VOICE_MAP) so clinic owners never have to pick a voice. */}
+            <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-4">
+              <CheckCircle2 className="h-4 w-4 text-emerald-500 mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium">
+                  Speech recognition: <strong>{VOICE_STT_FIXED.name}</strong>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {VOICE_STT_FIXED.description}
+                </p>
+                <p className="text-xs text-muted-foreground pt-1">
+                  Voice engine: <strong>{VOICE_TTS_FIXED.name}</strong> — {VOICE_TTS_FIXED.description}
+                </p>
+              </div>
             </div>
 
-            {selectedTtsDef && (
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">{selectedTtsDef.name} Settings</CardTitle>
-                  {selectedTtsDef.perLangVoices && (
-                    <CardDescription>
-                      Each language uses its own voice. Pick multilingual voices for the most natural accent across all languages.
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Per-language voice selectors (ElevenLabs) */}
-                  {selectedTtsDef.perLangVoices && (
-                    <div className="space-y-4">
-
-                      {/* Header — dynamic vs static state */}
-                      {ttsProvider === 'elevenlabs' && (
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          {elVoicesLoading ? (
-                            <><Loader2 className="h-3 w-3 animate-spin" /> Loading your ElevenLabs voices…</>
-                          ) : elVoicesData ? (
-                            <><CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                              <span><strong className="text-foreground">{elVoicesData.voices.length}</strong> voices loaded from your ElevenLabs account</span>
-                            </>
-                          ) : (
-                            <>
-                              <ExternalLink className="h-3 w-3" />
-                              Save your ElevenLabs API key above to auto-load your voice library (including cloned voices).{' '}
-                              <a href="https://elevenlabs.io/voice-library" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Browse voices</a>
-                            </>
-                          )}
-                        </div>
-                      )}
-
-                      {([
-                        { lang: 'en' as const, label: 'English', flag: '🇬🇧' },
-                        { lang: 'ms' as const, label: 'Bahasa Melayu', flag: '🇲🇾' },
-                        { lang: 'zh' as const, label: 'Mandarin', flag: '🇨🇳' },
-                        { lang: 'ta' as const, label: 'Tamil', flag: '🇮🇳' },
-                      ] as const).map(({ lang, label, flag }) => {
-                        // Resolve current ID: dynamic list → individually resolved → static preset
-                        const currentId = ttsVoiceIds[lang]
-                        const resolvedVoice = elVoiceMap.get(currentId)
-                        const staticMatch = selectedTtsDef.voices.find((v) => v.id === currentId)
-                        const individuallyResolved = resolvedNames[currentId]
-                        const resolvedName = resolvedVoice?.name ?? individuallyResolved?.name ?? staticMatch?.name
-                        const resolvedCategory = resolvedVoice?.category ?? individuallyResolved?.category
-                        const isResolving = resolving.has(currentId)
-
-                        // Voices to show in dropdown: dynamic list + any individually-resolved IDs not already in the list
-                        const baseVoices = elVoicesData?.voices ?? selectedTtsDef.voices.map((v) => ({
-                          voice_id: v.id, name: v.name, category: 'premade', labels: {} as Record<string, string>,
-                        }))
-                        const baseIds = new Set(baseVoices.map((v) => v.voice_id))
-                        // Add resolved-but-not-in-list voices (e.g. community voices used directly by ID)
-                        const pinnedVoices = Object.entries(resolvedNames)
-                          .filter(([id]) => !baseIds.has(id))
-                          .map(([id, v]) => ({ voice_id: id, name: v.name, category: v.category, labels: {} as Record<string, string> }))
-                        const dropdownVoices = [...baseVoices, ...pinnedVoices]
-
-                        // For the Select value — only set if current ID is in the dropdown list
-                        const inDropdown = dropdownVoices.some((v) => v.voice_id === currentId)
-
-                        return (
-                          <div key={lang} className="rounded-lg border p-3 space-y-2">
-                            <Label className="text-xs font-semibold">{flag} {label}</Label>
-
-                            {/* Dynamic / static dropdown */}
-                            <Select
-                              value={inDropdown ? currentId : ''}
-                              onValueChange={(v) => v && setTtsVoiceIds((prev) => ({ ...prev, [lang]: v }))}
-                            >
-                              <SelectTrigger className="text-sm h-8">
-                                <SelectValue placeholder={elVoicesLoading ? 'Loading voices…' : 'Select a voice…'} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {/* Pinned — voices resolved by pasting ID (community voices not in account) */}
-                                {pinnedVoices.length > 0 && (
-                                  <>
-                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Pinned by ID</div>
-                                    {pinnedVoices.map((v) => (
-                                      <SelectItem key={v.voice_id} value={v.voice_id}>
-                                        <span className="flex items-center gap-1.5">
-                                          {v.name}
-                                          <span className="text-[10px] text-amber-600 font-medium">pinned</span>
-                                        </span>
-                                      </SelectItem>
-                                    ))}
-                                  </>
-                                )}
-                                {/* Own / cloned voices from account */}
-                                {baseVoices.filter((v) => v.category !== 'premade').length > 0 && (
-                                  <>
-                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide border-t mt-1">Your Voices</div>
-                                    {baseVoices.filter((v) => v.category !== 'premade').map((v) => (
-                                      <SelectItem key={v.voice_id} value={v.voice_id}>
-                                        <span className="flex items-center gap-1.5">
-                                          {v.name}
-                                          <span className="text-[10px] text-emerald-600 font-medium">{v.category}</span>
-                                        </span>
-                                      </SelectItem>
-                                    ))}
-                                  </>
-                                )}
-                                {/* All premade voices */}
-                                {baseVoices.filter((v) => v.category === 'premade').length > 0 && (
-                                  <>
-                                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide border-t mt-1">All Voices</div>
-                                    {baseVoices.filter((v) => v.category === 'premade').map((v) => (
-                                      <SelectItem key={v.voice_id} value={v.voice_id}>{v.name}</SelectItem>
-                                    ))}
-                                  </>
-                                )}
-                              </SelectContent>
-                            </Select>
-
-                            {/* Voice ID text field — canonical value that gets saved */}
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">
-                                Voice ID
-                              </Label>
-                              <Input
-                                className="h-8 text-xs font-mono"
-                                placeholder="Paste voice ID from ElevenLabs"
-                                value={currentId}
-                                onChange={(e) => setTtsVoiceIds((prev) => ({ ...prev, [lang]: e.target.value.trim() }))}
-                              />
-                              {/* Resolved name badge */}
-                              {currentId && isResolving && (
-                                <p className="text-[11px] text-muted-foreground flex items-center gap-1 mt-0.5">
-                                  <Loader2 className="h-3 w-3 animate-spin" /> Looking up voice…
-                                </p>
-                              )}
-                              {currentId && !isResolving && resolvedName && (
-                                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-0.5">
-                                  <CheckCircle2 className="h-3 w-3" />
-                                  {resolvedName}
-                                  {resolvedCategory && resolvedCategory !== 'premade' && (
-                                    <span className="text-muted-foreground">· {resolvedCategory}</span>
-                                  )}
-                                </p>
-                              )}
-                              {currentId && !isResolving && !resolvedName && !elVoicesLoading && (
-                                <p className="text-[11px] text-muted-foreground mt-0.5">
-                                  {credExistence?.elevenlabs ? 'Voice ID not found in your ElevenLabs account' : 'Save your ElevenLabs key to resolve voice names'}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        )
-                      })}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Voices in use</CardTitle>
+                <CardDescription>
+                  One fixed voice per language, the same for every clinic.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    { label: 'English', flag: '🇬🇧' },
+                    { label: 'Bahasa Melayu', flag: '🇲🇾' },
+                    { label: 'Mandarin', flag: '🇨🇳' },
+                    { label: 'Tamil', flag: '🇮🇳' },
+                  ] as const).map(({ label, flag }) => (
+                    <div key={label} className="flex items-center gap-2 rounded-lg border p-3">
+                      <span className="text-lg">{flag}</span>
+                      <span className="text-sm font-medium">{label}</span>
+                      <Badge variant="secondary" className="ml-auto text-[10px]">Fixed</Badge>
                     </div>
-                  )}
-
-                  {/* Single voice selector (non-ElevenLabs providers) */}
-                  {!selectedTtsDef.perLangVoices && selectedTtsDef.voices.length > 0 && (
-                    <div className="space-y-2">
-                      <Label>Voice</Label>
-                      <Select value={ttsVoiceIds.en} onValueChange={(v) => v && setTtsVoiceIds((prev) => ({ ...prev, en: v }))}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {selectedTtsDef.voices.map((v) => (
-                            <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {/* Custom voice ID for single-voice providers */}
-                      <div className="space-y-1 pt-1">
-                        <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Or paste custom Voice ID</Label>
-                        <Input
-                          className="h-8 text-xs font-mono"
-                          placeholder="Custom voice ID from provider"
-                          value={ttsVoiceIds.en}
-                          onChange={(e) => setTtsVoiceIds((prev) => ({ ...prev, en: e.target.value.trim() }))}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="flex items-center gap-1.5">
-                        <Key className="h-3.5 w-3.5" />
-                        API Key
-                        {credExistence?.[ttsProvider] && !newTtsKey && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
-                            <Check className="h-2.5 w-2.5" />Key saved
-                          </Badge>
-                        )}
-                      </Label>
-                      {selectedTtsDef.keyUrl && (
-                        <a
-                          href={selectedTtsDef.keyUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-primary flex items-center gap-1 hover:underline"
-                        >
-                          Get key <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
-                    </div>
-                    <Input
-                      type="password"
-                      placeholder={credExistence?.[ttsProvider] ? 'Enter new key to replace…' : selectedTtsDef.keyPlaceholder}
-                      value={newTtsKey}
-                      onChange={(e) => setNewTtsKey(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Stored server-side only. Never sent to the browser.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} className="gap-2">
-              {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Save Changes
-            </Button>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
           </div>
         )}
 

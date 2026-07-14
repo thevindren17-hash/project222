@@ -87,168 +87,33 @@ export const VOICE_LLM_PROVIDERS = [
 ]
 
 // ── STT (Speech-to-Text) ─────────────────────────────────────────────────────
+// Hardcoded to Groq Whisper — not tenant-selectable. A clinic owner can't
+// judge which provider actually covers Malay/Tamil, and picking wrong
+// silently breaks the core multilingual value prop (this bit VoiceAI once
+// already, when a tenant's saved provider was an English-only engine).
+// Tenants can still BYOK their own Groq key; they just can't swap the engine.
 
-export const VOICE_STT_PROVIDERS = [
-  {
-    id: 'groq',
-    name: 'Groq Whisper',
-    badge: 'Free · Multilingual',
-    description: 'Whisper Large v3 Turbo via Groq. Free, <300 ms, and supports all 4 Malaysian languages — English, Bahasa Melayu, Mandarin, Tamil. Uses your Groq key.',
-    recommended: true,
-    multilingual: true,
-    keyPlaceholder: 'gsk_...',
-    keyUrl: 'https://console.groq.com/keys',
-    supportsLanguages: ['English', 'Bahasa Melayu', 'Mandarin', 'Tamil', '90+ languages'],
-  },
-  {
-    id: 'elevenlabs',
-    name: 'ElevenLabs Scribe v2',
-    badge: 'Realtime',
-    description: 'Highest accuracy realtime STT. Best for Malaysian English, Malay, and mixed-language calls.',
-    recommended: false,
-    multilingual: true,
-    keyPlaceholder: 'sk_...',
-    keyUrl: 'https://elevenlabs.io',
-    supportsLanguages: ['English', 'Bahasa Melayu', 'Mandarin', 'Tamil', '30+ languages'],
-  },
-  {
-    id: 'deepgram',
-    name: 'Deepgram Nova-3',
-    badge: 'English only',
-    description: 'Fast English/Mandarin STT. Does NOT support Bahasa Melayu or Tamil — agent will not understand Malay/Tamil callers.',
-    recommended: false,
-    multilingual: false,
-    keyPlaceholder: 'dg_...',
-    keyUrl: 'https://console.deepgram.com',
-    supportsLanguages: ['English', 'Mandarin'],
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI Whisper',
-    badge: null,
-    description: 'Strong multilingual support. Best for Tamil and less common languages.',
-    recommended: false,
-    multilingual: true,
-    keyPlaceholder: 'sk-...',
-    keyUrl: 'https://platform.openai.com/api-keys',
-    supportsLanguages: ['English', 'Bahasa Melayu', 'Mandarin', 'Tamil', '90+ languages'],
-  },
-  {
-    id: 'assemblyai',
-    name: 'AssemblyAI Universal-2',
-    badge: null,
-    description: 'High accuracy with speaker diarization. Good for multi-speaker calls.',
-    recommended: false,
-    multilingual: false,
-    keyPlaceholder: 'your-assemblyai-key',
-    keyUrl: 'https://www.assemblyai.com/dashboard',
-    supportsLanguages: ['English', 'Mandarin', '17 languages'],
-  },
-  {
-    id: 'nvidia',
-    name: 'NVIDIA Parakeet',
-    badge: 'Free credits',
-    description: 'NVIDIA Parakeet CTC 1.1B — fast English ASR with free NIM credits.',
-    recommended: false,
-    multilingual: false,
-    keyPlaceholder: 'nvapi-...',
-    keyUrl: 'https://build.nvidia.com',
-    supportsLanguages: ['English'],
-  },
-]
+export const VOICE_STT_FIXED = {
+  id: 'groq',
+  name: 'Groq Whisper',
+  badge: 'Free · Multilingual',
+  description: 'Whisper Large v3 Turbo via Groq. Free, <300 ms, and supports all 4 Malaysian languages — English, Bahasa Melayu, Mandarin, Tamil.',
+  keyPlaceholder: 'gsk_...',
+  keyUrl: 'https://console.groq.com/keys',
+  supportsLanguages: ['English', 'Bahasa Melayu', 'Mandarin', 'Tamil', '90+ languages'],
+}
 
 // ── TTS (Text-to-Speech) ──────────────────────────────────────────────────────
-// ElevenLabs voice IDs: verified from ElevenLabs API (May 2025)
+// Hardcoded to ElevenLabs, with one fixed voice per language — not
+// tenant-configurable. See VoiceAI/config.py VOICE_MAP for the actual IDs.
 // eleven_turbo_v2_5 auto-detects language — do NOT pass language= to avoid WS disconnect
 
-export const VOICE_TTS_PROVIDERS = [
-  {
-    id: 'elevenlabs',
-    name: 'ElevenLabs',
-    badge: 'Best quality',
-    description: 'Most natural voices. eleven_turbo_v2_5 auto-detects Malay/Mandarin/Tamil from text. Set a different voice per language for the most natural accent.',
-    recommended: true,
-    keyPlaceholder: 'sk_...',
-    keyUrl: 'https://elevenlabs.io',
-    // perLangVoices: show 4 separate voice pickers (EN / MS / ZH / TA)
-    perLangVoices: true,
-    voiceDefaults: {
-      en: 'kdmDKE6EkgrWrrykO9Qt',
-      ms: 'qAJVXEQ6QgjOQ25KuoU8',
-      zh: 'tOuLUAIdXShmWH7PEUrU',
-      ta: 'mGboHvCVOXWYeFL8KTR0',
-    },
-    voices: [
-      // ── Multilingual voices — work well across all 4 languages ──
-      { id: 'kdmDKE6EkgrWrrykO9Qt', name: 'Maya — Receptionist EN (Recommended)' },
-      { id: 'qAJVXEQ6QgjOQ25KuoU8', name: 'Maya — Receptionist MS (Recommended)' },
-      { id: 'tOuLUAIdXShmWH7PEUrU', name: 'Maya — Receptionist ZH (Recommended)' },
-      { id: 'mGboHvCVOXWYeFL8KTR0', name: 'Maya — Receptionist TA (Recommended)' },
-      { id: 'SAz9YHcvj6GT2YYXdXww', name: 'River — Neutral, calm (Multilingual)' },
-      { id: 'bIHbv24MWmeRgasZH58o', name: 'Will — Warm male (Multilingual)' },
-      { id: 'cgSgspJ2msm6clMCkdW9', name: 'Jessica — Conversational female (Multilingual)' },
-      { id: 'cjVigY5qzO86Huf0OWal', name: 'Eric — Smooth tenor (Multilingual)' },
-      // ── English-focused voices (use for EN only — accent on Malay/Tamil may sound off) ──
-      { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel — Friendly female (EN)' },
-      { id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi — Confident female (EN)' },
-      { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella — Soft female (EN)' },
-      { id: 'ErXwobaYiN019PkySvjV', name: 'Antoni — Young male (EN)' },
-      { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George — British male (EN-GB)' },
-      { id: 'Xb7hH8MSUJpSbSDYk0k2', name: 'Alice — British female (EN-GB)' },
-      { id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie — Australian male (EN-AU)' },
-    ],
-  },
-  {
-    id: 'deepgram',
-    name: 'Deepgram Aura',
-    badge: 'Low latency',
-    description: 'Ultra-fast TTS built for voice calls. Uses your existing Deepgram key.',
-    recommended: false,
-    keyPlaceholder: 'dg_...',
-    keyUrl: 'https://console.deepgram.com',
-    voices: [
-      { id: 'aura-asteria-en',  name: 'Asteria — Professional female (EN)' },
-      { id: 'aura-luna-en',     name: 'Luna — Soft female (EN)' },
-      { id: 'aura-stella-en',   name: 'Stella — Warm female (EN)' },
-      { id: 'aura-athena-en',   name: 'Athena — Mature female (EN-UK)' },
-      { id: 'aura-orion-en',    name: 'Orion — Male (EN)' },
-      { id: 'aura-arcas-en',    name: 'Arcas — Friendly male (EN)' },
-      { id: 'aura-zeus-en',     name: 'Zeus — Deep male (EN)' },
-    ],
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI TTS',
-    badge: null,
-    description: 'Reliable and affordable. Uses your OpenAI API key.',
-    recommended: false,
-    keyPlaceholder: 'sk-...',
-    keyUrl: 'https://platform.openai.com/api-keys',
-    voices: [
-      { id: 'nova',    name: 'Nova — Friendly female' },
-      { id: 'shimmer', name: 'Shimmer — Soft female' },
-      { id: 'alloy',   name: 'Alloy — Neutral' },
-      { id: 'echo',    name: 'Echo — Male' },
-      { id: 'fable',   name: 'Fable — Expressive male' },
-      { id: 'onyx',    name: 'Onyx — Deep male' },
-    ],
-  },
-  {
-    id: 'cartesia',
-    name: 'Cartesia Sonic',
-    badge: 'Ultra-fast',
-    description: 'Lowest latency TTS available (~90ms). Voice IDs from play.cartesia.ai.',
-    recommended: false,
-    keyPlaceholder: 'your-cartesia-key',
-    keyUrl: 'https://play.cartesia.ai',
-    voices: [
-      { id: 'a0e99841-438a-4b77-9b73-a01b03daf92c', name: 'Barbossa — Male EN' },
-      { id: '79a125e8-cd45-4c13-8a67-188112f4dd22', name: 'Tatyana — Female EN' },
-      { id: '5c42302c-194b-4d0c-ba1a-8cb485c84ab9', name: 'Lena — Female EN (warm)' },
-      { id: '00a77add-48d5-4ef6-8157-71e5437b282d', name: 'Archer — Male EN (deep)' },
-    ],
-  },
-]
+export const VOICE_TTS_FIXED = {
+  id: 'elevenlabs',
+  name: 'ElevenLabs',
+  badge: 'Multilingual',
+  description: 'eleven_turbo_v2_5 with one fixed voice per language (English, Bahasa Melayu, Mandarin, Tamil) — same for every clinic, nothing to configure.',
+}
 
 // ── WhatsApp / text agent providers (unchanged) ────────────────────────────
 
