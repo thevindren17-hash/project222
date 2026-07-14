@@ -31,7 +31,14 @@ export async function POST(req: NextRequest) {
 
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
-      return NextResponse.json({ detail: 'Unauthorized' }, { status: 401 })
+      // TEMP DIAGNOSTIC — remove once the real auth failure cause is found.
+      console.error('[voice-token] auth check failed:', authError)
+      return NextResponse.json({
+        detail: 'Unauthorized',
+        debug_error: authError?.message || null,
+        debug_status: authError?.status || null,
+        debug_cookies_seen: cookieStore.getAll().map((c) => c.name),
+      }, { status: 401 })
     }
 
     // ── 2. Resolve tenant_id server-side ───────────────────────────────────
