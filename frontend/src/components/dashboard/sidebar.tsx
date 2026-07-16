@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import {
   LayoutDashboard, Calendar, ClipboardList, Phone, MessageSquare,
-  BarChart3, Bot, Users, Building2, FlaskConical, Mic,
+  BarChart3, Bot, Users, Building2, FlaskConical,
 } from 'lucide-react'
 
 type SectionItem = {
@@ -35,7 +35,6 @@ const sections: Section[] = [
     label: 'MONITOR',
     items: [
       { name: 'WhatsApp',  href: '/whatsapp',   icon: MessageSquare },
-      { name: 'Call Logs', href: '/call-logs',  icon: Phone },
       { name: 'Analytics', href: '/analytics',  icon: BarChart3 },
     ],
   },
@@ -43,7 +42,6 @@ const sections: Section[] = [
     label: 'CONFIGURE',
     items: [
       { name: 'Agent Config', href: '/settings/plugins/agent', icon: Bot,         statusKey: 'agent' },
-      { name: 'Voice Config', href: '/settings/plugins/voice', icon: Mic },
       { name: 'Test Agent',   href: '/test-agent',           icon: FlaskConical },
     ],
   },
@@ -51,7 +49,6 @@ const sections: Section[] = [
     label: 'CONNECT',
     items: [
       { name: 'WhatsApp',        href: '/settings/plugins/whatsapp',    icon: MessageSquare, statusKey: 'whatsapp' },
-      { name: 'Phone / SIP',     href: '/settings/plugins/phone',       icon: Phone,         statusKey: 'phone' },
       { name: 'Google Calendar', href: '/settings/plugins/calendar',    icon: Calendar,      statusKey: 'calendar' },
     ],
   },
@@ -78,7 +75,6 @@ function usePluginStatus() {
         .single()
       return {
         whatsapp: !!tenant.wa_phone_number_id,
-        phone:    !!tenant.sip_uri,
         calendar: !!settings?.google_calendar_id,
         agent:    !!settings?.system_prompt,
       }

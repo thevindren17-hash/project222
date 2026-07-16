@@ -10,7 +10,6 @@ import Link from 'next/link'
 
 const PLUGINS = [
   { name: 'WhatsApp', key: 'whatsapp', href: '/settings/plugins/whatsapp' },
-  { name: 'Phone',    key: 'phone',    href: '/settings/plugins/phone' },
   { name: 'Calendar', key: 'calendar', href: '/settings/plugins/calendar' },
   { name: 'Agent',    key: 'agent',    href: '/settings/plugins/agent' },
 ] as const
@@ -28,7 +27,6 @@ export default function PluginStatusBar() {
         .single()
       return {
         whatsapp: !!tenant.wa_phone_number_id,
-        phone:    !!tenant.sip_uri,
         calendar: !!settings?.google_calendar_id,
         agent:    !!settings?.system_prompt,
       }
