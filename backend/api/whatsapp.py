@@ -97,7 +97,7 @@ _OPT_OUT_RE = re.compile(
 _OPT_OUT_REPLIES = {
     "en": "You've been unsubscribed from our messages. You won't receive further automated notifications. Reply START to re-subscribe.",
     "ms": "Anda telah berhenti langgan mesej kami. Anda tidak akan menerima pemberitahuan lanjut. Balas MULA untuk langgan semula.",
-    "zh": "您已取消订阅我们的消息。您将不再收到自动通知。回复"开始"以重新订阅。",
+    "zh": "您已取消订阅我们的消息。您将不再收到自动通知。回复“开始”以重新订阅。",
 }
 
 
