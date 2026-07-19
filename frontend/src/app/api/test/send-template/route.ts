@@ -154,8 +154,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Meta API error: ${err}` }, { status: 502 })
     }
 
-    // For feedback + recall: create a campaign record so replies are handled by the backend
-    if (contactId && (type === 'feedback' || type === 'recall')) {
+    // For feedback + recall: create a campaign record so replies are handled by the backend.
+    // Reminder is logged too, purely for send-history consistency with the other two.
+    if (contactId) {
       await supabaseAdmin.from('campaigns').insert({
         tenant_id,
         contact_id: contactId,

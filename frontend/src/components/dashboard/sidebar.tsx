@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import {
   LayoutDashboard, Calendar, ClipboardList, Phone, MessageSquare,
-  BarChart3, Bot, Users, Building2, FlaskConical,
+  BarChart3, Bot, Users, Building2, FlaskConical, Bell, UserRoundCheck, Star,
 } from 'lucide-react'
 
 type SectionItem = {
@@ -43,6 +43,14 @@ const sections: Section[] = [
     items: [
       { name: 'Agent Config', href: '/settings/plugins/agent', icon: Bot,         statusKey: 'agent' },
       { name: 'Test Agent',   href: '/test-agent',           icon: FlaskConical },
+    ],
+  },
+  {
+    label: 'CAMPAIGNS',
+    items: [
+      { name: 'Appointment Reminder System', href: '/campaigns/reminders', icon: Bell },
+      { name: 'Patient Recall System',       href: '/campaigns/recall',    icon: UserRoundCheck },
+      { name: 'Feedback and Review System',  href: '/campaigns/feedback',  icon: Star },
     ],
   },
   {

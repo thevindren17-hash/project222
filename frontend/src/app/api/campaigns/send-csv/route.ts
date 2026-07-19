@@ -8,6 +8,16 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+type CampaignType = 'reminder' | 'feedback' | 'recall'
+
+// How far back to look for an existing campaign before treating a contact as
+// "already contacted" and skipping them. Recall uses the clinic's own
+// configured interval_months instead of a fixed window.
+const DEDUP_HOURS: Record<Exclude<CampaignType, 'recall'>, number> = {
+  reminder: 6,
+  feedback: 24,
+}
+
 async function verifyTenantAccess(tenantId: string): Promise<boolean> {
   const cookieStore = await cookies()
   const supabase = createServerClient(
@@ -33,31 +43,43 @@ async function verifyTenantAccess(tenantId: string): Promise<boolean> {
 }
 
 function normalizePhone(raw: string): string | null {
-  // Keep digits and a leading +
   const digits = raw.replace(/[^\d+]/g, '').trim()
-  // Strip the + for length check
   const justDigits = digits.replace(/^\+/, '')
   if (justDigits.length < 8) return null
-  // Ensure it starts with + so Meta API receives an international number
   return digits.startsWith('+') ? digits : `+${digits}`
 }
 
-async function sendOneRecall(params: {
+function buildMessage(template: string, fields: Record<string, string>): string {
+  let message = template
+  for (const [key, value] of Object.entries(fields)) {
+    if (value) message = message.replaceAll(`{${key}}`, value)
+  }
+  return message
+}
+
+async function sendOneCampaignMessage(params: {
   tenant_id: string
-  contact: { name: string; phone: string }
+  type: CampaignType
+  contact: { name: string; phone: string; service?: string; date?: string; time?: string }
   phone_number_id: string
   access_token: string
   clinic_name: string
   message_template: string
   interval_months: number
 }): Promise<'sent' | 'skipped' | 'failed'> {
-  const { tenant_id, contact, phone_number_id, access_token, clinic_name, message_template, interval_months } = params
+  const { tenant_id, type, contact, phone_number_id, access_token, clinic_name, message_template, interval_months } = params
 
   const phone = normalizePhone(contact.phone)
   if (!phone) return 'failed'
 
   const name = (contact.name || '').trim() || 'there'
-  const message = message_template.replace('{name}', name).replace('{clinic}', clinic_name)
+  const message = buildMessage(message_template, {
+    name,
+    clinic: clinic_name,
+    service: contact.service || '',
+    date: contact.date || '',
+    time: contact.time || '',
+  })
 
   try {
     // Upsert contact — unique on (tenant_id, phone)
@@ -75,14 +97,15 @@ async function sendOneRecall(params: {
 
     const contact_id = contactRow.id
 
-    // Deduplicate: skip if already recalled within the window
-    const cutoff = new Date(Date.now() - interval_months * 30 * 24 * 60 * 60 * 1000).toISOString()
+    // Deduplicate: skip if already contacted for this campaign type within the window
+    const dedupHours = type === 'recall' ? interval_months * 30 * 24 : DEDUP_HOURS[type]
+    const cutoff = new Date(Date.now() - dedupHours * 60 * 60 * 1000).toISOString()
     const { data: existing } = await supabaseAdmin
       .from('campaigns')
       .select('id')
       .eq('tenant_id', tenant_id)
       .eq('contact_id', contact_id)
-      .eq('type', 'recall')
+      .eq('type', type)
       .gte('sent_at', cutoff)
       .limit(1)
       .maybeSingle()
@@ -113,11 +136,13 @@ async function sendOneRecall(params: {
       return 'failed'
     }
 
-    // Record campaign
+    // Record campaign — feedback campaigns created here also feed the
+    // existing reply-handling flow in backend/api/campaigns.py, which keys
+    // off (tenant_id, contact_id, type='feedback', status='sent').
     await supabaseAdmin.from('campaigns').insert({
       tenant_id,
       contact_id,
-      type: 'recall',
+      type,
       status: 'sent',
       sent_at: new Date().toISOString(),
     })
@@ -153,17 +178,30 @@ async function sendOneRecall(params: {
   }
 }
 
+const DEFAULT_TEMPLATES: Record<CampaignType, string> = {
+  reminder:
+    'Hi {name}, this is a reminder that your {service} appointment is coming up. Reply CANCEL if you need to cancel.',
+  feedback:
+    'Hi {name}! 😊 Thank you for visiting us for your {service}. How was your experience? Please reply with a number 1–5.',
+  recall:
+    "Hi {name}! 👋 It's been a while since your last visit at {clinic}. We'd love to see you again! Just reply to book your next appointment. 😊",
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { tenant_id, contacts, message_template, interval_months } = await req.json() as {
+    const { tenant_id, type, contacts, message_template, interval_months } = await req.json() as {
       tenant_id: string
-      contacts: { name: string; phone: string }[]
+      type: CampaignType
+      contacts: { name: string; phone: string; service?: string; date?: string; time?: string }[]
       message_template?: string
       interval_months?: number
     }
 
-    if (!tenant_id || !Array.isArray(contacts) || contacts.length === 0) {
-      return NextResponse.json({ error: 'tenant_id and contacts are required' }, { status: 400 })
+    if (!tenant_id || !type || !Array.isArray(contacts) || contacts.length === 0) {
+      return NextResponse.json({ error: 'tenant_id, type, and contacts are required' }, { status: 400 })
+    }
+    if (!['reminder', 'feedback', 'recall'].includes(type)) {
+      return NextResponse.json({ error: 'Invalid campaign type' }, { status: 400 })
     }
 
     if (!await verifyTenantAccess(tenant_id)) {
@@ -185,10 +223,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'WhatsApp credentials not configured' }, { status: 400 })
     }
 
-    const defaultMsg =
-      "Hi {name}! 👋 It's been a while since your last visit at {clinic}. " +
-      "We'd love to see you again! Just reply to book your next appointment. 😊"
-
     const results = { sent: 0, skipped: 0, failed: 0 }
 
     // Send in chunks of 5 to stay within rate limits without timing out
@@ -197,13 +231,14 @@ export async function POST(req: NextRequest) {
       const chunk = contacts.slice(i, i + CHUNK)
       const chunkResults = await Promise.allSettled(
         chunk.map((c) =>
-          sendOneRecall({
+          sendOneCampaignMessage({
             tenant_id,
+            type,
             contact: c,
             phone_number_id: tenant.wa_phone_number_id!,
             access_token: tenant.wa_access_token!,
             clinic_name: tenant.name,
-            message_template: message_template || defaultMsg,
+            message_template: message_template || DEFAULT_TEMPLATES[type],
             interval_months: interval_months || 6,
           })
         )
@@ -216,7 +251,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(results)
   } catch (e) {
-    console.error('recall-csv error:', e)
+    console.error('send-csv error:', e)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
