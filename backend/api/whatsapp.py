@@ -245,6 +245,17 @@ async def _transcribe_audio(audio_bytes: bytes, provider: str, tenant) -> str:
             alternatives = body.get("results", {}).get("channels", [{}])[0].get("alternatives", [])
             return alternatives[0].get("transcript", "") if alternatives else ""
 
+    if provider == "groq":
+        from openai import AsyncOpenAI
+        api_key = _cred(tenant, "groq", "api_key")
+        if not api_key:
+            raise ValueError("No Groq API key for transcription")
+        client = AsyncOpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "audio.ogg"
+        transcript = await client.audio.transcriptions.create(model="whisper-large-v3-turbo", file=audio_file)
+        return transcript.text
+
     from openai import AsyncOpenAI
     api_key = _cred(tenant, "openai", "api_key")
     if not api_key:
@@ -256,15 +267,44 @@ async def _transcribe_audio(audio_bytes: bytes, provider: str, tenant) -> str:
     return transcript.text
 
 
-async def _generate_tts_ogg(text: str, voice: str, tenant) -> bytes:
-    from openai import AsyncOpenAI
+# Built-in per-language voice defaults, used when a tenant hasn't picked one.
+# ElevenLabs IDs are real, verified voices (from a proven multilingual voice
+# agent build) — English/Bahasa Melayu/Mandarin, picked from the ElevenLabs
+# Voice Library and confirmed working for this language set.
+DEFAULT_TTS_VOICE_MAP = {
+    "openai": {"en": "nova", "ms": "nova", "zh": "shimmer"},
+    "elevenlabs": {
+        "en": "cgSgspJ2msm6clMCkdW9",
+        "ms": "qAJVXEQ6QgjOQ25KuoU8",
+        "zh": "tOuLUAIdXShmWH7PEUrU",
+    },
+}
+
+
+async def _generate_tts_ogg(text: str, provider: str, voice_id: str, tenant) -> bytes:
     from shared.providers import _cred
+
+    if provider == "elevenlabs":
+        api_key = _cred(tenant, "elevenlabs", "api_key")
+        if not api_key:
+            raise ValueError("No ElevenLabs API key for TTS")
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                params={"output_format": "opus_48000_128"},
+                headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+                json={"text": text, "model_id": "eleven_flash_v2_5"},
+            )
+            r.raise_for_status()
+            return r.content
+
+    from openai import AsyncOpenAI
     api_key = _cred(tenant, "openai", "api_key")
     if not api_key:
         raise ValueError("No OpenAI API key for TTS")
     client = AsyncOpenAI(api_key=api_key)
     response = await client.audio.speech.create(
-        model="tts-1", voice=voice or "nova", input=text, response_format="opus",
+        model="tts-1", voice=voice_id or "nova", input=text, response_format="opus",
     )
     return response.content
 
@@ -717,11 +757,14 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         reply_text = "I'm sorry, I couldn't process that. Please try again."
 
     voice_enabled = getattr(tenant, "voice_reply_enabled", False)
-    tts_voice = getattr(tenant, "voice_tts_voice", "nova") or "nova"
+    tts_provider = getattr(tenant, "voice_tts_provider", "openai") or "openai"
+    tts_voice_map = getattr(tenant, "voice_tts_voice_map", None) or {}
+    provider_defaults = DEFAULT_TTS_VOICE_MAP.get(tts_provider, DEFAULT_TTS_VOICE_MAP["openai"])
+    tts_voice = tts_voice_map.get(language) or provider_defaults.get(language) or provider_defaults["en"]
 
     if voice_enabled:
         try:
-            ogg_bytes = await _generate_tts_ogg(reply_text, tts_voice, tenant)
+            ogg_bytes = await _generate_tts_ogg(reply_text, tts_provider, tts_voice, tenant)
             media_id_reply = await _upload_wa_media(ogg_bytes, tenant.wa_phone_number_id, tenant.wa_access_token)
             await _send_whatsapp_audio(
                 to=from_number, media_id=media_id_reply,

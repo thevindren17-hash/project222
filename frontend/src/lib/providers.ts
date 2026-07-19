@@ -75,3 +75,89 @@ export const OPENAI_TTS_VOICES = [
   { id: 'onyx', name: 'Onyx — Deep male' },
   { id: 'shimmer', name: 'Shimmer — Soft female' },
 ]
+
+// ── WhatsApp Voice Messages — STT (speech-to-text) providers ──────────────────
+// Bring-your-own-key, same pattern as LLM_PROVIDERS above.
+
+export const VOICE_STT_PROVIDERS = [
+  {
+    provider: 'groq',
+    name: 'Groq Whisper',
+    badge: 'Free',
+    description: 'Whisper large-v3-turbo — free, fast, and covers Malay & Tamil better than Deepgram.',
+    recommended: true,
+    keyPlaceholder: 'gsk_...',
+    keyUrl: 'https://console.groq.com/keys',
+  },
+  {
+    provider: 'openai',
+    name: 'OpenAI Whisper',
+    badge: null,
+    description: 'Whisper-1 — reliable, widely used, ~$0.006/minute.',
+    recommended: false,
+    keyPlaceholder: 'sk-...',
+    keyUrl: 'https://platform.openai.com/api-keys',
+  },
+  {
+    provider: 'deepgram',
+    name: 'Deepgram Nova-2',
+    badge: null,
+    description: 'Fast, tuned for real-time transcription. English-focused.',
+    recommended: false,
+    keyPlaceholder: 'Deepgram API key',
+    keyUrl: 'https://console.deepgram.com',
+  },
+]
+
+// ── WhatsApp Voice Messages — TTS (text-to-speech) providers ──────────────────
+// One voice per language (English / Bahasa Melayu / Mandarin — matching the
+// languages the agent's Language Settings tab supports as reply languages).
+//
+// OpenAI voices work for any language (same 6 named voices offered per
+// language). ElevenLabs voice IDs are account-agnostic "premade" voices from
+// the ElevenLabs Voice Library — these three IDs are verified working, taken
+// from a proven multilingual voice-agent build, not guessed. A custom voice
+// ID can also be pasted in per language for clinics with their own cloned
+// ElevenLabs voice.
+
+export type VoiceOption = { id: string; name: string }
+
+export const VOICE_TTS_PROVIDERS: {
+  provider: string
+  name: string
+  badge: string | null
+  keyPlaceholder: string
+  keyUrl: string
+  voicesByLanguage: Record<'en' | 'ms' | 'zh', VoiceOption[]>
+}[] = [
+  {
+    provider: 'elevenlabs',
+    name: 'ElevenLabs',
+    badge: 'Recommended for voice notes',
+    keyPlaceholder: 'ElevenLabs API key',
+    keyUrl: 'https://elevenlabs.io/app/settings/api-keys',
+    voicesByLanguage: {
+      en: [{ id: 'cgSgspJ2msm6clMCkdW9', name: 'English voice' }],
+      ms: [{ id: 'qAJVXEQ6QgjOQ25KuoU8', name: 'Bahasa Melayu voice' }],
+      zh: [{ id: 'tOuLUAIdXShmWH7PEUrU', name: 'Mandarin voice' }],
+    },
+  },
+  {
+    provider: 'openai',
+    name: 'OpenAI TTS',
+    badge: null,
+    keyPlaceholder: 'sk-...',
+    keyUrl: 'https://platform.openai.com/api-keys',
+    voicesByLanguage: {
+      en: OPENAI_TTS_VOICES,
+      ms: OPENAI_TTS_VOICES,
+      zh: OPENAI_TTS_VOICES,
+    },
+  },
+]
+
+export const VOICE_LANGUAGES: { code: 'en' | 'ms' | 'zh'; name: string }[] = [
+  { code: 'en', name: 'English' },
+  { code: 'ms', name: 'Bahasa Melayu' },
+  { code: 'zh', name: 'Mandarin' },
+]

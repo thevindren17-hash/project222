@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,9 +15,10 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { LLM_PROVIDERS, OPENAI_TTS_VOICES } from '@/lib/providers'
+import { LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS, VOICE_LANGUAGES } from '@/lib/providers'
 import {
   Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check, Languages,
+  Volume2, Play, ExternalLink,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -63,7 +64,7 @@ export default function AgentPluginPage() {
       if (!tenant) return null
       // Exclude provider_credentials — keys never leave the server
       const { data, error } = await supabase.from('tenant_settings')
-        .select('agent_name,system_prompt,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_voice,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language')
+        .select('agent_name,system_prompt,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language')
         .eq('tenant_id', tenant.id).maybeSingle()
       if (error) throw error
       return data
@@ -109,8 +110,13 @@ export default function AgentPluginPage() {
   const [newApiKey, setNewApiKey] = useState('')
 
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
-  const [voiceTtsVoice, setVoiceTtsVoice] = useState('nova')
+  const [voiceTtsProvider, setVoiceTtsProvider] = useState('openai')
+  const [voiceTtsVoiceMap, setVoiceTtsVoiceMap] = useState<Record<string, string>>({})
   const [voiceSttProvider, setVoiceSttProvider] = useState('openai')
+  const [newVoiceSttKey, setNewVoiceSttKey] = useState('')
+  const [newVoiceTtsKey, setNewVoiceTtsKey] = useState('')
+  const [previewLoading, setPreviewLoading] = useState<string | null>(null)
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null)
   const [replyLanguage, setReplyLanguage] = useState('ask')
 
   const [humanTakeover, setHumanTakeover] = useState(true)
@@ -134,7 +140,8 @@ export default function AgentPluginPage() {
       setHumanTakeover(settings.tool_config?.escalate ?? true)
       setFaq(settings.faq || [])
       setVoiceReplyEnabled(settings.voice_reply_enabled ?? false)
-      if (settings.voice_tts_voice) setVoiceTtsVoice(settings.voice_tts_voice)
+      if (settings.voice_tts_provider) setVoiceTtsProvider(settings.voice_tts_provider)
+      if (settings.voice_tts_voice_map) setVoiceTtsVoiceMap(settings.voice_tts_voice_map)
       if (settings.voice_stt_provider) setVoiceSttProvider(settings.voice_stt_provider)
       if (settings.escalation_keywords?.length) setEscalationKeywords(settings.escalation_keywords)
       if (settings.max_turns_before_handoff) setMaxTurns(settings.max_turns_before_handoff)
@@ -179,7 +186,8 @@ export default function AgentPluginPage() {
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
         voice_reply_enabled: voiceReplyEnabled,
-        voice_tts_voice: voiceTtsVoice,
+        voice_tts_provider: voiceTtsProvider,
+        voice_tts_voice_map: voiceTtsVoiceMap,
         voice_stt_provider: voiceSttProvider,
         escalation_keywords: escalationKeywords,
         max_turns_before_handoff: maxTurns,
@@ -206,6 +214,24 @@ export default function AgentPluginPage() {
         if (!res.ok) throw new Error('Failed to save API key')
         setNewApiKey('')
       }
+      if (newVoiceSttKey.trim()) {
+        const res = await fetch('/api/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: voiceSttProvider, api_key: newVoiceSttKey.trim(), type: 'agent' }),
+        })
+        if (!res.ok) throw new Error('Failed to save STT API key')
+        setNewVoiceSttKey('')
+      }
+      if (newVoiceTtsKey.trim()) {
+        const res = await fetch('/api/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: voiceTtsProvider, api_key: newVoiceTtsKey.trim(), type: 'agent' }),
+        })
+        if (!res.ok) throw new Error('Failed to save TTS API key')
+        setNewVoiceTtsKey('')
+      }
     },
     onSuccess: () => {
       toast.success('Agent configuration saved')
@@ -216,6 +242,34 @@ export default function AgentPluginPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  async function playVoicePreview(provider: string, voiceId: string, language: string) {
+    if (!tenant || !voiceId) return
+    const key = `${language}:${voiceId}`
+    setPreviewLoading(key)
+    try {
+      const res = await fetch('/api/voice-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenant.id, provider, voice_id: voiceId, language }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        toast.error(data.error || 'Preview failed')
+        return
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      previewAudioRef.current?.pause()
+      const audio = new Audio(url)
+      previewAudioRef.current = audio
+      await audio.play()
+    } catch {
+      toast.error('Network error')
+    } finally {
+      setPreviewLoading(null)
+    }
+  }
 
   function toggleService(service: string) {
     setSelectedServices((prev) =>
@@ -825,31 +879,172 @@ export default function AgentPluginPage() {
                   {voiceReplyEnabled && (
                     <>
                       <Separator />
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          <Label>Speech-to-Text (Transcription)</Label>
-                          <p className="text-xs text-muted-foreground">How incoming voice messages are converted to text</p>
-                          <Select value={voiceSttProvider} onValueChange={(v) => v && setVoiceSttProvider(v)}>
-                            <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="openai">OpenAI Whisper (recommended)</SelectItem>
-                              <SelectItem value="deepgram">Deepgram Nova-2</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
 
-                        <div className="space-y-2">
-                          <Label>AI Voice</Label>
-                          <p className="text-xs text-muted-foreground">The voice used when the AI speaks back (via OpenAI TTS)</p>
-                          <Select value={voiceTtsVoice} onValueChange={(v) => v && setVoiceTtsVoice(v)}>
-                            <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {OPENAI_TTS_VOICES.map((v) => (
-                                <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                      {/* STT provider picker */}
+                      <div className="space-y-3">
+                        <div>
+                          <Label className="flex items-center gap-1.5 text-sm font-medium">
+                            <Mic className="h-3.5 w-3.5" />Speech-to-Text
+                          </Label>
+                          <p className="text-xs text-muted-foreground">How incoming voice messages are converted to text</p>
                         </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {VOICE_STT_PROVIDERS.map((p) => {
+                            const active = voiceSttProvider === p.provider
+                            return (
+                              <button
+                                key={p.provider}
+                                type="button"
+                                onClick={() => setVoiceSttProvider(p.provider)}
+                                className={cn(
+                                  'relative flex flex-col gap-1 rounded-xl border px-3 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                                  active
+                                    ? 'border-primary bg-primary/5 shadow-sm'
+                                    : 'border-border hover:border-muted-foreground/30 hover:bg-muted/20'
+                                )}
+                              >
+                                {active && (
+                                  <span className="absolute top-2 right-2 flex h-4 w-4 items-center justify-center rounded-full bg-primary">
+                                    <Check className="h-2.5 w-2.5 text-primary-foreground" />
+                                  </span>
+                                )}
+                                <span className="text-xs font-semibold leading-snug pr-5">{p.name}</span>
+                                {p.badge && <Badge variant="secondary" className="text-[10px] w-fit">{p.badge}</Badge>}
+                                <span className="text-[11px] text-muted-foreground leading-snug">{p.description}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {(() => {
+                          const selected = VOICE_STT_PROVIDERS.find((p) => p.provider === voiceSttProvider)
+                          if (!selected) return null
+                          return (
+                            <div className="space-y-1.5 max-w-sm">
+                              <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                                <Key className="h-3 w-3" />API Key
+                                {credExistence?.[voiceSttProvider] && !newVoiceSttKey && (
+                                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                                    <Check className="h-2.5 w-2.5" />Key saved
+                                  </Badge>
+                                )}
+                                <a href={selected.keyUrl} target="_blank" rel="noopener noreferrer" className="ml-auto text-[11px] text-primary flex items-center gap-1 hover:underline">
+                                  Get key <ExternalLink className="h-2.5 w-2.5" />
+                                </a>
+                              </Label>
+                              <Input
+                                type="password"
+                                placeholder={credExistence?.[voiceSttProvider] ? 'Enter new key to replace…' : selected.keyPlaceholder}
+                                value={newVoiceSttKey}
+                                onChange={(e) => setNewVoiceSttKey(e.target.value)}
+                              />
+                            </div>
+                          )
+                        })()}
+                      </div>
+
+                      <Separator />
+
+                      {/* TTS provider picker */}
+                      <div className="space-y-3">
+                        <div>
+                          <Label className="flex items-center gap-1.5 text-sm font-medium">
+                            <Volume2 className="h-3.5 w-3.5" />AI Voice
+                          </Label>
+                          <p className="text-xs text-muted-foreground">The voice used when the AI speaks back — one per language</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {VOICE_TTS_PROVIDERS.map((p) => {
+                            const active = voiceTtsProvider === p.provider
+                            return (
+                              <button
+                                key={p.provider}
+                                type="button"
+                                onClick={() => setVoiceTtsProvider(p.provider)}
+                                className={cn(
+                                  'relative flex flex-col gap-1 rounded-xl border px-3 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                                  active
+                                    ? 'border-primary bg-primary/5 shadow-sm'
+                                    : 'border-border hover:border-muted-foreground/30 hover:bg-muted/20'
+                                )}
+                              >
+                                {active && (
+                                  <span className="absolute top-2 right-2 flex h-4 w-4 items-center justify-center rounded-full bg-primary">
+                                    <Check className="h-2.5 w-2.5 text-primary-foreground" />
+                                  </span>
+                                )}
+                                <span className="text-xs font-semibold leading-snug pr-5">{p.name}</span>
+                                {p.badge && (
+                                  <Badge variant="outline" className="text-[10px] w-fit text-primary border-primary/30">{p.badge}</Badge>
+                                )}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {(() => {
+                          const selected = VOICE_TTS_PROVIDERS.find((p) => p.provider === voiceTtsProvider)
+                          if (!selected) return null
+                          const hasKey = !!credExistence?.[voiceTtsProvider]
+                          return (
+                            <>
+                              <div className="space-y-1.5 max-w-sm">
+                                <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                                  <Key className="h-3 w-3" />API Key
+                                  {hasKey && !newVoiceTtsKey && (
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                                      <Check className="h-2.5 w-2.5" />Key saved
+                                    </Badge>
+                                  )}
+                                  <a href={selected.keyUrl} target="_blank" rel="noopener noreferrer" className="ml-auto text-[11px] text-primary flex items-center gap-1 hover:underline">
+                                    Get key <ExternalLink className="h-2.5 w-2.5" />
+                                  </a>
+                                </Label>
+                                <Input
+                                  type="password"
+                                  placeholder={hasKey ? 'Enter new key to replace…' : selected.keyPlaceholder}
+                                  value={newVoiceTtsKey}
+                                  onChange={(e) => setNewVoiceTtsKey(e.target.value)}
+                                />
+                              </div>
+
+                              <div className="space-y-2 pt-1">
+                                {VOICE_LANGUAGES.map((lang) => {
+                                  const voices = selected.voicesByLanguage[lang.code] || []
+                                  const currentVoiceId = voiceTtsVoiceMap[lang.code] || voices[0]?.id || ''
+                                  const previewKey = `${lang.code}:${currentVoiceId}`
+                                  return (
+                                    <div key={lang.code} className="flex items-center gap-2 rounded-lg border p-2.5">
+                                      <span className="text-xs font-medium w-28 shrink-0">{lang.name}</span>
+                                      <Select
+                                        value={currentVoiceId}
+                                        onValueChange={(v) => v && setVoiceTtsVoiceMap({ ...voiceTtsVoiceMap, [lang.code]: v })}
+                                      >
+                                        <SelectTrigger className="h-8 text-xs flex-1"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                          {voices.map((v) => (
+                                            <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="icon"
+                                        className="h-8 w-8 shrink-0"
+                                        disabled={!hasKey || previewLoading === previewKey}
+                                        title={hasKey ? 'Preview this voice' : 'Add an API key above first'}
+                                        onClick={() => playVoicePreview(voiceTtsProvider, currentVoiceId, lang.code)}
+                                      >
+                                        {previewLoading === previewKey
+                                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                          : <Play className="h-3.5 w-3.5" />}
+                                      </Button>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </>
+                          )
+                        })()}
                       </div>
 
                       <Separator />
@@ -857,9 +1052,9 @@ export default function AgentPluginPage() {
                       <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4">
                         <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Requirements</p>
                         <ul className="mt-1 space-y-0.5 text-sm text-amber-700 dark:text-amber-400">
-                          <li>• An <strong>OpenAI API key</strong> must be set in Settings → AI Providers (used for Whisper transcription + TTS)</li>
+                          <li>• Add an API key above for whichever STT and TTS provider you pick — same key store as <strong>Model Settings</strong>, so a Groq key you&apos;ve already saved there works here too</li>
                           <li>• Works with WhatsApp voice notes (OGG/Opus format)</li>
-                          <li>• Each voice exchange uses ~$0.01–$0.02 in API costs</li>
+                          <li>• Each voice exchange uses a small amount of API credit, depending on the provider</li>
                         </ul>
                       </div>
                     </>

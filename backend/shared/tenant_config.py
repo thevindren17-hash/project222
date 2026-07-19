@@ -192,7 +192,8 @@ class TenantConfig:
     provider_credentials: Dict[str, Any] = field(default_factory=dict)
     voice_reply_enabled: bool = False
     voice_stt_provider: str = "openai"
-    voice_tts_voice: str = "nova"
+    voice_tts_provider: str = "openai"
+    voice_tts_voice_map: Dict[str, str] = field(default_factory=dict)
     reply_language: str = "ask"
     reminder_1d_enabled: bool = False
     reminder_3h_enabled: bool = False
@@ -239,7 +240,8 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         provider_credentials=settings.get("provider_credentials") or {},
         voice_reply_enabled=bool(settings.get("voice_reply_enabled", False)),
         voice_stt_provider=settings.get("voice_stt_provider") or "openai",
-        voice_tts_voice=settings.get("voice_tts_voice") or "nova",
+        voice_tts_provider=settings.get("voice_tts_provider") or "openai",
+        voice_tts_voice_map=settings.get("voice_tts_voice_map") or {},
         reply_language=settings.get("reply_language") or "ask",
         reminder_1d_enabled=bool(settings.get("reminder_1d_enabled", False)),
         reminder_3h_enabled=bool(settings.get("reminder_3h_enabled", False)),
