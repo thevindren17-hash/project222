@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS tenants (
     name                TEXT NOT NULL,
     agent_name          TEXT NOT NULL DEFAULT 'Maya',
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
-    sip_number          TEXT UNIQUE,                    -- e.g. +60321234567
     wa_phone_number_id      TEXT UNIQUE,                -- Meta phone_number_id
     wa_business_account_id  TEXT,                       -- Meta WhatsApp Business Account ID
     wa_access_token         TEXT,
@@ -29,9 +28,7 @@ CREATE TABLE IF NOT EXISTS tenant_settings (
     tenant_id                UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     system_prompt            TEXT,
     default_language         TEXT NOT NULL DEFAULT 'en',
-    stt_config               JSONB NOT NULL DEFAULT '{"en":"deepgram","ms":"openai","zh":"openai"}'::jsonb,
     llm_config               JSONB NOT NULL DEFAULT '{"provider":"openai","model":"gpt-4o"}'::jsonb,
-    tts_config               JSONB NOT NULL DEFAULT '{"en":"cartesia","ms":"cartesia","zh":"cartesia"}'::jsonb,
     business_hours           JSONB NOT NULL DEFAULT '{
         "mon":{"open":"09:00","close":"18:00"},
         "tue":{"open":"09:00","close":"18:00"},
@@ -124,36 +121,14 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ── Call logs ──────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS call_logs (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    contact_id          UUID REFERENCES contacts(id) ON DELETE SET NULL,
-    caller_number       TEXT,
-    duration_seconds    INTEGER DEFAULT 0,
-    language_detected   TEXT DEFAULT 'en',
-    transcript          TEXT,
-    summary             TEXT,
-    outcome             TEXT DEFAULT 'unknown'
-                            CHECK (outcome IN ('booked','cancelled','rescheduled','faq','escalated','unknown')),
-    turn_count          INTEGER DEFAULT 0,
-    quality_flags       TEXT[] DEFAULT '{}',
-    stt_provider        TEXT,
-    llm_provider        TEXT,
-    tts_provider        TEXT,
-    started_at          TIMESTAMPTZ,
-    ended_at            TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 -- ── Escalations ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS escalations (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     reason              TEXT NOT NULL,
     context             TEXT,
-    source              TEXT NOT NULL DEFAULT 'voice'
-                            CHECK (source IN ('voice','whatsapp')),
+    source              TEXT NOT NULL DEFAULT 'whatsapp'
+                            CHECK (source IN ('whatsapp')),
     resolved            BOOLEAN DEFAULT FALSE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -168,7 +143,6 @@ CREATE INDEX IF NOT EXISTS idx_bookings_scheduled_at     ON bookings(scheduled_a
 CREATE INDEX IF NOT EXISTS idx_bookings_contact          ON bookings(contact_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread           ON messages(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_wa_threads_tenant_number  ON whatsapp_threads(tenant_id, contact_number);
-CREATE INDEX IF NOT EXISTS idx_call_logs_tenant          ON call_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_escalations_tenant        ON escalations(tenant_id, created_at);
 
 -- ============================================================================
@@ -181,7 +155,6 @@ ALTER TABLE contacts         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bookings         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whatsapp_threads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE messages         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE call_logs        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE escalations      ENABLE ROW LEVEL SECURITY;
 
 -- Service-role bypasses RLS (backend uses service role key — no restrictions needed).
@@ -223,12 +196,6 @@ CREATE POLICY "messages_insert" ON messages FOR INSERT TO authenticated WITH CHE
 CREATE POLICY "messages_update" ON messages FOR UPDATE TO authenticated USING (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = messages.tenant_id AND tenants.owner_id = auth.uid()));
 CREATE POLICY "messages_delete" ON messages FOR DELETE TO authenticated USING (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = messages.tenant_id AND tenants.owner_id = auth.uid()));
 
--- ── call_logs ──────────────────────────────────────────────────────────────────
-CREATE POLICY "call_logs_select" ON call_logs FOR SELECT TO authenticated USING (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = call_logs.tenant_id AND tenants.owner_id = auth.uid()));
-CREATE POLICY "call_logs_insert" ON call_logs FOR INSERT TO authenticated WITH CHECK (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = call_logs.tenant_id AND tenants.owner_id = auth.uid()));
-CREATE POLICY "call_logs_update" ON call_logs FOR UPDATE TO authenticated USING (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = call_logs.tenant_id AND tenants.owner_id = auth.uid()));
-CREATE POLICY "call_logs_delete" ON call_logs FOR DELETE TO authenticated USING (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = call_logs.tenant_id AND tenants.owner_id = auth.uid()));
-
 -- ── escalations ────────────────────────────────────────────────────────────────
 CREATE POLICY "escalations_select" ON escalations FOR SELECT TO authenticated USING (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = escalations.tenant_id AND tenants.owner_id = auth.uid()));
 CREATE POLICY "escalations_insert" ON escalations FOR INSERT TO authenticated WITH CHECK (EXISTS (SELECT 1 FROM tenants WHERE tenants.id = escalations.tenant_id AND tenants.owner_id = auth.uid()));
@@ -239,8 +206,8 @@ CREATE POLICY "escalations_delete" ON escalations FOR DELETE TO authenticated US
 -- Demo seed data (optional — remove before production)
 -- ============================================================================
 
--- INSERT INTO tenants (name, agent_name, sip_number, wa_phone_number_id, wa_verify_token)
--- VALUES ('Bright Smile Dental', 'Maya', '+60321234567', '123456789', 'my_verify_token_123');
+-- INSERT INTO tenants (name, agent_name, wa_phone_number_id, wa_verify_token)
+-- VALUES ('Bright Smile Dental', 'Maya', '123456789', 'my_verify_token_123');
 
 -- INSERT INTO tenant_settings (tenant_id)
 -- SELECT id FROM tenants WHERE name = 'Bright Smile Dental';

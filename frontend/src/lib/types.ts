@@ -3,7 +3,6 @@ export interface Tenant {
   owner_id: string
   name: string
   default_language: string
-  sip_uri?: string
   escalation_number?: string
   wa_phone_number?: string
   wa_phone_number_id?: string
@@ -19,9 +18,7 @@ export interface TenantSettings {
   tenant_id: string
   system_prompt?: string
   agent_name?: string
-  stt_config: Record<string, string>
   llm_config: { provider: string; model: string }
-  tts_config: Record<string, string>
   business_hours: BusinessHours
   faq: Array<{ q: string; a: string }>
   tool_config: Record<string, boolean>
@@ -50,7 +47,7 @@ export interface Booking {
   service_type: string
   scheduled_at: string
   status: 'pending' | 'confirmed' | 'cancelled' | 'completed'
-  source: 'voice' | 'whatsapp'
+  source: string
   notes?: string
   calendar_event_id?: string
   created_at: string
@@ -65,24 +62,6 @@ export interface Contact {
   language_preference?: string
   last_contact_at?: string
   created_at: string
-}
-
-export interface CallLog {
-  id: string
-  tenant_id: string
-  contact_id?: string
-  caller_number: string
-  duration_seconds: number
-  language_detected: string
-  turn_count: number
-  auto_escalated: boolean
-  escalation_reason?: string
-  stt_provider: string
-  llm_provider: string
-  tts_provider: string
-  started_at: string
-  ended_at: string
-  contact?: Contact
 }
 
 export interface WhatsAppThread {

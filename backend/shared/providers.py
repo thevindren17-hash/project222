@@ -1,58 +1,22 @@
 """
-Provider Factory — Dynamic STT / LLM / TTS loading based on tenant config.
+Provider Factory — Dynamic LLM loading based on tenant config.
 
 All API keys come from the tenant's provider_credentials stored in Supabase.
 Clinics add their own keys in the dashboard — zero platform-level AI keys needed.
 
-Voice pipeline (LiveKit):  load_tenant_providers(tenant) → (stt, llm, tts)
-Text pipeline (WhatsApp):  load_llm_client(tenant)       → LLMClient.generate()
+Text pipeline (WhatsApp):  load_llm_client(tenant) → LLMClient.generate()
 """
 
-import os
 import asyncio
 import random
 import logging
-from typing import Any, Optional, Tuple, List, Dict
+from typing import Any, Optional, List, Dict
 
 _logger = logging.getLogger(__name__)
 
 # Errors that are worth retrying — transient, not the caller's fault
 _RETRIABLE = ("rate limit", "ratelimit", "429", "503", "502", "timeout",
               "overloaded", "connection", "server error")
-
-# ── LiveKit plugins ────────────────────────────────────────────────────────────
-from livekit.plugins import openai as lk_openai
-from livekit.plugins import silero
-
-try:
-    from livekit.plugins import deepgram as lk_deepgram
-    HAS_DEEPGRAM = True
-except ImportError:
-    HAS_DEEPGRAM = False
-
-try:
-    from livekit.plugins import cartesia as lk_cartesia
-    HAS_CARTESIA = True
-except ImportError:
-    HAS_CARTESIA = False
-
-try:
-    from livekit.plugins import elevenlabs as lk_elevenlabs
-    HAS_ELEVENLABS = True
-except ImportError:
-    HAS_ELEVENLABS = False
-
-try:
-    from livekit.plugins import anthropic as lk_anthropic
-    HAS_LK_ANTHROPIC = True
-except ImportError:
-    HAS_LK_ANTHROPIC = False
-
-
-# ── Language maps ──────────────────────────────────────────────────────────────
-
-_DEEPGRAM_LANGUAGE: Dict[str, str] = {"en": "en", "ms": "ms", "zh": "zh"}
-_OPENAI_TTS_VOICE:  Dict[str, str] = {"en": "nova", "ms": "nova", "zh": "shimmer"}
 
 
 def _cred(tenant, provider: str, key: str, fallback: Optional[str] = None) -> Optional[str]:
@@ -66,162 +30,7 @@ def _cred(tenant, provider: str, key: str, fallback: Optional[str] = None) -> Op
     )
 
 
-# ── STT ────────────────────────────────────────────────────────────────────────
-
-def create_stt(provider: str, language: str, tenant) -> Any:
-    """Return a LiveKit STT plugin instance using the tenant's API key."""
-
-    if provider == "deepgram":
-        if not HAS_DEEPGRAM:
-            raise ImportError("livekit-plugins-deepgram is not installed")
-        api_key = _cred(tenant, "deepgram", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no Deepgram API key configured")
-        return lk_deepgram.STT(
-            api_key=api_key,
-            model="nova-2",
-            language=_DEEPGRAM_LANGUAGE.get(language, "en"),
-        )
-
-    if provider in ("openai", "whisper"):
-        api_key = _cred(tenant, "openai", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no OpenAI API key configured")
-        return lk_openai.STT(model="whisper-1", api_key=api_key)
-
-    if provider == "whisper_groq":
-        api_key = _cred(tenant, "groq", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no Groq API key configured")
-        return lk_openai.STT(
-            model="whisper-large-v3-turbo",
-            base_url="https://api.groq.com/openai/v1",
-            api_key=api_key,
-        )
-
-    # Default → Deepgram if available
-    if HAS_DEEPGRAM:
-        return create_stt("deepgram", language, tenant)
-    return create_stt("openai", language, tenant)
-
-
-# ── LLM (LiveKit pipeline) ─────────────────────────────────────────────────────
-
-def create_lk_llm(provider: str, model: str, tenant) -> Any:
-    """Return a LiveKit LLM plugin instance using the tenant's API key."""
-
-    if provider == "openai":
-        api_key = _cred(tenant, "openai", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no OpenAI API key configured")
-        return lk_openai.LLM(model=model or "gpt-4o", api_key=api_key)
-
-    if provider == "groq":
-        api_key = _cred(tenant, "groq", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no Groq API key configured")
-        return lk_openai.LLM(
-            model=model or "llama-3.1-70b-versatile",
-            base_url="https://api.groq.com/openai/v1",
-            api_key=api_key,
-        )
-
-    if provider == "anthropic":
-        api_key = _cred(tenant, "anthropic", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no Anthropic API key configured")
-        if HAS_LK_ANTHROPIC:
-            return lk_anthropic.LLM(
-                model=model or "claude-3-5-sonnet-20241022",
-                api_key=api_key,
-            )
-        raise ImportError("livekit-plugins-anthropic is not installed")
-
-    if provider in ("gemini", "google"):
-        api_key = _cred(tenant, "google", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no Google API key configured")
-        return lk_openai.LLM(
-            model=model or "gemini-2.0-flash",
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            api_key=api_key,
-        )
-
-    if provider == "mistral":
-        api_key = _cred(tenant, "mistral", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no Mistral API key configured")
-        return lk_openai.LLM(
-            model=model or "mistral-large-latest",
-            base_url="https://api.mistral.ai/v1",
-            api_key=api_key,
-        )
-
-    raise ValueError(f"Unknown LLM provider: '{provider}'")
-
-
-# ── TTS ────────────────────────────────────────────────────────────────────────
-
-def create_tts(provider: str, language: str, tenant) -> Any:
-    """Return a LiveKit TTS plugin instance using the tenant's API key."""
-
-    if provider == "cartesia":
-        if not HAS_CARTESIA:
-            raise ImportError("livekit-plugins-cartesia is not installed")
-        api_key = _cred(tenant, "cartesia", "api_key")
-        voice_id = _cred(tenant, "cartesia", f"voice_{language}") or _cred(tenant, "cartesia", "voice_id")
-        if not api_key:
-            raise ValueError("Tenant has no Cartesia API key configured")
-        return lk_cartesia.TTS(api_key=api_key, voice=voice_id or "a0e99841-438c-4a64-b679-ae501e7d6091")
-
-    if provider == "elevenlabs":
-        if not HAS_ELEVENLABS:
-            raise ImportError("livekit-plugins-elevenlabs is not installed")
-        api_key = _cred(tenant, "elevenlabs", "api_key")
-        voice_id = _cred(tenant, "elevenlabs", f"voice_{language}") or _cred(tenant, "elevenlabs", "voice_id")
-        if not api_key:
-            raise ValueError("Tenant has no ElevenLabs API key configured")
-        return lk_elevenlabs.TTS(api_key=api_key, voice_id=voice_id or "21m00Tcm4TlvDq8ikWAM")
-
-    if provider in ("openai", "openai-tts"):
-        api_key = _cred(tenant, "openai", "api_key")
-        if not api_key:
-            raise ValueError("Tenant has no OpenAI API key configured")
-        return lk_openai.TTS(voice=_OPENAI_TTS_VOICE.get(language, "nova"), api_key=api_key)
-
-    raise ValueError(f"Unknown TTS provider: '{provider}'")
-
-
-# ── VAD (platform-level, no API key needed) ────────────────────────────────────
-
-def create_vad() -> Any:
-    return silero.VAD.load()
-
-
-# ── Convenience: load all three from tenant config ────────────────────────────
-
-def load_tenant_providers(tenant, language: str = "en") -> Tuple[Any, Any, Any]:
-    """
-    Given a TenantConfig, return (stt, llm, tts) LiveKit plugin instances.
-    All keys are read from tenant.provider_credentials.
-    """
-    stt_cfg = tenant.stt_config or {}
-    llm_cfg = tenant.llm_config or {}
-    tts_cfg = tenant.tts_config or {}
-
-    stt_provider = stt_cfg.get(language) or stt_cfg.get("default", "deepgram")
-    llm_provider = llm_cfg.get("provider", "openai")
-    llm_model    = llm_cfg.get("model", "gpt-4o")
-    tts_provider = tts_cfg.get(language) or tts_cfg.get("default", "cartesia")
-
-    stt = create_stt(stt_provider, language, tenant)
-    llm = create_lk_llm(llm_provider, llm_model, tenant)
-    tts = create_tts(tts_provider, language, tenant)
-
-    return stt, llm, tts
-
-
-# ── Text-only LLM client (WhatsApp / non-voice) ───────────────────────────────
+# ── Text-only LLM client (WhatsApp) ────────────────────────────────────────────
 
 class LLMClient:
     """

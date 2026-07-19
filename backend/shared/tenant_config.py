@@ -177,9 +177,7 @@ class TenantConfig:
     name: str
     agent_name: str = "Maya"
     system_prompt: str = ""
-    stt_config: Dict[str, Any] = field(default_factory=dict)
     llm_config: Dict[str, Any] = field(default_factory=dict)
-    tts_config: Dict[str, Any] = field(default_factory=dict)
     business_hours: Dict[str, Any] = field(default_factory=dict)
     faq: List[Dict[str, str]] = field(default_factory=list)
     tool_config: Dict[str, bool] = field(default_factory=dict)
@@ -205,12 +203,8 @@ class TenantConfig:
     def __post_init__(self):
         if not self.system_prompt:
             self.system_prompt = _default_system_prompt(self.name, self.agent_name)
-        if not self.stt_config:
-            self.stt_config = {"en": "deepgram", "ms": "openai", "zh": "openai"}
         if not self.llm_config:
             self.llm_config = {"provider": "openai", "model": "gpt-4o"}
-        if not self.tts_config:
-            self.tts_config = {"en": "cartesia", "ms": "cartesia", "zh": "cartesia"}
         if not self.business_hours:
             self.business_hours = {
                 "mon": {"open": "09:00", "close": "18:00"},
@@ -230,9 +224,7 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         name=tenant_row["name"],
         agent_name=settings.get("agent_name") or tenant_row.get("agent_name", "Maya"),
         system_prompt=settings.get("system_prompt", ""),
-        stt_config=settings.get("stt_config") or {},
         llm_config=settings.get("llm_config") or {},
-        tts_config=settings.get("tts_config") or {},
         business_hours=settings.get("business_hours") or {},
         faq=settings.get("faq") or [],
         tool_config=settings.get("tool_config") or {},
@@ -258,30 +250,6 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
 
 
 # ── Tenant loaders (async, cached) ────────────────────────────────────────────
-
-async def get_tenant_by_sip_uri(sip_uri: str) -> Optional[TenantConfig]:
-    number = sip_uri.replace("sip:", "").split("@")[0].strip()
-    cache_key = f"sip:{number}"
-    cached = _cache_get(cache_key)
-    if cached:
-        return cached
-    try:
-        supabase = get_supabase_client()
-        result = await _db(lambda: supabase.table("tenants").select("*").eq(
-            "sip_uri", number
-        ).eq("is_active", True).maybe_single().execute())
-        if not result.data:
-            return None
-        settings_result = await _db(lambda: supabase.table("tenant_settings").select("*").eq(
-            "tenant_id", result.data["id"]
-        ).maybe_single().execute())
-        config = _build_tenant_from_rows(result.data, settings_result.data or {})
-        _cache_set(cache_key, config)
-        _cache_set(str(result.data["id"]), config)
-        return config
-    except Exception:
-        return None
-
 
 async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConfig]:
     cache_key = f"wa:{phone_number_id}"

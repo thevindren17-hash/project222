@@ -1,5 +1,5 @@
 """
-Tool Functions — shared between Voice and WhatsApp agents.
+Tool Functions — used by the WhatsApp agent.
 All tools write to Supabase and optionally sync to Google Calendar / Sheets.
 Guardrails: double-booking prevention, rate limiting, business-hours validation.
 All Supabase calls use _db() to avoid blocking the async event loop.
@@ -71,7 +71,7 @@ async def book_appointment(
     scheduled_at: datetime,
     tenant_config: Optional[TenantConfig] = None,
     notes: Optional[str] = None,
-    source: str = "voice",
+    source: str = "whatsapp",
 ) -> Dict[str, Any]:
     supabase = get_supabase_client()
 
@@ -346,7 +346,7 @@ async def get_or_create_contact(
     phone: str,
     name: Optional[str] = None,
     language: Optional[str] = None,
-    source: str = "voice",
+    source: str = "whatsapp",
 ) -> Dict[str, Any]:
     supabase = get_supabase_client()
 
@@ -418,7 +418,7 @@ async def escalate_to_human(
     tenant_id: str,
     reason: str,
     context: str,
-    source: str = "voice",
+    source: str = "whatsapp",
     contact_name: str = "",
     contact_phone: str = "",
 ) -> Dict[str, Any]:
@@ -458,7 +458,7 @@ async def escalate_to_human(
 
     return {
         "success": True,
-        "action": "transfer" if source == "voice" else "notify_staff",
+        "action": "notify_staff",
         "reason": reason,
     }
 

@@ -3,7 +3,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import StatCard from '@/components/dashboard/stat-card'
-import LiveIndicator from '@/components/dashboard/live-indicator'
 import PluginStatusBar from '@/components/dashboard/plugin-status-bar'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -24,11 +23,9 @@ export default function OverviewPage() {
       const start30d = new Date()
       start30d.setDate(start30d.getDate() - 30)
 
-      const [bookingsRes, callsRes, threadsRes, feedbackRes, recallRes] = await Promise.all([
+      const [bookingsRes, threadsRes, feedbackRes, recallRes] = await Promise.all([
         supabase.from('bookings').select('*', { count: 'exact', head: true })
           .eq('tenant_id', tenant.id).gte('created_at', startOfWeek.toISOString()),
-        supabase.from('call_logs').select('duration_seconds,auto_escalated')
-          .eq('tenant_id', tenant.id).gte('started_at', startOfWeek.toISOString()),
         supabase.from('whatsapp_threads').select('status')
           .eq('tenant_id', tenant.id),
         supabase.from('campaigns').select('rating,status')
@@ -40,14 +37,8 @@ export default function OverviewPage() {
           .gte('sent_at', start30d.toISOString()),
       ])
 
-      const calls = callsRes.data || []
       const threads = threadsRes.data || []
       const feedback = feedbackRes.data || []
-      const totalCalls = calls.length
-      const avgDuration = totalCalls > 0
-        ? calls.reduce((s, c) => s + (c.duration_seconds || 0), 0) / totalCalls
-        : 0
-      const escalations = calls.filter((c) => c.auto_escalated).length
       const aiThreads = threads.filter((t) => t.status === 'ai').length
       const avgRating = feedback.length > 0
         ? (feedback.reduce((s, f) => s + (f.rating || 0), 0) / feedback.length).toFixed(1)
@@ -57,9 +48,6 @@ export default function OverviewPage() {
 
       return {
         bookingsThisWeek: bookingsRes.count || 0,
-        avgCallDuration: Math.round(avgDuration),
-        totalCalls,
-        escalations,
         aiHandleRate: threads.length > 0 ? Math.round((aiThreads / threads.length) * 100) : 0,
         waMessages: threads.length,
         avgRating,
@@ -85,9 +73,6 @@ export default function OverviewPage() {
     },
   })
 
-  const durMin = Math.floor((metrics?.avgCallDuration || 0) / 60)
-  const durSec = (metrics?.avgCallDuration || 0) % 60
-
   return (
     <div className="space-y-6">
       <div>
@@ -96,15 +81,11 @@ export default function OverviewPage() {
       </div>
 
       <PluginStatusBar />
-      <LiveIndicator />
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         <StatCard title="Appointments Booked" value={metrics?.bookingsThisWeek ?? '—'} subtitle="This week" icon="calendar" />
-        <StatCard title="Total Calls" value={metrics?.totalCalls ?? '—'} subtitle="This week" icon="phone" />
-        <StatCard title="Avg Call Duration" value={`${durMin}m ${durSec}s`} icon="clock" />
         <StatCard title="WA Threads" value={metrics?.waMessages ?? '—'} subtitle="All time" icon="message" />
         <StatCard title="AI Handle Rate" value={`${metrics?.aiHandleRate ?? 0}%`} icon="bot" />
-        <StatCard title="Escalations" value={metrics?.escalations ?? '—'} subtitle="This week" icon="alert" />
         <StatCard title="Avg Rating" value={metrics?.avgRating ? `${metrics.avgRating} ⭐` : '—'} subtitle="Last 30 days" icon="star" />
         <StatCard title="5-Star Reviews" value={metrics?.fiveStarCount ?? '—'} subtitle="Last 30 days" icon="star" />
         <StatCard title="Review Requests Sent" value={metrics?.reviewsRequested ?? '—'} subtitle="Last 30 days" icon="message" />

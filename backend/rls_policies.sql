@@ -19,7 +19,7 @@ BEGIN
     WHERE schemaname = 'public'
       AND tablename IN (
         'tenants','tenant_settings','contacts','bookings',
-        'whatsapp_threads','messages','call_logs','escalations'
+        'whatsapp_threads','messages','escalations'
       )
   LOOP
     EXECUTE format('DROP POLICY IF EXISTS %I ON %I', r.policyname, r.tablename);
@@ -221,41 +221,6 @@ CREATE POLICY "messages_delete"
   USING (EXISTS (
     SELECT 1 FROM tenants
     WHERE tenants.id = messages.tenant_id
-      AND tenants.owner_id = auth.uid()
-  ));
-
-
--- ── call_logs ─────────────────────────────────────────────────────────────────
-
-CREATE POLICY "call_logs_select"
-  ON call_logs FOR SELECT TO authenticated
-  USING (EXISTS (
-    SELECT 1 FROM tenants
-    WHERE tenants.id = call_logs.tenant_id
-      AND tenants.owner_id = auth.uid()
-  ));
-
-CREATE POLICY "call_logs_insert"
-  ON call_logs FOR INSERT TO authenticated
-  WITH CHECK (EXISTS (
-    SELECT 1 FROM tenants
-    WHERE tenants.id = call_logs.tenant_id
-      AND tenants.owner_id = auth.uid()
-  ));
-
-CREATE POLICY "call_logs_update"
-  ON call_logs FOR UPDATE TO authenticated
-  USING (EXISTS (
-    SELECT 1 FROM tenants
-    WHERE tenants.id = call_logs.tenant_id
-      AND tenants.owner_id = auth.uid()
-  ));
-
-CREATE POLICY "call_logs_delete"
-  ON call_logs FOR DELETE TO authenticated
-  USING (EXISTS (
-    SELECT 1 FROM tenants
-    WHERE tenants.id = call_logs.tenant_id
       AND tenants.owner_id = auth.uid()
   ));
 
