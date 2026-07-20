@@ -57,6 +57,8 @@ function buildMessage(template: string, fields: Record<string, string>): string 
   return message
 }
 
+type SendOutcome = { status: 'sent' | 'skipped' | 'failed'; reason?: string }
+
 async function sendOneCampaignMessage(params: {
   tenant_id: string
   type: CampaignType
@@ -66,11 +68,11 @@ async function sendOneCampaignMessage(params: {
   clinic_name: string
   message_template: string
   interval_months: number
-}): Promise<'sent' | 'skipped' | 'failed'> {
+}): Promise<SendOutcome> {
   const { tenant_id, type, contact, phone_number_id, access_token, clinic_name, message_template, interval_months } = params
 
   const phone = normalizePhone(contact.phone)
-  if (!phone) return 'failed'
+  if (!phone) return { status: 'failed', reason: `Invalid phone number: "${contact.phone}"` }
 
   const name = (contact.name || '').trim() || 'there'
   const message = buildMessage(message_template, {
@@ -92,8 +94,8 @@ async function sendOneCampaignMessage(params: {
       .select('id, opted_out')
       .single()
 
-    if (upsertErr || !contactRow) return 'failed'
-    if (contactRow.opted_out) return 'skipped'
+    if (upsertErr || !contactRow) return { status: 'failed', reason: upsertErr?.message || 'Could not save contact record' }
+    if (contactRow.opted_out) return { status: 'skipped', reason: 'This contact has opted out of messages' }
 
     const contact_id = contactRow.id
 
@@ -110,7 +112,7 @@ async function sendOneCampaignMessage(params: {
       .limit(1)
       .maybeSingle()
 
-    if (existing) return 'skipped'
+    if (existing) return { status: 'skipped', reason: 'Already sent to this contact recently' }
 
     // Send via Meta API
     const waRes = await fetch(
@@ -133,7 +135,12 @@ async function sendOneCampaignMessage(params: {
     if (!waRes.ok) {
       const errBody = await waRes.text()
       console.error(`WA send failed for ${phone}: ${errBody}`)
-      return 'failed'
+      let reason = `Meta API error (${waRes.status})`
+      try {
+        const parsed = JSON.parse(errBody)
+        if (parsed?.error?.message) reason = parsed.error.message
+      } catch {}
+      return { status: 'failed', reason }
     }
 
     // Record campaign — feedback campaigns created here also feed the
@@ -172,9 +179,9 @@ async function sendOneCampaignMessage(params: {
         .eq('id', thread.id)
     }
 
-    return 'sent'
-  } catch {
-    return 'failed'
+    return { status: 'sent' }
+  } catch (e) {
+    return { status: 'failed', reason: e instanceof Error ? e.message : 'Unknown error' }
   }
 }
 
@@ -224,6 +231,7 @@ export async function POST(req: NextRequest) {
     }
 
     const results = { sent: 0, skipped: 0, failed: 0 }
+    const errors: string[] = []
 
     // Send in chunks of 5 to stay within rate limits without timing out
     const CHUNK = 5
@@ -244,12 +252,15 @@ export async function POST(req: NextRequest) {
         )
       )
       for (const r of chunkResults) {
-        const outcome = r.status === 'fulfilled' ? r.value : 'failed'
-        results[outcome]++
+        const outcome = r.status === 'fulfilled' ? r.value : { status: 'failed' as const, reason: r.reason?.message }
+        results[outcome.status]++
+        if (outcome.reason && (outcome.status === 'failed' || outcome.status === 'skipped')) {
+          errors.push(outcome.reason)
+        }
       }
     }
 
-    return NextResponse.json(results)
+    return NextResponse.json({ ...results, errors })
   } catch (e) {
     console.error('send-csv error:', e)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

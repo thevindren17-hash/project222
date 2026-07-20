@@ -74,8 +74,8 @@ export default function AppointmentsPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Send failed')
       if (data.sent > 0) toast.success(type === 'reminder' ? 'Reminder sent' : 'Feedback request sent')
-      else if (data.skipped > 0) toast.info('Already sent recently — skipped to avoid spamming this patient')
-      else toast.error('Send failed — check WhatsApp connection')
+      else if (data.skipped > 0) toast.info(data.errors?.[0] || 'Already sent recently — skipped to avoid spamming this patient')
+      else toast.error(data.errors?.[0] || 'Send failed')
       queryClient.invalidateQueries({ queryKey: ['bookings'] })
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Send failed')
