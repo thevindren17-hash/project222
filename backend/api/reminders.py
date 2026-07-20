@@ -74,7 +74,7 @@ async def send_appointment_reminders():
 
         settings_res = await _db(lambda: supabase.table("tenant_settings").select(
             "reminder_1d_enabled, reminder_3h_enabled, reminder_1d_template, reminder_3h_template"
-        ).eq("tenant_id", tenant_id).maybeSingle().execute())
+        ).eq("tenant_id", tenant_id).maybe_single().execute())
         settings = settings_res.data or {}
 
         tasks = []
