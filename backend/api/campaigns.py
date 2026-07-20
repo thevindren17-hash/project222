@@ -15,7 +15,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
-from shared.tenant_config import get_supabase_client, _db
+from shared.tenant_config import get_supabase_client, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ async def send_feedback_requests():
     for settings in (settings_res.data or []):
         tenant_id = settings["tenant_id"]
 
-        tenant_res = await _db(lambda: supabase.table("tenants").select(
+        tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
             "wa_phone_number_id, wa_access_token"
         ).eq("id", tenant_id).eq("is_active", True).maybe_single().execute())
 
@@ -117,7 +117,7 @@ async def send_feedback_requests():
                 continue
 
             _cid = contact_id
-            contact_res = await _db(lambda: supabase.table("contacts").select(
+            contact_res = await _db_optional(lambda: supabase.table("contacts").select(
                 "name, phone"
             ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
             if not contact_res.data:
@@ -187,7 +187,7 @@ async def get_pending_feedback_campaign(
     supabase = get_supabase_client()
     cutoff = (datetime.now() - timedelta(hours=12)).isoformat()
 
-    res = await _db(lambda: supabase.table("campaigns").select("*").eq(
+    res = await _db_optional(lambda: supabase.table("campaigns").select("*").eq(
         "tenant_id", tenant_id
     ).eq("contact_id", contact_id).eq("type", "feedback").eq(
         "status", "sent"
@@ -220,7 +220,7 @@ async def handle_feedback_response(
     campaign_id = campaign["id"]
 
     # Load tenant's feedback settings
-    settings_res = await _db(lambda: supabase.table("tenant_settings").select(
+    settings_res = await _db_optional(lambda: supabase.table("tenant_settings").select(
         "google_review_url, review_request_template, negative_feedback_message"
     ).eq("tenant_id", tenant_id).maybe_single().execute())
     settings = settings_res.data or {}
@@ -358,7 +358,7 @@ async def send_recall_messages():
         cutoff = (now - timedelta(days=months * 30)).isoformat()
 
         _tid = tenant_id
-        tenant_res = await _db(lambda: supabase.table("tenants").select(
+        tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
             "name, wa_phone_number_id, wa_access_token"
         ).eq("id", _tid).eq("is_active", True).maybe_single().execute())
         if not tenant_res.data:
@@ -407,7 +407,7 @@ async def send_recall_messages():
 
         for contact_id in to_contact:
             _cid = contact_id
-            contact_res = await _db(lambda: supabase.table("contacts").select(
+            contact_res = await _db_optional(lambda: supabase.table("contacts").select(
                 "name, phone"
             ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
             if not contact_res.data:

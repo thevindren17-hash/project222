@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from shared.tenant_config import get_supabase_client, _db
+from shared.tenant_config import get_supabase_client, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def send_appointment_reminders():
         if not phone_number_id or not access_token:
             continue
 
-        settings_res = await _db(lambda: supabase.table("tenant_settings").select(
+        settings_res = await _db_optional(lambda: supabase.table("tenant_settings").select(
             "reminder_1d_enabled, reminder_3h_enabled, reminder_1d_template, reminder_3h_template"
         ).eq("tenant_id", tenant_id).maybe_single().execute())
         settings = settings_res.data or {}
@@ -111,7 +111,7 @@ async def send_appointment_reminders():
                     continue
 
                 # Fetch contact details (name + phone) separately after claiming the row
-                contact_res = await _db(lambda: supabase.table("contacts").select(
+                contact_res = await _db_optional(lambda: supabase.table("contacts").select(
                     "name, phone"
                 ).eq("id", contact_id).maybe_single().execute())
                 contact = contact_res.data or {}

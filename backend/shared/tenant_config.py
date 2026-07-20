@@ -50,6 +50,31 @@ async def _db(fn, timeout: float = 10.0):
         raise RuntimeError(f"Supabase call timed out after {timeout}s")
 
 
+class _EmptyResult:
+    """Mimics a Supabase response object with no matching row."""
+    data = None
+
+
+async def _db_optional(fn, timeout: float = 10.0):
+    """
+    Like _db(), but for queries ending in .maybe_single() — PostgREST returns
+    a 406 ("PGRST116: JSON object requested, multiple (or no) rows returned")
+    when a maybe_single() query matches zero rows, and this supabase-py
+    version raises that as an exception instead of returning empty data.
+    Since "no row found" is the normal, expected outcome for most of these
+    lookups (an opted-out contact, a new contact with no campaign yet, a
+    cancelled booking, etc.), treat it as empty data rather than a crash.
+    Any other error still propagates normally.
+    """
+    try:
+        return await _db(fn, timeout)
+    except Exception as e:
+        msg = str(e)
+        if "PGRST116" in msg or "Not Acceptable" in msg:
+            return _EmptyResult()
+        raise
+
+
 # ── Tenant config cache (60 s TTL — settings rarely change) ───────────────────
 _tenant_cache: Dict[str, Tuple["TenantConfig", float]] = {}
 _cache_lock = threading.Lock()
@@ -323,12 +348,12 @@ async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConf
         return cached
     try:
         supabase = get_supabase_client()
-        result = await _db(lambda: supabase.table("tenants").select("*").eq(
+        result = await _db_optional(lambda: supabase.table("tenants").select("*").eq(
             "wa_phone_number_id", phone_number_id
         ).eq("is_active", True).maybe_single().execute())
         if not result.data:
             return None
-        settings_result = await _db(lambda: supabase.table("tenant_settings").select("*").eq(
+        settings_result = await _db_optional(lambda: supabase.table("tenant_settings").select("*").eq(
             "tenant_id", result.data["id"]
         ).maybe_single().execute())
         config = _build_tenant_from_rows(result.data, settings_result.data or {})
@@ -346,12 +371,12 @@ async def get_tenant_by_id(tenant_id: str) -> Optional[TenantConfig]:
         return cached
     try:
         supabase = get_supabase_client()
-        result = await _db(lambda: supabase.table("tenants").select("*").eq(
+        result = await _db_optional(lambda: supabase.table("tenants").select("*").eq(
             "id", tenant_id
         ).maybe_single().execute())
         if not result.data:
             return None
-        settings_result = await _db(lambda: supabase.table("tenant_settings").select("*").eq(
+        settings_result = await _db_optional(lambda: supabase.table("tenant_settings").select("*").eq(
             "tenant_id", tenant_id
         ).maybe_single().execute())
         config = _build_tenant_from_rows(result.data, settings_result.data or {})

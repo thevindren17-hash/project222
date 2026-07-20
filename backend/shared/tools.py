@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from shared.tenant_config import get_supabase_client, TenantConfig, _db
+from shared.tenant_config import get_supabase_client, TenantConfig, _db, _db_optional
 from shared.google_integrations import get_google_calendar, get_google_sheets
 
 logger = logging.getLogger(__name__)
@@ -235,17 +235,17 @@ async def cancel_appointment(
 
     if booking_id:
         _bid_lookup = booking_id
-        booking = await _db(lambda: supabase.table("bookings").select("*").eq(
+        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "id", _bid_lookup
         ).eq("tenant_id", tenant_id).maybe_single().execute())
     elif contact_phone:
-        contact = await _db(lambda: supabase.table("contacts").select("id").eq(
+        contact = await _db_optional(lambda: supabase.table("contacts").select("id").eq(
             "tenant_id", tenant_id
         ).eq("phone", contact_phone).maybe_single().execute())
         if not contact.data:
             return {"success": False, "error": "Contact not found"}
         _cid = contact.data["id"]
-        booking = await _db(lambda: supabase.table("bookings").select("*").eq(
+        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "tenant_id", tenant_id
         ).eq("contact_id", _cid).eq(
             "status", "pending"
@@ -291,17 +291,17 @@ async def reschedule_appointment(
 
     if booking_id:
         _bid_lookup = booking_id
-        booking = await _db(lambda: supabase.table("bookings").select("*").eq(
+        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "id", _bid_lookup
         ).eq("tenant_id", tenant_id).maybe_single().execute())
     elif contact_phone:
-        contact = await _db(lambda: supabase.table("contacts").select("id").eq(
+        contact = await _db_optional(lambda: supabase.table("contacts").select("id").eq(
             "tenant_id", tenant_id
         ).eq("phone", contact_phone).maybe_single().execute())
         if not contact.data:
             return {"success": False, "error": "Contact not found"}
         _cid = contact.data["id"]
-        booking = await _db(lambda: supabase.table("bookings").select("*").eq(
+        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "tenant_id", tenant_id
         ).eq("contact_id", _cid).eq(
             "status", "pending"

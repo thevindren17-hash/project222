@@ -22,13 +22,18 @@ class GoogleCalendarIntegration:
     async def _get_token(self) -> str:
         from shared.tenant_config import get_supabase_client
         supabase = get_supabase_client()
-        result = (
-            supabase.table("tenant_settings")
-            .select("google_calendar_token,google_calendar_refresh")
-            .eq("tenant_id", self.tenant_id)
-            .maybe_single()
-            .execute()
-        )
+        try:
+            result = (
+                supabase.table("tenant_settings")
+                .select("google_calendar_token,google_calendar_refresh")
+                .eq("tenant_id", self.tenant_id)
+                .maybe_single()
+                .execute()
+            )
+        except Exception as e:
+            if "PGRST116" in str(e) or "Not Acceptable" in str(e):
+                raise RuntimeError("No Google Calendar credentials found")
+            raise
         if not result.data:
             raise RuntimeError("No Google Calendar credentials found")
 
@@ -363,13 +368,20 @@ async def store_google_tokens(
 async def get_google_calendar(tenant_id: str) -> Optional[GoogleCalendarIntegration]:
     from shared.tenant_config import get_supabase_client
     supabase = get_supabase_client()
-    result = (
-        supabase.table("tenant_settings")
-        .select("google_calendar_token,google_calendar_refresh,google_calendar_id")
-        .eq("tenant_id", tenant_id)
-        .maybe_single()
-        .execute()
-    )
+    try:
+        result = (
+            supabase.table("tenant_settings")
+            .select("google_calendar_token,google_calendar_refresh,google_calendar_id")
+            .eq("tenant_id", tenant_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        # PostgREST 406s (PGRST116) when maybe_single() matches zero rows —
+        # normal for any tenant that hasn't connected Google Calendar yet.
+        if "PGRST116" in str(e) or "Not Acceptable" in str(e):
+            return None
+        raise
     if not result.data:
         return None
     has_token = result.data.get("google_calendar_token") or result.data.get("google_calendar_refresh")
