@@ -15,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from shared.tenant_config import get_supabase_client, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
+from shared.whatsapp_send import send_whatsapp_template
 
 logger = logging.getLogger(__name__)
 
@@ -40,19 +41,6 @@ def _format_message(template: str, name: str, service: str, scheduled_at: dateti
     )
 
 
-async def _send_wa(to: str, text: str, phone_number_id: str, access_token: str):
-    import httpx
-    to_digits = to.lstrip("+")
-    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(
-            url,
-            json={"messaging_product": "whatsapp", "to": to_digits, "type": "text", "text": {"body": text}},
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-        )
-        r.raise_for_status()
-
-
 async def send_appointment_reminders():
     """Check for upcoming appointments and send WhatsApp reminders."""
     if not await acquire_lock("appointment_reminders", duration_minutes=25):
@@ -74,21 +62,27 @@ async def send_appointment_reminders():
                 continue
 
             settings_res = await _db_optional(lambda: supabase.table("tenant_settings").select(
-                "reminder_1d_enabled, reminder_3h_enabled, reminder_1d_template, reminder_3h_template"
+                "reminder_1d_enabled, reminder_3h_enabled, reminder_template_name, whatsapp_template_language"
             ).eq("tenant_id", tenant_id).maybe_single().execute())
             settings = settings_res.data or {}
+
+            # The message body is now a Meta-approved template — its wording
+            # is fixed once approved, so there's no per-tenant custom text
+            # here anymore, only which approved template name/language to use.
+            template_name = settings.get("reminder_template_name") or "appointment_reminder"
+            language_code = settings.get("whatsapp_template_language") or "en_US"
 
             tasks = []
             if settings.get("reminder_1d_enabled"):
                 tasks.append((
                     timedelta(hours=23), timedelta(hours=25),
-                    settings.get("reminder_1d_template") or DEFAULT_1D_TEMPLATE,
+                    DEFAULT_1D_TEMPLATE,
                     "reminder_1d_sent",
                 ))
             if settings.get("reminder_3h_enabled"):
                 tasks.append((
                     timedelta(hours=2, minutes=30), timedelta(hours=3, minutes=30),
-                    settings.get("reminder_3h_template") or DEFAULT_3H_TEMPLATE,
+                    DEFAULT_3H_TEMPLATE,
                     "reminder_3h_sent",
                 ))
 
@@ -126,9 +120,22 @@ async def send_appointment_reminders():
                         # A malformed/legacy scheduled_at must only skip THIS booking,
                         # not abort the whole tenant/window — keep it inside the try.
                         scheduled_at = datetime.fromisoformat(booking["scheduled_at"])
+                        # message is only used for the readable thread-history log below —
+                        # the actual WhatsApp send uses the fixed, Meta-approved template text.
                         message = _format_message(template, name, service, scheduled_at)
 
-                        await _send_wa(phone, message, phone_number_id, access_token)
+                        await send_whatsapp_template(
+                            to=phone,
+                            template_name=template_name,
+                            language_code=language_code,
+                            parameters=[
+                                name, service,
+                                scheduled_at.strftime("%d %b %Y"),
+                                scheduled_at.strftime("%I:%M %p"),
+                            ],
+                            phone_number_id=phone_number_id,
+                            access_token=access_token,
+                        )
 
                         # Save reminder into the WhatsApp thread if one exists
                         thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(

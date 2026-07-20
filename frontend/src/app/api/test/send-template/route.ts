@@ -98,7 +98,9 @@ export async function POST(req: NextRequest) {
     // Load message templates from settings
     const { data: settings } = await supabaseAdmin
       .from('tenant_settings')
-      .select('feedback_message_template, recall_message_template, reminder_1d_template')
+      .select(
+        'feedback_message_template, recall_message_template, reminder_1d_template, reminder_template_name, feedback_template_name, whatsapp_template_language'
+      )
       .eq('tenant_id', tenant_id)
       .maybeSingle()
 
@@ -131,6 +133,45 @@ export async function POST(req: NextRequest) {
       message = tmpl.replace('{name}', name).replace('{clinic}', tenant.name)
     }
 
+    // Reminder + feedback are always outside the 24h customer service window,
+    // so the test send must use the real approved template too — otherwise
+    // this button would "succeed" in a way production sends never can.
+    // Recall stays on free text until its template is approved.
+    const languageCode = settings?.whatsapp_template_language || 'en_US'
+    let waBody: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      to: phone.replace(/^\+/, ''),
+      type: 'text',
+      text: { body: message },
+    }
+
+    if (type === 'reminder' || type === 'feedback') {
+      const templateName =
+        type === 'reminder'
+          ? settings?.reminder_template_name || 'appointment_reminder'
+          : settings?.feedback_template_name || 'feedback_request'
+      const templateParams =
+        type === 'reminder'
+          ? [name, 'Test Appointment', formatDate(tomorrow), formatTime(tomorrow)]
+          : [name, 'Test Appointment']
+
+      waBody = {
+        messaging_product: 'whatsapp',
+        to: phone.replace(/^\+/, ''),
+        type: 'template',
+        template: {
+          name: templateName,
+          language: { code: languageCode },
+          components: [
+            {
+              type: 'body',
+              parameters: templateParams.map((p) => ({ type: 'text', text: String(p) })),
+            },
+          ],
+        },
+      }
+    }
+
     // Send via Meta API
     const waRes = await fetch(
       `https://graph.facebook.com/v21.0/${tenant.wa_phone_number_id}/messages`,
@@ -140,12 +181,7 @@ export async function POST(req: NextRequest) {
           Authorization: `Bearer ${tenant.wa_access_token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to: phone.replace(/^\+/, ''),
-          type: 'text',
-          text: { body: message },
-        }),
+        body: JSON.stringify(waBody),
       }
     )
 

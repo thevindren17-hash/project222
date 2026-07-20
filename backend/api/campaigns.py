@@ -17,6 +17,7 @@ from typing import Optional
 
 from shared.tenant_config import get_supabase_client, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
+from shared.whatsapp_send import send_whatsapp_template
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,8 @@ async def send_feedback_requests():
     # Load all tenants with feedback enabled + WA credentials
     settings_res = await _db(lambda: supabase.table("tenant_settings").select(
         "tenant_id, feedback_enabled, google_review_url, "
-        "feedback_message_template, review_request_template, negative_feedback_message"
+        "feedback_message_template, review_request_template, negative_feedback_message, "
+        "feedback_template_name, whatsapp_template_language"
     ).eq("feedback_enabled", True).execute())
 
     for settings in (settings_res.data or []):
@@ -131,11 +133,22 @@ async def send_feedback_requests():
                 name    = contact.get("name") or "there"
                 service = booking.get("service_type", "appointment")
 
-                tmpl    = settings.get("feedback_message_template") or DEFAULT_FEEDBACK_MSG
+                # message is only used for the readable thread-history log below —
+                # the actual send uses the fixed, Meta-approved template text.
+                tmpl    = DEFAULT_FEEDBACK_MSG
                 message = tmpl.replace("{name}", name).replace("{service}", service)
+                template_name = settings.get("feedback_template_name") or "feedback_request"
+                language_code = settings.get("whatsapp_template_language") or "en_US"
 
                 try:
-                    await _send_wa(phone, message, phone_number_id, access_token)
+                    await send_whatsapp_template(
+                        to=phone,
+                        template_name=template_name,
+                        language_code=language_code,
+                        parameters=[name, service],
+                        phone_number_id=phone_number_id,
+                        access_token=access_token,
+                    )
 
                     # Find existing thread (for saving message history)
                     thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(

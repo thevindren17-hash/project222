@@ -10,14 +10,20 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
-import { Loader2, Star, FlaskConical, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Loader2, Star, FlaskConical, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react'
 import CsvCampaignUploader from '@/components/campaigns/csv-campaign-uploader'
+
+const FEEDBACK_REQUEST_PREVIEW =
+  'Hi {name}! 😊 Thank you for visiting us for your {service}. How was your experience? Please reply with a number 1–5.'
+
+function fillPreview(tmpl: string) {
+  return tmpl.replace('{name}', 'Sarah').replace('{service}', 'Dental Checkup')
+}
 
 export default function FeedbackAndReviewSystemPage() {
   const queryClient = useQueryClient()
   const [feedbackEnabled, setFeedbackEnabled] = useState(false)
   const [googleReviewUrl, setGoogleReviewUrl] = useState('')
-  const [feedbackMsgTemplate, setFeedbackMsgTemplate] = useState('')
   const [reviewRequestTemplate, setReviewRequestTemplate] = useState('')
   const [negativeFeedbackMsg, setNegativeFeedbackMsg] = useState('')
   const [testPhone, setTestPhone] = useState('')
@@ -33,7 +39,7 @@ export default function FeedbackAndReviewSystemPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'feedback_enabled,google_review_url,feedback_message_template,review_request_template,negative_feedback_message'
+        'feedback_enabled,google_review_url,review_request_template,negative_feedback_message'
       ).eq('tenant_id', tenant.id).maybeSingle()
       return data
     },
@@ -44,7 +50,6 @@ export default function FeedbackAndReviewSystemPage() {
     if (!settings) return
     setFeedbackEnabled(!!settings.feedback_enabled)
     setGoogleReviewUrl(settings.google_review_url || '')
-    setFeedbackMsgTemplate(settings.feedback_message_template || '')
     setReviewRequestTemplate(settings.review_request_template || '')
     setNegativeFeedbackMsg(settings.negative_feedback_message || '')
   }, [settings])
@@ -56,7 +61,6 @@ export default function FeedbackAndReviewSystemPage() {
         tenant_id: tenant.id,
         feedback_enabled: feedbackEnabled,
         google_review_url: googleReviewUrl.trim() || null,
-        feedback_message_template: feedbackMsgTemplate.trim() || null,
         review_request_template: reviewRequestTemplate.trim() || null,
         negative_feedback_message: negativeFeedbackMsg.trim() || null,
       }, { onConflict: 'tenant_id' })
@@ -121,8 +125,14 @@ export default function FeedbackAndReviewSystemPage() {
 
           {feedbackEnabled && (
             <div className="space-y-5">
-              <div className="text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
-                Available placeholders: <code className="font-mono">{'{name}'}</code> <code className="font-mono">{'{service}'}</code> <code className="font-mono">{'{rating}'}</code> <code className="font-mono">{'{review_link}'}</code>
+              <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
+                <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+                <span>
+                  The initial feedback request is sent as a Meta-approved WhatsApp message template (required
+                  outside the 24-hour customer service window) — its wording is fixed and can&apos;t be edited here.
+                  The Google review invite and low-rating response below are sent as direct replies within that
+                  window, so those stay fully customizable.
+                </span>
               </div>
 
               <div className="space-y-1.5">
@@ -137,15 +147,10 @@ export default function FeedbackAndReviewSystemPage() {
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs">Feedback request message</Label>
-                <Textarea
-                  rows={4}
-                  placeholder={`Hi {name}! 😊 Thank you for visiting us today for your {service}. How was your experience? Please reply with a number:\n1 ⭐ – Poor  2 ⭐⭐ – Fair  3 ⭐⭐⭐ – Good  4 ⭐⭐⭐⭐ – Great  5 ⭐⭐⭐⭐⭐ – Excellent`}
-                  value={feedbackMsgTemplate}
-                  onChange={(e) => setFeedbackMsgTemplate(e.target.value)}
-                  className="text-sm resize-none"
-                />
-                <p className="text-[11px] text-muted-foreground">Leave blank to use the default message</p>
+                <Label className="text-xs">Approved template preview</Label>
+                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed">
+                  {fillPreview(FEEDBACK_REQUEST_PREVIEW)}
+                </div>
               </div>
 
               <div className="space-y-1.5">
@@ -195,7 +200,7 @@ export default function FeedbackAndReviewSystemPage() {
             type="feedback"
             tenantId={tenant?.id || ''}
             isConnected={isConnected}
-            messageTemplate={feedbackMsgTemplate}
+            messageTemplate={FEEDBACK_REQUEST_PREVIEW}
             extraColumns={[
               { key: 'service', label: 'Service', candidates: ['service', 'treatment'] },
             ]}

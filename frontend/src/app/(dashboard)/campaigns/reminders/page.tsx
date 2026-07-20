@@ -7,18 +7,28 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
-import { Loader2, Bell, FlaskConical, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Loader2, Bell, FlaskConical, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react'
 import CsvCampaignUploader from '@/components/campaigns/csv-campaign-uploader'
+
+const REMINDER_1D_PREVIEW =
+  'Hi {name}, this is a reminder that your {service} appointment is tomorrow, {date} at {time}. Reply CANCEL if you need to cancel. See you then!'
+const REMINDER_3H_PREVIEW =
+  'Hi {name}, your {service} appointment is in about 3 hours at {time} today. We look forward to seeing you!'
+
+function fillPreview(tmpl: string) {
+  return tmpl
+    .replace('{name}', 'Sarah')
+    .replace('{service}', 'Dental Checkup')
+    .replace('{date}', '22 Jul 2026')
+    .replace('{time}', '10:00 AM')
+}
 
 export default function AppointmentReminderSystemPage() {
   const queryClient = useQueryClient()
   const [reminder1dEnabled, setReminder1dEnabled] = useState(false)
   const [reminder3hEnabled, setReminder3hEnabled] = useState(false)
-  const [reminder1dTemplate, setReminder1dTemplate] = useState('')
-  const [reminder3hTemplate, setReminder3hTemplate] = useState('')
   const [testPhone, setTestPhone] = useState('')
   const [testSending, setTestSending] = useState(false)
   const [testResult, setTestResult] = useState<{ message: string; to: string } | null>(null)
@@ -32,7 +42,7 @@ export default function AppointmentReminderSystemPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'reminder_1d_enabled,reminder_3h_enabled,reminder_1d_template,reminder_3h_template'
+        'reminder_1d_enabled,reminder_3h_enabled'
       ).eq('tenant_id', tenant.id).maybeSingle()
       return data
     },
@@ -43,8 +53,6 @@ export default function AppointmentReminderSystemPage() {
     if (!settings) return
     setReminder1dEnabled(!!settings.reminder_1d_enabled)
     setReminder3hEnabled(!!settings.reminder_3h_enabled)
-    setReminder1dTemplate(settings.reminder_1d_template || '')
-    setReminder3hTemplate(settings.reminder_3h_template || '')
   }, [settings])
 
   const saveMutation = useMutation({
@@ -54,8 +62,6 @@ export default function AppointmentReminderSystemPage() {
         tenant_id: tenant.id,
         reminder_1d_enabled: reminder1dEnabled,
         reminder_3h_enabled: reminder3hEnabled,
-        reminder_1d_template: reminder1dTemplate.trim() || null,
-        reminder_3h_template: reminder3hTemplate.trim() || null,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
     },
@@ -108,8 +114,13 @@ export default function AppointmentReminderSystemPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
-            Available placeholders: <code className="font-mono">{'{name}'}</code> <code className="font-mono">{'{service}'}</code> <code className="font-mono">{'{date}'}</code> <code className="font-mono">{'{time}'}</code>
+          <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
+            <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+            <span>
+              Reminders are sent as Meta-approved WhatsApp message templates (required outside the 24-hour
+              customer service window). The wording below is fixed once approved and can&apos;t be edited here —
+              only the name, service, date, and time change per patient.
+            </span>
           </div>
 
           {/* 1-day reminder */}
@@ -123,15 +134,10 @@ export default function AppointmentReminderSystemPage() {
             </div>
             {reminder1dEnabled && (
               <div className="space-y-1.5">
-                <Label className="text-xs">Message</Label>
-                <Textarea
-                  rows={3}
-                  placeholder="Hi {name}, reminder: your {service} appointment is tomorrow, {date} at {time}. Reply CANCEL to cancel."
-                  value={reminder1dTemplate}
-                  onChange={(e) => setReminder1dTemplate(e.target.value)}
-                  className="text-sm resize-none"
-                />
-                <p className="text-[11px] text-muted-foreground">Leave blank to use default message</p>
+                <Label className="text-xs">Approved template preview</Label>
+                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed">
+                  {fillPreview(REMINDER_1D_PREVIEW)}
+                </div>
               </div>
             )}
           </div>
@@ -147,15 +153,10 @@ export default function AppointmentReminderSystemPage() {
             </div>
             {reminder3hEnabled && (
               <div className="space-y-1.5">
-                <Label className="text-xs">Message</Label>
-                <Textarea
-                  rows={3}
-                  placeholder="Hi {name}, your {service} appointment is in 3 hours at {time} today. See you soon!"
-                  value={reminder3hTemplate}
-                  onChange={(e) => setReminder3hTemplate(e.target.value)}
-                  className="text-sm resize-none"
-                />
-                <p className="text-[11px] text-muted-foreground">Leave blank to use default message</p>
+                <Label className="text-xs">Approved template preview</Label>
+                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed">
+                  {fillPreview(REMINDER_3H_PREVIEW)}
+                </div>
               </div>
             )}
           </div>
@@ -181,7 +182,7 @@ export default function AppointmentReminderSystemPage() {
             type="reminder"
             tenantId={tenant?.id || ''}
             isConnected={isConnected}
-            messageTemplate={reminder1dTemplate}
+            messageTemplate={REMINDER_1D_PREVIEW}
             extraColumns={[
               { key: 'service', label: 'Service', candidates: ['service', 'treatment'] },
               { key: 'date', label: 'Date', candidates: ['date', 'appointment date'] },

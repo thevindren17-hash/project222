@@ -68,8 +68,13 @@ async function sendOneCampaignMessage(params: {
   clinic_name: string
   message_template: string
   interval_months: number
+  templateName?: string | null
+  templateLanguage?: string
 }): Promise<SendOutcome> {
-  const { tenant_id, type, contact, phone_number_id, access_token, clinic_name, message_template, interval_months } = params
+  const {
+    tenant_id, type, contact, phone_number_id, access_token, clinic_name,
+    message_template, interval_months, templateName, templateLanguage,
+  } = params
 
   const phone = normalizePhone(contact.phone)
   if (!phone) return { status: 'failed', reason: `Invalid phone number: "${contact.phone}"` }
@@ -114,7 +119,38 @@ async function sendOneCampaignMessage(params: {
 
     if (existing) return { status: 'skipped', reason: 'Already sent to this contact recently' }
 
-    // Send via Meta API
+    // Send via Meta API — reminder/feedback are always outside the 24h
+    // customer service window, so they must use an approved template.
+    // Recall stays on free-text until its template is approved (templateName
+    // is null in that case).
+    const templateParams =
+      type === 'reminder'
+        ? [name, contact.service || '', contact.date || '', contact.time || '']
+        : [name, contact.service || '']
+
+    const waBody = templateName
+      ? {
+          messaging_product: 'whatsapp',
+          to: phone.replace(/^\+/, ''),
+          type: 'template',
+          template: {
+            name: templateName,
+            language: { code: templateLanguage || 'en_US' },
+            components: [
+              {
+                type: 'body',
+                parameters: templateParams.map((p) => ({ type: 'text', text: String(p) })),
+              },
+            ],
+          },
+        }
+      : {
+          messaging_product: 'whatsapp',
+          to: phone.replace(/^\+/, ''),
+          type: 'text',
+          text: { body: message },
+        }
+
     const waRes = await fetch(
       `https://graph.facebook.com/v21.0/${phone_number_id}/messages`,
       {
@@ -123,12 +159,7 @@ async function sendOneCampaignMessage(params: {
           Authorization: `Bearer ${access_token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to: phone.replace(/^\+/, ''),
-          type: 'text',
-          text: { body: message },
-        }),
+        body: JSON.stringify(waBody),
       }
     )
 
@@ -230,6 +261,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'WhatsApp credentials not configured' }, { status: 400 })
     }
 
+    // Reminder/feedback are always sent as approved Meta templates (outside
+    // the 24h window). Recall stays on free text until its template name is set.
+    const { data: tenantSettings } = await supabaseAdmin
+      .from('tenant_settings')
+      .select('reminder_template_name, feedback_template_name, recall_template_name, whatsapp_template_language')
+      .eq('tenant_id', tenant_id)
+      .maybeSingle()
+
+    const templateNameByType: Record<CampaignType, string | null> = {
+      reminder: tenantSettings?.reminder_template_name || 'appointment_reminder',
+      feedback: tenantSettings?.feedback_template_name || 'feedback_request',
+      recall: tenantSettings?.recall_template_name || null,
+    }
+    const templateLanguage = tenantSettings?.whatsapp_template_language || 'en_US'
+
     const results = { sent: 0, skipped: 0, failed: 0 }
     const errors: string[] = []
 
@@ -248,6 +294,8 @@ export async function POST(req: NextRequest) {
             clinic_name: tenant.name,
             message_template: message_template || DEFAULT_TEMPLATES[type],
             interval_months: interval_months || 6,
+            templateName: templateNameByType[type],
+            templateLanguage,
           })
         )
       )
