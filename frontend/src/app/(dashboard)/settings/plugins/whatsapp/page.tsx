@@ -49,7 +49,7 @@ export default function WhatsAppPluginPage() {
   const hasLlmKey = !!(agentSettings?.provider_credentials?.[llmProvider]?.api_key)
   const agentReady = !!(llmProvider && hasLlmKey)
 
-  const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || '').replace(/\/$/, '')
+  const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || '').trim().replace(/\/+$/, '')
   const webhookUrl = tenant ? `${backendUrl}/webhook/whatsapp/${tenant.id}` : ''
   const verifyToken = tenant ? `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}` : ''
 

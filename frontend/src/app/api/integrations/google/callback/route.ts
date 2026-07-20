@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { internalSecretHeader } from '@/lib/server/verify-tenant-access'
 
-const BACKEND = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || ''
+const BACKEND = (process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || '').trim()
 
 export async function GET(req: NextRequest) {
   const { searchParams, origin } = new URL(req.url)
