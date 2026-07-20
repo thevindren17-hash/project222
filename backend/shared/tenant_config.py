@@ -59,20 +59,23 @@ async def _db_optional(fn, timeout: float = 10.0):
     """
     Like _db(), but for queries ending in .maybe_single() — PostgREST returns
     a 406 ("PGRST116: JSON object requested, multiple (or no) rows returned")
-    when a maybe_single() query matches zero rows, and this supabase-py
-    version raises that as an exception instead of returning empty data.
-    Since "no row found" is the normal, expected outcome for most of these
-    lookups (an opted-out contact, a new contact with no campaign yet, a
-    cancelled booking, etc.), treat it as empty data rather than a crash.
-    Any other error still propagates normally.
+    when a maybe_single() query matches zero rows. Depending on the
+    supabase-py/postgrest-py version this either raises that as an
+    exception, OR returns bare None instead of a response object — both
+    observed in production logs for this project. Since "no row found" is
+    the normal, expected outcome for most of these lookups (an opted-out
+    contact, a new contact with no campaign yet, a cancelled booking, etc.),
+    normalize either case to an empty result instead of a crash. Any other
+    error still propagates normally.
     """
     try:
-        return await _db(fn, timeout)
+        result = await _db(fn, timeout)
     except Exception as e:
         msg = str(e)
         if "PGRST116" in msg or "Not Acceptable" in msg:
             return _EmptyResult()
         raise
+    return result if result is not None else _EmptyResult()
 
 
 # ── Tenant config cache (60 s TTL — settings rarely change) ───────────────────
