@@ -78,9 +78,14 @@ def _cache_set(key: str, config: "TenantConfig") -> None:
         _tenant_cache[key] = (config, time.monotonic())
 
 
-# ── Default system prompt ─────────────────────────────────────────────────────
+# ── Core agent rules ───────────────────────────────────────────────────────────
+# Mandatory, always sent to the LLM regardless of what a clinic writes in
+# their custom_instructions. Clinics can add tone/services/notes on top of
+# this, but can never remove or override booking flow, escalation triggers,
+# or safety boundaries (no medical advice, no exact pricing, etc.) — those
+# are the platform's guarantee, not something a clinic's own prompt can drop.
 
-def _default_system_prompt(clinic_name: str, agent_name: str = "Maya") -> str:
+def _core_agent_rules(clinic_name: str, agent_name: str = "Maya") -> str:
     return f"""You are {agent_name}, an AI receptionist for {clinic_name}.
 
 Your job:
@@ -184,7 +189,8 @@ class TenantConfig:
     tenant_id: str
     name: str
     agent_name: str = "Maya"
-    system_prompt: str = ""
+    system_prompt: str = ""  # always core rules + custom_instructions — see _build_tenant_from_rows
+    custom_instructions: str = ""
     llm_config: Dict[str, Any] = field(default_factory=dict)
     business_hours: Dict[str, Any] = field(default_factory=dict)
     faq: List[Dict[str, str]] = field(default_factory=list)
@@ -211,7 +217,7 @@ class TenantConfig:
 
     def __post_init__(self):
         if not self.system_prompt:
-            self.system_prompt = _default_system_prompt(self.name, self.agent_name)
+            self.system_prompt = _core_agent_rules(self.name, self.agent_name)
         if not self.llm_config:
             self.llm_config = {"provider": "openai", "model": "gpt-4o"}
         if not self.business_hours:
@@ -228,11 +234,29 @@ class TenantConfig:
 
 def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfig:
     settings = settings_row or {}
+    name = tenant_row["name"]
+    agent_name = settings.get("agent_name") or tenant_row.get("agent_name", "Maya")
+
+    custom_instructions = settings.get("custom_instructions")
+    if custom_instructions is None:
+        # Back-compat: a clinic may have a pre-migration fully-custom prompt
+        # saved under the old system_prompt column. Fold it in once as their
+        # "custom" layer rather than losing it — it now sits on top of the
+        # mandatory core rules instead of replacing them.
+        custom_instructions = settings.get("system_prompt") or ""
+
+    core = _core_agent_rules(name, agent_name)
+    full_prompt = (
+        core if not custom_instructions.strip()
+        else f"{core}\n\nCLINIC-SPECIFIC NOTES (from {name}, on top of the rules above):\n{custom_instructions.strip()}"
+    )
+
     return TenantConfig(
         tenant_id=str(tenant_row["id"]),
-        name=tenant_row["name"],
-        agent_name=settings.get("agent_name") or tenant_row.get("agent_name", "Maya"),
-        system_prompt=settings.get("system_prompt", ""),
+        name=name,
+        agent_name=agent_name,
+        system_prompt=full_prompt,
+        custom_instructions=custom_instructions,
         llm_config=settings.get("llm_config") or {},
         business_hours=settings.get("business_hours") or {},
         faq=settings.get("faq") or [],

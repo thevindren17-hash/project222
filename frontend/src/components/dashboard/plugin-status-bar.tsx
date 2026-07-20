@@ -22,13 +22,16 @@ export default function PluginStatusBar() {
       if (!tenant) return null
       const { data: settings } = await supabase
         .from('tenant_settings')
-        .select('system_prompt,google_calendar_id,provider_credentials')
+        .select('llm_config,google_calendar_id,provider_credentials')
         .eq('tenant_id', tenant.id)
         .single()
+      // Booking flow & safety rules are always active — the agent is only
+      // blocked on having a working LLM provider key, not a saved prompt.
+      const llmProvider = settings?.llm_config?.provider
       return {
         whatsapp: !!tenant.wa_phone_number_id,
         calendar: !!settings?.google_calendar_id,
-        agent:    !!settings?.system_prompt,
+        agent:    !!(llmProvider && (settings?.provider_credentials as Record<string, Record<string, string>> | undefined)?.[llmProvider]?.api_key),
       }
     },
   })

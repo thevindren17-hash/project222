@@ -17,6 +17,7 @@ export interface TenantSettings {
   id: string
   tenant_id: string
   system_prompt?: string
+  custom_instructions?: string
   agent_name?: string
   llm_config: { provider: string; model: string }
   business_hours: BusinessHours

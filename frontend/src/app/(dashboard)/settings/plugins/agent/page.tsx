@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS, VOICE_LANGUAGES } from '@/lib/providers'
 import {
   Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check, Languages,
-  Volume2, Play, ExternalLink,
+  Volume2, Play, ExternalLink, CheckCircle2,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -64,7 +64,7 @@ export default function AgentPluginPage() {
       if (!tenant) return null
       // Exclude provider_credentials — keys never leave the server
       const { data, error } = await supabase.from('tenant_settings')
-        .select('agent_name,system_prompt,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language')
+        .select('agent_name,system_prompt,custom_instructions,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language')
         .eq('tenant_id', tenant.id).maybeSingle()
       if (error) throw error
       return data
@@ -130,7 +130,9 @@ export default function AgentPluginPage() {
     if (tenant) setClinicName(tenant.name || '')
     if (settings && !promptSeeded) {
       setAgentName(settings.agent_name || 'Maya')
-      setRawPrompt(settings.system_prompt || '')
+      // custom_instructions is the new field; fall back to the old
+      // system_prompt column for clinics who saved a prompt before this split.
+      setRawPrompt(settings.custom_instructions ?? settings.system_prompt ?? '')
       setPromptSeeded(true)
       setLlmProvider(settings.llm_config?.provider || 'groq')
       setLlmModel(settings.llm_config?.model || 'llama-3.3-70b-versatile')
@@ -149,39 +151,33 @@ export default function AgentPluginPage() {
     }
   }, [tenant, settings, promptSeeded])
 
+  // Builds only the CUSTOMIZATION layer — tone, services, clinic-specific
+  // notes. Booking flow, escalation triggers, and safety rules are always
+  // sent by the backend on top of this and can't be overridden here.
   function buildSystemPrompt() {
     const serviceList = selectedServices.length
       ? selectedServices.map((s) => `- ${s}`).join('\n')
-      : '- General dental services'
+      : ''
     return [
-      `You are ${agentName}, an AI receptionist for ${clinicName}${clinicTagline ? ` — ${clinicTagline}` : ''}.`,
-      '',
-      'Your job:',
-      '- Book, reschedule, and cancel appointments',
-      '- Answer questions about clinic hours, location, services, and pricing',
-      '- Transfer to a human when needed',
-      '',
-      'Services we offer:',
-      serviceList,
-      '',
-      `Tone: ${tone.charAt(0).toUpperCase() + tone.slice(1)}`,
-      ...(specialInstructions ? ['', 'Special instructions:', specialInstructions] : []),
+      ...(clinicTagline ? [`About us: ${clinicTagline}`, ''] : []),
+      ...(serviceList ? ['Services we offer:', serviceList, ''] : []),
+      `Preferred tone: ${tone.charAt(0).toUpperCase() + tone.slice(1)}`,
+      ...(specialInstructions ? ['', 'Always say / do:', specialInstructions] : []),
       ...(neverSay ? ['', 'Never say:', neverSay] : []),
-      '',
-      'Always confirm appointment details before booking. Ask for patient name and phone number.',
-      'Escalate to human when: patient requests human, complex clinical questions, complaints, payment issues.',
     ].join('\n').trim()
   }
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
+      // Booking flow, escalation, and safety rules are always included by the
+      // backend — this is only the clinic's optional customization on top,
+      // so it's fine for it to be empty.
       const prompt = rawMode ? rawPrompt.trim() : buildSystemPrompt()
-      if (!prompt) throw new Error('System prompt cannot be empty — write one in the Instructions tab first.')
       const { error } = await supabase.from('tenant_settings').upsert({
         tenant_id: tenant.id,
         agent_name: agentName,
-        system_prompt: prompt,
+        custom_instructions: prompt,
         llm_config: { provider: llmProvider, model: llmModel, temperature, max_tokens: maxTokens },
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
@@ -379,13 +375,13 @@ export default function AgentPluginPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold">Instructions</h2>
-                  <p className="text-sm text-muted-foreground">Define what your AI knows and how it behaves</p>
+                  <p className="text-sm text-muted-foreground">Customize your AI's tone, services, and notes — the core booking flow and safety rules below are always active</p>
                 </div>
                 <div className="flex rounded-lg border overflow-hidden text-xs">
                   <button onClick={() => setRawMode(true)}
                     className={cn('px-3 py-1.5 font-medium transition-colors flex items-center gap-1.5',
                       rawMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground')}>
-                    <Code className="h-3 w-3" />Write Prompt
+                    <Code className="h-3 w-3" />Write Notes
                   </button>
                   <button onClick={() => { if (rawMode && !rawPrompt) setRawPrompt(buildSystemPrompt()); setRawMode(false) }}
                     className={cn('px-3 py-1.5 font-medium transition-colors flex items-center gap-1.5 border-l',
@@ -395,18 +391,30 @@ export default function AgentPluginPage() {
                 </div>
               </div>
 
+              <Card className="border-green-500/30 bg-green-500/5">
+                <CardContent className="p-3.5 flex items-start gap-2.5">
+                  <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-500 mt-0.5 shrink-0" />
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    <span className="font-medium text-foreground">Always on for every clinic:</span> collecting patient name & phone before booking,
+                    confirming details before finalizing, checking availability, rescheduling/cancellation flow, answering FAQs,
+                    and immediately transferring to a human for medical concerns, emergencies, or complaints. You don't need to write
+                    any of this yourself — everything below is optional, additional customization on top.
+                  </p>
+                </CardContent>
+              </Card>
+
               {rawMode ? (
                 <Card>
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <CardTitle className="text-base">System Prompt</CardTitle>
-                        <CardDescription>Sent to the AI before every conversation. Write in plain language — be specific about what the AI should and shouldn't do.</CardDescription>
+                        <CardTitle className="text-base">Customize Your Agent</CardTitle>
+                        <CardDescription>Added on top of the built-in booking flow and safety rules — use this for tone, services, promotions, or clinic-specific notes. Leave blank to use default behavior only.</CardDescription>
                       </div>
                       {!rawPrompt && (
                         <Button variant="outline" size="sm" className="shrink-0 text-xs"
                           onClick={() => setRawPrompt(buildSystemPrompt())}>
-                          Generate starter prompt
+                          Generate example notes
                         </Button>
                       )}
                     </div>
@@ -415,9 +423,9 @@ export default function AgentPluginPage() {
                     <Textarea
                       value={rawPrompt}
                       onChange={(e) => setRawPrompt(e.target.value)}
-                      rows={24}
-                      className="font-mono text-sm resize-y min-h-[200px]"
-                      placeholder={`You are Maya, an AI receptionist for Bright Smile Dental.\n\nYour job:\n- Book, reschedule, and cancel appointments\n- Answer questions about clinic hours, services, and pricing\n- Escalate to a human when the customer asks\n\nAlways be friendly, concise, and confirm appointment details before booking.`}
+                      rows={16}
+                      className="font-mono text-sm resize-y min-h-[160px]"
+                      placeholder={`We're a family-owned clinic since 1995 — mention this when relevant.\nAlways mention we have free parking.\nPrefer a warm, friendly tone.\nNever discuss insurance claims — always transfer to staff for that.`}
                     />
                     <p className="text-xs text-muted-foreground text-right">{rawPrompt.length} characters</p>
                   </CardContent>
@@ -469,7 +477,7 @@ export default function AgentPluginPage() {
 
                   <Card>
                     <CardHeader className="pb-3">
-                      <CardTitle className="text-base">Custom Instructions</CardTitle>
+                      <CardTitle className="text-base">Additional Notes</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="space-y-2">
@@ -486,10 +494,10 @@ export default function AgentPluginPage() {
                   <Card className="bg-muted/30 border-dashed">
                     <CardHeader className="pb-2">
                       <div className="flex items-center justify-between">
-                        <CardTitle className="text-sm flex items-center gap-2"><Eye className="h-3.5 w-3.5" />Prompt Preview</CardTitle>
+                        <CardTitle className="text-sm flex items-center gap-2"><Eye className="h-3.5 w-3.5" />Custom Notes Preview</CardTitle>
                         <Button variant="outline" size="sm" className="text-xs h-7"
                           onClick={() => { if (!rawPrompt) setRawPrompt(buildSystemPrompt()); setRawMode(true) }}>
-                          Edit this prompt
+                          Edit these notes
                         </Button>
                       </div>
                     </CardHeader>

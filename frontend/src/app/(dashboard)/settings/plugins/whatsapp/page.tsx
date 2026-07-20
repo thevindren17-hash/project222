@@ -32,7 +32,7 @@ export default function WhatsAppPluginPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'llm_config,agent_name,system_prompt,provider_credentials'
+        'llm_config,agent_name,custom_instructions,provider_credentials'
       ).eq('tenant_id', tenant.id).maybeSingle()
       return data
     },
@@ -45,7 +45,9 @@ export default function WhatsAppPluginPage() {
   const llmProvider = agentSettings?.llm_config?.provider || ''
   const llmModel = agentSettings?.llm_config?.model || ''
   const agentName = agentSettings?.agent_name || 'Maya'
-  const hasSystemPrompt = !!agentSettings?.system_prompt
+  // Booking flow, escalation, and safety rules are always active by
+  // default — this just reflects whether the clinic added optional notes.
+  const hasCustomInstructions = !!agentSettings?.custom_instructions
   const hasLlmKey = !!(agentSettings?.provider_credentials?.[llmProvider]?.api_key)
   const agentReady = !!(llmProvider && hasLlmKey)
 
@@ -233,8 +235,8 @@ export default function WhatsAppPluginPage() {
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                 <div className="flex items-center gap-1.5">
-                  {hasSystemPrompt ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> : <XCircle className="h-3.5 w-3.5 text-yellow-500" />}
-                  System prompt {hasSystemPrompt ? 'configured' : 'using default'}
+                  {hasCustomInstructions ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> : <XCircle className="h-3.5 w-3.5 text-yellow-500" />}
+                  Custom notes {hasCustomInstructions ? 'added' : 'using default behavior'}
                 </div>
                 <div className="flex items-center gap-1.5">
                   {isConnected ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> : <XCircle className="h-3.5 w-3.5 text-yellow-500" />}

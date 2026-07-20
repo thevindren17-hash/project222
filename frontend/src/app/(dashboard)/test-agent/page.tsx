@@ -43,7 +43,7 @@ export default function TestAgentPage() {
       if (!tenant) return null
       const { data } = await (await import('@/lib/supabase')).supabase
         .from('tenant_settings')
-        .select('system_prompt,agent_name,llm_config,provider_credentials')
+        .select('custom_instructions,agent_name,llm_config,provider_credentials')
         .eq('tenant_id', tenant.id)
         .maybeSingle()
       return data
@@ -133,8 +133,9 @@ export default function TestAgentPage() {
   }
 
   const agentName = settings?.agent_name || 'Maya'
-  const systemPrompt = settings?.system_prompt || ''
-  const hasConfig = !!systemPrompt
+  // Booking flow, escalation, and safety rules are always sent by the
+  // backend — this is just the clinic's optional customization on top.
+  const customInstructions = settings?.custom_instructions || ''
   const activeProvider = settings?.llm_config?.provider || 'groq'
   const activeModel = settings?.llm_config?.model || ''
   const hasApiKey = !!(settings?.provider_credentials as Record<string, Record<string, string>> | null)?.[activeProvider]?.api_key
@@ -162,7 +163,7 @@ export default function TestAgentPage() {
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" className="text-xs gap-1.5" onClick={() => setShowPrompt((p) => !p)}>
             {showPrompt ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            System Prompt
+            Custom Instructions
           </Button>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={reset} disabled={messages.length === 0}>
             <RotateCcw className="h-3.5 w-3.5" />
@@ -174,33 +175,19 @@ export default function TestAgentPage() {
       {/* ── System prompt preview ── */}
       {showPrompt && (
         <div className="px-6 py-3 border-b border-border bg-muted/40 shrink-0">
-          {systemPrompt ? (
+          <p className="text-xs text-muted-foreground mb-1.5">Booking flow, escalation, and safety rules are always active by default. These are your clinic's added notes on top:</p>
+          {customInstructions ? (
             <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground max-h-40 overflow-y-auto leading-relaxed">
-              {systemPrompt}
+              {customInstructions}
             </pre>
           ) : (
-            <p className="text-xs text-muted-foreground italic">No system prompt configured — go to Agent Config first.</p>
+            <p className="text-xs text-muted-foreground italic">No custom notes added — default behavior only. Add notes in Agent Config → Instructions.</p>
           )}
         </div>
       )}
 
-      {/* ── No config warning ── */}
-      {!isLoadingConfig && !hasConfig && (
-        <div className="mx-6 mt-4 shrink-0">
-          <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
-            <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-amber-700 dark:text-amber-400">No agent configured</p>
-              <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
-                Set a system prompt in <strong>Agent Config → Instructions</strong> and click <strong>Save Changes</strong> before testing.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── Missing API key warning ── */}
-      {!isLoadingConfig && hasConfig && !hasApiKey && (
+      {!isLoadingConfig && !hasApiKey && (
         <div className="mx-6 mt-4 shrink-0">
           <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
             <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
@@ -219,7 +206,7 @@ export default function TestAgentPage() {
       {/* ── Messages ── */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
 
-        {messages.length === 0 && hasConfig && (
+        {messages.length === 0 && hasApiKey && (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground select-none">
             <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
               <Bot className="h-8 w-8 text-primary/60" />
@@ -333,12 +320,12 @@ export default function TestAgentPage() {
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={hasConfig ? 'Type a message as a patient…' : 'Configure your agent first'}
-            disabled={loading || isLoadingConfig || !tenant || !hasConfig}
+            placeholder={hasApiKey ? 'Type a message as a patient…' : 'Add an API key first'}
+            disabled={loading || isLoadingConfig || !tenant || !hasApiKey}
             className="flex-1"
             autoFocus
           />
-          <Button type="submit" disabled={!input.trim() || loading || isLoadingConfig || !tenant || !hasConfig} size="icon">
+          <Button type="submit" disabled={!input.trim() || loading || isLoadingConfig || !tenant || !hasApiKey} size="icon">
             <Send className="h-4 w-4" />
           </Button>
         </form>
