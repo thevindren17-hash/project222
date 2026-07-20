@@ -622,21 +622,44 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
     enabled_tools = _select_tools(all_tools, history_messages, message_text)
 
-    response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
+    # This runs as a background task — the webhook already returned 200 to
+    # Meta by now, so an uncaught exception here (missing/invalid LLM key,
+    # provider outage, etc.) would silently die with no reply ever sent and
+    # nothing visible anywhere in the dashboard. Fail loud into a fallback
+    # reply + escalation instead of failing silent.
+    try:
+        response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
-    reply_text = response.get("content", "")
-    tool_calls = response.get("tool_calls")
+        reply_text = response.get("content", "")
+        tool_calls = response.get("tool_calls")
 
-    if not tool_calls and reply_text and "<function=" in reply_text:
-        reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
+        if not tool_calls and reply_text and "<function=" in reply_text:
+            reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
 
-    if tool_calls:
-        tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
-        if tool_result:
-            reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
+        if tool_calls:
+            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
+            if tool_result:
+                reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
 
-    if not reply_text:
-        reply_text = "I'm sorry, I couldn't process that. Please try again or call us directly."
+        if not reply_text:
+            reply_text = "I'm sorry, I couldn't process that. Please try again or call us directly."
+    except Exception as llm_err:
+        logger.error(
+            f"LLM generation failed | tenant={tenant.tenant_id} | provider={tenant.llm_config.get('provider')} | error={llm_err}",
+            exc_info=True,
+        )
+        reply_text = "Sorry, I'm having trouble responding right now. Our team will follow up with you shortly."
+        try:
+            await escalate_to_human(
+                tenant_id=tenant.tenant_id,
+                reason="ai_error",
+                context=f"LLM error: {llm_err}",
+                source="whatsapp",
+                contact_name=contact.get("name", ""),
+                contact_phone=formatted_phone,
+            )
+        except Exception:
+            pass
 
     await _db(lambda: supabase.table("messages").insert({
         "thread_id": thread["id"],
@@ -746,21 +769,40 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     ]
     all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
     enabled_tools = _select_tools(all_tools, history.data, transcript)
-    response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
-    reply_text = response.get("content", "")
-    tool_calls = response.get("tool_calls")
+    try:
+        response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
 
-    if not tool_calls and reply_text and "<function=" in reply_text:
-        reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
+        reply_text = response.get("content", "")
+        tool_calls = response.get("tool_calls")
 
-    if tool_calls:
-        tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
-        if tool_result:
-            reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
+        if not tool_calls and reply_text and "<function=" in reply_text:
+            reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
 
-    if not reply_text:
-        reply_text = "I'm sorry, I couldn't process that. Please try again."
+        if tool_calls:
+            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
+            if tool_result:
+                reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
+
+        if not reply_text:
+            reply_text = "I'm sorry, I couldn't process that. Please try again."
+    except Exception as llm_err:
+        logger.error(
+            f"LLM generation failed (voice) | tenant={tenant.tenant_id} | provider={tenant.llm_config.get('provider')} | error={llm_err}",
+            exc_info=True,
+        )
+        reply_text = "Sorry, I'm having trouble responding right now. Our team will follow up with you shortly."
+        try:
+            await escalate_to_human(
+                tenant_id=tenant.tenant_id,
+                reason="ai_error",
+                context=f"LLM error: {llm_err}",
+                source="whatsapp",
+                contact_name=contact.get("name", ""),
+                contact_phone=formatted_phone,
+            )
+        except Exception:
+            pass
 
     voice_enabled = getattr(tenant, "voice_reply_enabled", False)
     tts_provider = getattr(tenant, "voice_tts_provider", "openai") or "openai"
