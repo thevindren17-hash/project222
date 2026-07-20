@@ -6,9 +6,11 @@ Google Calendar and Sheets OAuth callbacks + disconnect endpoints.
 import os
 import json
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+
+from shared.security import require_internal_secret
 
 router = APIRouter()
 
@@ -86,7 +88,7 @@ class ExchangeRequest(BaseModel):
     state: str
 
 
-@router.post("/google/exchange")
+@router.post("/google/exchange", dependencies=[Depends(require_internal_secret)])
 async def google_exchange(req: ExchangeRequest):
     """
     New endpoint: Next.js callback proxy calls this to exchange code for tokens.
@@ -124,7 +126,7 @@ async def google_exchange(req: ExchangeRequest):
     return {"success": True, "service": service, "tenant_id": tenant_id}
 
 
-@router.post("/google/disconnect")
+@router.post("/google/disconnect", dependencies=[Depends(require_internal_secret)])
 async def google_disconnect(request: Request):
     body = await request.json()
     tenant_id = body.get("tenant_id")

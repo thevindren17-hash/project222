@@ -1,10 +1,5 @@
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+import { supabaseAdmin, verifyTenantAccess } from '@/lib/server/verify-tenant-access'
 
 export async function POST(req: Request) {
   try {
@@ -13,11 +8,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'threadId, tenantId, and message are required' }, { status: 400 })
     }
 
-    // Load thread to get recipient number
+    if (!(await verifyTenantAccess(tenantId))) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
+    }
+
+    // Load thread to get recipient number — must belong to this tenant
     const { data: thread, error: threadErr } = await supabaseAdmin
       .from('whatsapp_threads')
       .select('contact_number')
       .eq('id', threadId)
+      .eq('tenant_id', tenantId)
       .single()
     if (threadErr || !thread) {
       return NextResponse.json({ error: 'Thread not found' }, { status: 404 })

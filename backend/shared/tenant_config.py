@@ -7,9 +7,17 @@ import os
 import time
 import asyncio
 import threading
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Tuple
 from supabase import create_client, Client
+
+_logger = logging.getLogger(__name__)
+
+# Prefix marking a provider_credentials value as pgcrypto-encrypted (see
+# backend/migrations/005_encrypt_credentials.sql). Values without this
+# prefix are legacy plaintext, kept working until re-saved.
+_ENC_PREFIX = "enc:v1:"
 
 
 # ── Singleton client (one connection pool for the whole process) ───────────────
@@ -251,6 +259,37 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
     )
 
 
+async def _decrypt_provider_credentials(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Decrypt any 'enc:v1:'-prefixed BYOK credential values. Runs once per
+    tenant load (results are cached for _CACHE_TTL seconds), not per-request,
+    so this adds at most one extra DB round trip every 60s per active tenant.
+    """
+    if not raw or not os.getenv("CREDENTIAL_ENCRYPTION_KEY"):
+        return raw
+    enc_key = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
+    supabase = get_supabase_client()
+    decrypted: Dict[str, Any] = {}
+    for provider, fields in raw.items():
+        if not isinstance(fields, dict):
+            decrypted[provider] = fields
+            continue
+        new_fields = dict(fields)
+        for k, v in fields.items():
+            if isinstance(v, str) and v.startswith(_ENC_PREFIX):
+                ciphertext = v[len(_ENC_PREFIX):]
+                try:
+                    result = await _db(lambda ct=ciphertext: supabase.rpc(
+                        "decrypt_credential", {"ciphertext": ct, "key": enc_key}
+                    ).execute())
+                    new_fields[k] = result.data
+                except Exception as exc:
+                    _logger.error(f"Failed to decrypt {provider}.{k}: {exc}")
+                    new_fields[k] = None
+        decrypted[provider] = new_fields
+    return decrypted
+
+
 # ── Tenant loaders (async, cached) ────────────────────────────────────────────
 
 async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConfig]:
@@ -269,6 +308,7 @@ async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConf
             "tenant_id", result.data["id"]
         ).maybe_single().execute())
         config = _build_tenant_from_rows(result.data, settings_result.data or {})
+        config.provider_credentials = await _decrypt_provider_credentials(config.provider_credentials)
         _cache_set(cache_key, config)
         _cache_set(str(result.data["id"]), config)
         return config
@@ -291,6 +331,7 @@ async def get_tenant_by_id(tenant_id: str) -> Optional[TenantConfig]:
             "tenant_id", tenant_id
         ).maybe_single().execute())
         config = _build_tenant_from_rows(result.data, settings_result.data or {})
+        config.provider_credentials = await _decrypt_provider_credentials(config.provider_credentials)
         _cache_set(tenant_id, config)
         return config
     except Exception:

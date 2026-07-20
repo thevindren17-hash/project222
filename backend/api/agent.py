@@ -8,21 +8,26 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from shared.tenant_config import get_tenant_by_id
 from shared.providers import load_llm_client
+from shared.security import require_internal_secret, RateLimiter
 from shared.tools import TOOL_DEFINITIONS, get_faq
 from shared.utils import logger
 
 router = APIRouter()
 
+# Only our own Next.js server may call this (it verifies the user's session
+# and tenant ownership first) — never callable directly from the internet.
+_test_rate_limiter = RateLimiter(max_calls=20, window_seconds=60)
+
 
 class TestMessage(BaseModel):
     tenant_id: str
-    message: str
-    history: list = []
+    message: str = Field(..., max_length=4000)
+    history: list = Field(default_factory=list, max_length=100)
 
 
 # ── Day-name tables ────────────────────────────────────────────────────────────
@@ -340,8 +345,11 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant) -> str:
 
 # ── Endpoint ───────────────────────────────────────────────────────────────────
 
-@router.post("/test")
+@router.post("/test", dependencies=[Depends(require_internal_secret)])
 async def test_agent(req: TestMessage):
+    if _test_rate_limiter.hit(req.tenant_id):
+        raise HTTPException(status_code=429, detail="Too many test messages — please slow down")
+
     tenant = await get_tenant_by_id(req.tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")

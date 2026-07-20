@@ -20,12 +20,13 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 import httpx
-from fastapi import APIRouter, Request, HTTPException, Response, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, HTTPException, Response, BackgroundTasks
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.tenant_config import get_tenant_by_wa_phone_id, get_tenant_by_id, get_supabase_client, _db
 from shared.providers import load_llm_client
+from shared.security import require_internal_secret
 from shared.tools import (
     book_appointment,
     check_slots,
@@ -136,16 +137,21 @@ async def whatsapp_webhook(tenant_id: str, request: Request, background_tasks: B
     """
     raw_body = await request.body()
 
-    # Verify Meta webhook signature (set WA_APP_SECRET in Railway env vars)
+    # Verify Meta webhook signature (set WA_APP_SECRET in Railway env vars).
+    # Fails CLOSED: a missing secret rejects the request rather than skipping
+    # verification, so a misconfigured deployment can't silently accept forged payloads.
     app_secret = os.getenv("WA_APP_SECRET", "")
-    if app_secret:
-        sig_header = request.headers.get("X-Hub-Signature-256", "")
-        expected   = "sha256=" + hmac.new(
-            app_secret.encode(), raw_body, hashlib.sha256
-        ).hexdigest()
-        if not sig_header or not hmac.compare_digest(sig_header, expected):
-            logger.warning(f"Rejected webhook with invalid HMAC for tenant {tenant_id}")
-            return {"status": "invalid_signature"}
+    if not app_secret:
+        logger.error(f"WA_APP_SECRET is not configured — rejecting webhook for tenant {tenant_id}")
+        return {"status": "misconfigured"}
+
+    sig_header = request.headers.get("X-Hub-Signature-256", "")
+    expected = "sha256=" + hmac.new(
+        app_secret.encode(), raw_body, hashlib.sha256
+    ).hexdigest()
+    if not sig_header or not hmac.compare_digest(sig_header, expected):
+        logger.warning(f"Rejected webhook with invalid HMAC for tenant {tenant_id}")
+        return {"status": "invalid_signature"}
 
     try:
         payload = json.loads(raw_body)
@@ -1092,7 +1098,7 @@ async def send_whatsapp_message(to: str, text: str, phone_number_id: str, access
 
 # ── Validate credentials endpoint ─────────────────────────────────────────────
 
-@router.post("/whatsapp/validate-credentials/{tenant_id}")
+@router.post("/whatsapp/validate-credentials/{tenant_id}", dependencies=[Depends(require_internal_secret)])
 async def validate_whatsapp_credentials(tenant_id: str, request: Request):
     try:
         body = await request.json()
@@ -1135,7 +1141,7 @@ async def validate_whatsapp_credentials(tenant_id: str, request: Request):
 
 # ── Test-send endpoint ─────────────────────────────────────────────────────────
 
-@router.post("/whatsapp/test-send/{tenant_id}")
+@router.post("/whatsapp/test-send/{tenant_id}", dependencies=[Depends(require_internal_secret)])
 async def test_whatsapp_send(tenant_id: str, request: Request):
     try:
         body = await request.json()

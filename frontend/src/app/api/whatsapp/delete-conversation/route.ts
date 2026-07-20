@@ -1,15 +1,23 @@
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+import { supabaseAdmin, verifyTenantAccess } from '@/lib/server/verify-tenant-access'
 
 export async function DELETE(req: Request) {
   try {
     const { threadId } = await req.json()
     if (!threadId) return NextResponse.json({ error: 'threadId required' }, { status: 400 })
+
+    // Look up which tenant this thread belongs to, then confirm the caller
+    // actually owns/staffs that tenant before deleting anything.
+    const { data: thread } = await supabaseAdmin
+      .from('whatsapp_threads')
+      .select('id, tenant_id')
+      .eq('id', threadId)
+      .maybeSingle()
+    if (!thread) return NextResponse.json({ error: 'Thread not found' }, { status: 404 })
+
+    if (!(await verifyTenantAccess(thread.tenant_id))) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
+    }
 
     // Delete all messages first (FK constraint)
     const { error: msgErr } = await supabaseAdmin

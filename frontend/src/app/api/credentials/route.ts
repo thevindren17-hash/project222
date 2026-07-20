@@ -77,12 +77,29 @@ export async function POST(req: NextRequest) {
   }
   const field = FIELD[type] ?? FIELD.agent
 
+  // Encrypt at rest (pgcrypto, see migrations/005_encrypt_credentials.sql).
+  // If no encryption key is configured yet, fall back to storing plaintext
+  // rather than blocking key saves — this is only a temporary state until
+  // CREDENTIAL_ENCRYPTION_KEY is set in the environment.
+  let storedValue: string = apiKey
+  const encKey = process.env.CREDENTIAL_ENCRYPTION_KEY || ''
+  if (encKey) {
+    const { data: ciphertext, error: encErr } = await supabase.rpc('encrypt_credential', {
+      plaintext: apiKey,
+      key: encKey,
+    })
+    if (encErr || !ciphertext) {
+      return NextResponse.json({ error: 'Failed to encrypt credential' }, { status: 500 })
+    }
+    storedValue = `enc:v1:${ciphertext}`
+  }
+
   // Read current, merge, write back
   const { data: existing } = await supabase
     .from('tenant_settings').select(field).eq('tenant_id', tenantId).maybeSingle()
   const raw = existing?.[field as keyof typeof existing]
   const current = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
-  const updated = { ...current, [provider]: { api_key: apiKey } }
+  const updated = { ...current, [provider]: { api_key: storedValue } }
 
   const { error } = await supabase.from('tenant_settings').upsert(
     { tenant_id: tenantId, [field]: updated },

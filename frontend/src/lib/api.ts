@@ -24,18 +24,14 @@ export async function fetchGoogleCalendarEvents(tenantId: string): Promise<Googl
   }
 }
 
-export async function testWhatsAppConnection(tenantId: string) {
-  const res = await fetch(`${BACKEND_URL}/api/whatsapp/test/${tenantId}`, { method: 'POST' })
-  if (!res.ok) throw new Error('Test failed')
-  return res.json()
-}
-
 export async function initiateGoogleCalendarOAuth(tenantId: string) {
   window.location.href = `/api/integrations/google/auth?tenant_id=${tenantId}&service=calendar`
 }
 
 export async function disconnectGoogleCalendar(tenantId: string) {
-  const res = await fetch(`${BACKEND_URL}/api/integrations/google/disconnect`, {
+  // Routed through our own Next.js server (not Railway directly) so the
+  // caller's session/tenant ownership gets verified before disconnecting.
+  const res = await fetch(`/api/integrations/google/disconnect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tenant_id: tenantId, service: 'calendar' }),

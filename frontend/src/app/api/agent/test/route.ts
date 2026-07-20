@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { verifyTenantAccess, internalSecretHeader } from '@/lib/server/verify-tenant-access'
 
 const BACKEND = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || ''
 
@@ -12,9 +13,14 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json()
+    const tenantId = body?.tenant_id
+    if (!tenantId || !(await verifyTenantAccess(tenantId))) {
+      return NextResponse.json({ detail: 'Unauthorized' }, { status: 403 })
+    }
+
     const upstream = await fetch(`${BACKEND}/api/agent/test`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...internalSecretHeader() },
       body: JSON.stringify(body),
     })
 

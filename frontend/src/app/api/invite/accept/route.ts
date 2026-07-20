@@ -1,16 +1,27 @@
-import { createClient } from '@supabase/supabase-js'
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+import { supabaseAdmin } from '@/lib/server/verify-tenant-access'
 
 export async function POST(req: Request) {
-  const { token, userId } = await req.json()
+  const { token } = await req.json()
 
-  if (!token || !userId) {
-    return NextResponse.json({ error: 'Missing token or userId' }, { status: 400 })
+  if (!token) {
+    return NextResponse.json({ error: 'Missing token' }, { status: 400 })
+  }
+
+  // Derive the user from the session cookie — never trust a client-supplied
+  // userId, or a leaked/guessed invite link could add an attacker as staff
+  // on someone else's tenant.
+  const cookieStore = await cookies()
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { getAll: () => cookieStore.getAll(), setAll: () => {} } }
+  )
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) {
+    return NextResponse.json({ error: 'You must be logged in to accept an invite' }, { status: 401 })
   }
 
   const { data: invite, error: fetchError } = await supabaseAdmin
@@ -32,7 +43,7 @@ export async function POST(req: Request) {
   // Insert into staff_profiles
   const { error: insertError } = await supabaseAdmin
     .from('staff_profiles')
-    .upsert({ user_id: userId, tenant_id: invite.tenant_id, role: invite.role })
+    .upsert({ user_id: user.id, tenant_id: invite.tenant_id, role: invite.role })
 
   if (insertError) {
     return NextResponse.json({ error: insertError.message }, { status: 500 })

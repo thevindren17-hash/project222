@@ -14,6 +14,24 @@ const DEMO_PHRASE: Record<string, string> = {
   zh: '你好，我的声音是这样的。',
 }
 
+// Best-effort per-tenant limiter (in-memory — resets on cold start / across
+// instances, but still blocks the obvious "click preview in a loop" abuse case).
+const _previewCalls = new Map<string, number[]>()
+const _PREVIEW_WINDOW_MS = 60_000
+const _PREVIEW_MAX = 10
+
+function isRateLimited(tenantId: string): boolean {
+  const now = Date.now()
+  const calls = (_previewCalls.get(tenantId) ?? []).filter((t) => now - t < _PREVIEW_WINDOW_MS)
+  if (calls.length >= _PREVIEW_MAX) {
+    _previewCalls.set(tenantId, calls)
+    return true
+  }
+  calls.push(now)
+  _previewCalls.set(tenantId, calls)
+  return false
+}
+
 async function verifyTenantAccess(tenantId: string): Promise<boolean> {
   const cookieStore = await cookies()
   const supabase = createServerClient(
@@ -53,6 +71,10 @@ export async function POST(req: NextRequest) {
 
     if (!await verifyTenantAccess(tenant_id)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
+    }
+
+    if (isRateLimited(tenant_id)) {
+      return NextResponse.json({ error: 'Too many previews — please wait a moment' }, { status: 429 })
     }
 
     const { data: settings } = await supabaseAdmin
