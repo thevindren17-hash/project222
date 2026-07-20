@@ -12,11 +12,8 @@ import { toast } from 'sonner'
 import { format, parseISO } from 'date-fns'
 import { Bell, Star, Loader2 } from 'lucide-react'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
+import { BOOKING_STATUS } from '@/lib/booking-status'
 import type { Booking } from '@/lib/types'
-
-const statusColors: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
-  pending: 'secondary', confirmed: 'default', cancelled: 'destructive', completed: 'outline',
-}
 
 export default function AppointmentsPage() {
   const [statusFilter, setStatusFilter] = useState('all')
@@ -137,7 +134,11 @@ export default function AppointmentsPage() {
                   <TableCell>{b.service_type}</TableCell>
                   <TableCell>{format(parseISO(b.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</TableCell>
                   <TableCell className="capitalize">{b.source}</TableCell>
-                  <TableCell><Badge variant={statusColors[b.status]}>{b.status}</Badge></TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={BOOKING_STATUS[b.status as keyof typeof BOOKING_STATUS]?.badgeClass}>
+                      {BOOKING_STATUS[b.status as keyof typeof BOOKING_STATUS]?.label || b.status}
+                    </Badge>
+                  </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     {!isCancelled && !isPast && (
                       <Button

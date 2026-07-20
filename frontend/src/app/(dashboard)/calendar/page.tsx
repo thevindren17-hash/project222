@@ -13,15 +13,11 @@ import { cn } from '@/lib/utils'
 import AddBookingModal from '@/components/calendar/add-booking-modal'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { initiateGoogleCalendarOAuth, fetchGoogleCalendarEvents } from '@/lib/api'
+import { BOOKING_STATUS } from '@/lib/booking-status'
 import type { Booking } from '@/lib/types'
 import { Plus, Link2, CheckCircle2 } from 'lucide-react'
 
-const STATUS = {
-  confirmed: { color: '#22c55e', label: 'Confirmed' },
-  pending:   { color: '#f59e0b', label: 'Pending'   },
-  cancelled: { color: '#ef4444', label: 'Cancelled' },
-  completed: { color: '#3b82f6', label: 'Completed' },
-} as const
+const STATUS = BOOKING_STATUS
 
 export default function CalendarPage() {
   const calRef = useRef<FullCalendar>(null)
@@ -77,14 +73,15 @@ export default function CalendarPage() {
     const endBase = new Date(startLocal + 'Z')
     endBase.setUTCMinutes(endBase.getUTCMinutes() + 30)
     const endLocal = endBase.toISOString().slice(0, 19)
+    const style = STATUS[b.status as keyof typeof STATUS] ?? STATUS.completed
     return ({
     id: b.id,
     title: b.contact?.name ? `${b.service_type} · ${b.contact.name}` : b.service_type,
     start: startLocal,
     end: endLocal,
-    backgroundColor: STATUS[b.status as keyof typeof STATUS]?.color ?? STATUS.completed.color,
-    borderColor: 'transparent',
-    textColor: '#fff',
+    backgroundColor: style.bg,
+    borderColor: style.dot,
+    textColor: style.text,
     extendedProps: { booking: b },
   })}) ?? []
 
@@ -139,12 +136,12 @@ export default function CalendarPage() {
               My Calendars
             </p>
             <div className="space-y-0.5">
-              {Object.entries(STATUS).map(([key, { color, label }]) => (
+              {Object.entries(STATUS).map(([key, { dot, label }]) => (
                 <label
                   key={key}
                   className="flex items-center gap-2.5 px-1 py-1 rounded-md hover:bg-muted cursor-pointer transition-colors"
                 >
-                  <div className="h-3 w-3 rounded-sm shrink-0" style={{ backgroundColor: color }} />
+                  <div className="h-3 w-3 rounded-sm shrink-0" style={{ backgroundColor: dot }} />
                   <span className="text-sm">{label}</span>
                 </label>
               ))}

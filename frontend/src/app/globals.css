@@ -279,20 +279,22 @@
   font-weight: 600;
 }
 
-/* ── Events ── */
+/* ── Events — soft pastel blocks with a colored accent border ── */
 .fc-event {
-  border: none !important;
-  border-radius: 4px !important;
+  border-width: 0 0 0 3px !important;
+  border-style: solid !important;
+  border-radius: 6px !important;
   font-size: 0.73rem !important;
   font-weight: 500 !important;
   cursor: pointer !important;
-  padding: 2px 5px !important;
-  transition: filter 0.1s, opacity 0.1s !important;
+  padding: 3px 7px !important;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04) !important;
+  transition: filter 0.1s, opacity 0.1s, box-shadow 0.1s !important;
 }
-.fc-event:hover { filter: brightness(1.12) !important; }
-.fc-timegrid-event { padding: 3px 6px !important; }
-.fc-event .fc-event-title { overflow: hidden; text-overflow: ellipsis; }
-.fc-event .fc-event-time  { font-size: 0.67rem !important; font-weight: 600; opacity: 0.9; }
+.fc-event:hover { filter: brightness(0.97) !important; box-shadow: 0 2px 6px rgba(0,0,0,0.08) !important; }
+.fc-timegrid-event { padding: 4px 8px !important; }
+.fc-event .fc-event-title { overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.fc-event .fc-event-time  { font-size: 0.67rem !important; font-weight: 600; opacity: 0.75; }
 
 /* ── Now indicator — Google red ── */
 .fc .fc-timegrid-now-indicator-line  { border-color: #ea4335 !important; border-width: 2px !important; }

@@ -8,16 +8,13 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import { format, parseISO } from 'date-fns'
+import { BOOKING_STATUS } from '@/lib/booking-status'
 import type { Booking } from '@/lib/types'
 
 interface Props {
   booking: Booking
   open: boolean
   onClose: () => void
-}
-
-const statusColors: Record<string, string> = {
-  pending: 'secondary', confirmed: 'default', cancelled: 'destructive', completed: 'outline',
 }
 
 export default function BookingDetailModal({ booking, open, onClose }: Props) {
@@ -58,7 +55,9 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
             </div>
             <div>
               <p className="text-muted-foreground">Status</p>
-              <Badge variant={statusColors[booking.status] as any}>{booking.status}</Badge>
+              <Badge variant="outline" className={BOOKING_STATUS[booking.status as keyof typeof BOOKING_STATUS]?.badgeClass}>
+                {BOOKING_STATUS[booking.status as keyof typeof BOOKING_STATUS]?.label || booking.status}
+              </Badge>
             </div>
             <div>
               <p className="text-muted-foreground">Date & Time</p>
