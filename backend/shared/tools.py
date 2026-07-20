@@ -140,7 +140,7 @@ async def book_appointment(
                     {"calendar_event_id": calendar_event_id}
                 ).eq("id", booking_id).execute())
         except Exception as e:
-            print(f"Calendar sync failed (non-fatal): {e}")
+            logger.warning(f"Calendar sync failed (non-fatal): {e}")
 
     gsheets = await get_google_sheets(tenant_id)
     if gsheets:
@@ -154,7 +154,7 @@ async def book_appointment(
                 notes=f"Booked for {scheduled_at.strftime('%Y-%m-%d %H:%M')}",
             )
         except Exception as e:
-            print(f"Sheets sync failed (non-fatal): {e}")
+            logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
     return {
         "success": True,
@@ -385,7 +385,7 @@ async def get_or_create_contact(
                 notes="First contact",
             )
         except Exception as e:
-            print(f"Failed to log new lead to Sheets (non-fatal): {e}")
+            logger.warning(f"Failed to log new lead to Sheets (non-fatal): {e}")
 
     return {"success": True, "contact": contact, "is_new": True}
 

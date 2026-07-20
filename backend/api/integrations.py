@@ -5,12 +5,15 @@ Google Calendar and Sheets OAuth callbacks + disconnect endpoints.
 
 import os
 import json
+import logging
 
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from shared.security import require_internal_secret
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -55,7 +58,7 @@ async def google_oauth_callback(request: Request):
         access_token, refresh_token = await _exchange_google_code(code)
     except Exception as e:
         err_str = str(e)
-        print(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {err_str}")
+        logger.error(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {err_str}")
         # Surface the actual Google error in the redirect so we can debug
         import urllib.parse
         url = f"{calendar_page}?error={urllib.parse.quote(err_str[:120])}" if calendar_page else "/?error=token_exchange_failed"
@@ -75,7 +78,7 @@ async def google_oauth_callback(request: Request):
             calendar_id="primary" if service == "calendar" else None,
         )
     except Exception as e:
-        print(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
+        logger.error(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
         url = f"{calendar_page}?error=storage_failed" if calendar_page else "/?error=storage_failed"
         return RedirectResponse(url=url)
 
@@ -104,7 +107,7 @@ async def google_exchange(req: ExchangeRequest):
     try:
         access_token, refresh_token = await _exchange_google_code(req.code)
     except Exception as e:
-        print(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {e}")
+        logger.error(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {e}")
         raise HTTPException(status_code=400, detail=f"token_exchange_failed: {str(e)}")
 
     if not access_token:
@@ -120,7 +123,7 @@ async def google_exchange(req: ExchangeRequest):
             calendar_id="primary" if service == "calendar" else None,
         )
     except Exception as e:
-        print(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
+        logger.error(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
         raise HTTPException(status_code=500, detail="storage_failed")
 
     return {"success": True, "service": service, "tenant_id": tenant_id}

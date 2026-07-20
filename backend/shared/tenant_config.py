@@ -364,7 +364,13 @@ async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConf
         _cache_set(cache_key, config)
         _cache_set(str(result.data["id"]), config)
         return config
-    except Exception:
+    except Exception as e:
+        # Logged, not just swallowed — otherwise this looks identical to
+        # "tenant doesn't exist" everywhere downstream (e.g. whatsapp.py's
+        # generic "Unknown or inactive tenant" warning) and the real cause
+        # (bad JSON in tenant_settings, a credential-decrypt failure, etc.)
+        # is lost forever.
+        _logger.error(f"get_tenant_by_wa_phone_id failed for phone_number_id={phone_number_id}: {e}", exc_info=True)
         return None
 
 
@@ -386,5 +392,6 @@ async def get_tenant_by_id(tenant_id: str) -> Optional[TenantConfig]:
         config.provider_credentials = await _decrypt_provider_credentials(config.provider_credentials)
         _cache_set(tenant_id, config)
         return config
-    except Exception:
+    except Exception as e:
+        _logger.error(f"get_tenant_by_id failed for tenant_id={tenant_id}: {e}", exc_info=True)
         return None

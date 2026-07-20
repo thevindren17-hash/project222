@@ -5,9 +5,12 @@ Clinics connect their own Google account via OAuth to sync appointments and trac
 
 import os
 import json
+import logging
 import httpx
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 GCAL_API = "https://www.googleapis.com/calendar/v3"
 
@@ -148,7 +151,7 @@ class GoogleCalendarIntegration:
                 )
             return r.json().get("items", []) if r.status_code == 200 else []
         except Exception as e:
-            print(f"Error listing calendar events: {e}")
+            logger.error(f"Error listing calendar events: {e}")
             return []
 
     async def find_free_slots(
@@ -188,7 +191,7 @@ class GoogleCalendarIntegration:
                     for b in cal_data.get("busy", [])
                 ]
         except Exception as e:
-            print(f"Error fetching freebusy: {e}")
+            logger.error(f"Error fetching freebusy: {e}")
             busy_blocks = []
 
         # Generate slots within business hours, skipping busy blocks
@@ -294,7 +297,7 @@ class GoogleSheetsIntegration:
                 }
             return None
         except Exception as e:
-            print(f"Error getting lead: {e}")
+            logger.error(f"Error getting lead: {e}")
             return None
 
     async def _append_row(self, row_data: List[str]):

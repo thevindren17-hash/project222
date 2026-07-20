@@ -77,101 +77,107 @@ async def send_feedback_requests():
 
     for settings in (settings_res.data or []):
         tenant_id = settings["tenant_id"]
+        try:
+            tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
+                "wa_phone_number_id, wa_access_token"
+            ).eq("id", tenant_id).eq("is_active", True).maybe_single().execute())
 
-        tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
-            "wa_phone_number_id, wa_access_token"
-        ).eq("id", tenant_id).eq("is_active", True).maybe_single().execute())
-
-        if not tenant_res.data:
-            continue
-        phone_number_id = tenant_res.data.get("wa_phone_number_id")
-        access_token    = tenant_res.data.get("wa_access_token")
-        if not phone_number_id or not access_token:
-            continue
-
-        # Bookings in the 2–6 h window (not cancelled)
-        bookings_res = await _db(lambda: supabase.table("bookings").select(
-            "id, contact_id, service_type, scheduled_at"
-        ).eq("tenant_id", tenant_id).not_.in_(
-            "status", ["cancelled"]
-        ).gte("scheduled_at", window_start).lte("scheduled_at", window_end).execute())
-
-        if not bookings_res.data:
-            continue
-
-        # Exclude bookings that already have a feedback campaign
-        booking_ids = [b["id"] for b in bookings_res.data]
-        existing_res = await _db(lambda: supabase.table("campaigns").select(
-            "booking_id"
-        ).eq("tenant_id", tenant_id).eq("type", "feedback").in_(
-            "booking_id", booking_ids
-        ).execute())
-        already_sent = {c["booking_id"] for c in (existing_res.data or [])}
-
-        for booking in bookings_res.data:
-            if booking["id"] in already_sent:
+            if not tenant_res.data:
+                continue
+            phone_number_id = tenant_res.data.get("wa_phone_number_id")
+            access_token    = tenant_res.data.get("wa_access_token")
+            if not phone_number_id or not access_token:
                 continue
 
-            contact_id = booking.get("contact_id")
-            if not contact_id:
+            # Bookings in the 2–6 h window (not cancelled)
+            bookings_res = await _db(lambda: supabase.table("bookings").select(
+                "id, contact_id, service_type, scheduled_at"
+            ).eq("tenant_id", tenant_id).not_.in_(
+                "status", ["cancelled"]
+            ).gte("scheduled_at", window_start).lte("scheduled_at", window_end).execute())
+
+            if not bookings_res.data:
                 continue
 
-            _cid = contact_id
-            contact_res = await _db_optional(lambda: supabase.table("contacts").select(
-                "name, phone"
-            ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
-            if not contact_res.data:
-                continue
+            # Exclude bookings that already have a feedback campaign
+            booking_ids = [b["id"] for b in bookings_res.data]
+            existing_res = await _db(lambda: supabase.table("campaigns").select(
+                "booking_id"
+            ).eq("tenant_id", tenant_id).eq("type", "feedback").in_(
+                "booking_id", booking_ids
+            ).execute())
+            already_sent = {c["booking_id"] for c in (existing_res.data or [])}
 
-            contact = contact_res.data
-            phone   = contact.get("phone", "")
-            if not phone:
-                continue
+            for booking in bookings_res.data:
+                if booking["id"] in already_sent:
+                    continue
 
-            name    = contact.get("name") or "there"
-            service = booking.get("service_type", "appointment")
+                contact_id = booking.get("contact_id")
+                if not contact_id:
+                    continue
 
-            tmpl    = settings.get("feedback_message_template") or DEFAULT_FEEDBACK_MSG
-            message = tmpl.replace("{name}", name).replace("{service}", service)
+                _cid = contact_id
+                contact_res = await _db_optional(lambda: supabase.table("contacts").select(
+                    "name, phone"
+                ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
+                if not contact_res.data:
+                    continue
 
-            try:
-                await _send_wa(phone, message, phone_number_id, access_token)
+                contact = contact_res.data
+                phone   = contact.get("phone", "")
+                if not phone:
+                    continue
 
-                # Find existing thread (for saving message history)
-                thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(
-                    "tenant_id", tenant_id
-                ).eq("contact_number", phone).order("created_at", desc=True).limit(1).execute())
-                thread_id = thread_res.data[0]["id"] if thread_res.data else None
+                name    = contact.get("name") or "there"
+                service = booking.get("service_type", "appointment")
 
-                _bid = booking["id"]
-                await _db(lambda: supabase.table("campaigns").insert({
-                    "tenant_id":  tenant_id,
-                    "contact_id": contact_id,
-                    "booking_id": _bid,
-                    "thread_id":  thread_id,
-                    "type":       "feedback",
-                    "status":     "sent",
-                    "sent_at":    datetime.now().isoformat(),
-                }).execute())
+                tmpl    = settings.get("feedback_message_template") or DEFAULT_FEEDBACK_MSG
+                message = tmpl.replace("{name}", name).replace("{service}", service)
 
-                if thread_id:
-                    _tid = thread_id
-                    await _db(lambda: supabase.table("messages").insert({
-                        "thread_id":  _tid,
+                try:
+                    await _send_wa(phone, message, phone_number_id, access_token)
+
+                    # Find existing thread (for saving message history)
+                    thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(
+                        "tenant_id", tenant_id
+                    ).eq("contact_number", phone).order("created_at", desc=True).limit(1).execute())
+                    thread_id = thread_res.data[0]["id"] if thread_res.data else None
+
+                    _bid = booking["id"]
+                    await _db(lambda: supabase.table("campaigns").insert({
                         "tenant_id":  tenant_id,
                         "contact_id": contact_id,
-                        "role":       "assistant",
-                        "body":       message,
-                        "handled_by": "ai",
+                        "booking_id": _bid,
+                        "thread_id":  thread_id,
+                        "type":       "feedback",
+                        "status":     "sent",
+                        "sent_at":    datetime.now().isoformat(),
                     }).execute())
-                    await _db(lambda: supabase.table("whatsapp_threads").update({
-                        "last_message_at": datetime.now().isoformat()
-                    }).eq("id", _tid).execute())
 
-                logger.info(f"Feedback sent | tenant={tenant_id} | booking={booking['id']}")
+                    if thread_id:
+                        _tid = thread_id
+                        await _db(lambda: supabase.table("messages").insert({
+                            "thread_id":  _tid,
+                            "tenant_id":  tenant_id,
+                            "contact_id": contact_id,
+                            "role":       "assistant",
+                            "body":       message,
+                            "handled_by": "ai",
+                        }).execute())
+                        await _db(lambda: supabase.table("whatsapp_threads").update({
+                            "last_message_at": datetime.now().isoformat()
+                        }).eq("id", _tid).execute())
 
-            except Exception as e:
-                logger.error(f"Feedback send failed | tenant={tenant_id} | booking={booking['id']} | {e}")
+                    logger.info(f"Feedback sent | tenant={tenant_id} | booking={booking['id']}")
+
+                except Exception as e:
+                    logger.error(f"Feedback send failed | tenant={tenant_id} | booking={booking['id']} | {e}")
+
+        except Exception as e:
+            # One tenant's bad data/DB hiccup must never abort the run for
+            # every other clinic — log it and move on to the next tenant.
+            logger.error(f"Feedback requests: tenant {tenant_id} failed, skipping | {e}", exc_info=True)
+            continue
 
 
 # ── Feedback response handler (called from whatsapp.py) ──────────────────────
@@ -354,112 +360,117 @@ async def send_recall_messages():
 
     for settings in (settings_res.data or []):
         tenant_id = settings["tenant_id"]
-        months = settings.get("recall_interval_months") or 6
-        cutoff = (now - timedelta(days=months * 30)).isoformat()
+        try:
+            months = settings.get("recall_interval_months") or 6
+            cutoff = (now - timedelta(days=months * 30)).isoformat()
 
-        _tid = tenant_id
-        tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
-            "name, wa_phone_number_id, wa_access_token"
-        ).eq("id", _tid).eq("is_active", True).maybe_single().execute())
-        if not tenant_res.data:
-            continue
-
-        clinic_name    = tenant_res.data.get("name", "our clinic")
-        phone_number_id = tenant_res.data.get("wa_phone_number_id")
-        access_token    = tenant_res.data.get("wa_access_token")
-        if not phone_number_id or not access_token:
-            continue
-
-        # Contacts with ANY booking inside the recall window → still active, skip
-        _tid2 = tenant_id
-        _cut  = cutoff
-        recent_res = await _db(lambda: supabase.table("bookings").select(
-            "contact_id"
-        ).eq("tenant_id", _tid2).not_.in_(
-            "status", ["cancelled"]
-        ).gte("scheduled_at", _cut).execute())
-        recent_ids = {b["contact_id"] for b in (recent_res.data or []) if b.get("contact_id")}
-
-        # All contacts who ever booked with this tenant
-        _tid3 = tenant_id
-        all_res = await _db(lambda: supabase.table("bookings").select(
-            "contact_id"
-        ).eq("tenant_id", _tid3).not_.in_("status", ["cancelled"]).execute())
-        all_ids = {b["contact_id"] for b in (all_res.data or []) if b.get("contact_id")}
-
-        dormant_ids = all_ids - recent_ids
-        if not dormant_ids:
-            continue
-
-        # Contacts already sent a recall in the window (don't double-up)
-        _tid4 = tenant_id
-        _cut2 = cutoff
-        existing_res = await _db(lambda: supabase.table("campaigns").select(
-            "contact_id"
-        ).eq("tenant_id", _tid4).eq("type", "recall").gte("sent_at", _cut2).execute())
-        already_recalled = {c["contact_id"] for c in (existing_res.data or [])}
-
-        to_contact = list(dormant_ids - already_recalled)[:50]
-        if not to_contact:
-            continue
-
-        tmpl = settings.get("recall_message_template") or DEFAULT_RECALL_MSG
-
-        for contact_id in to_contact:
-            _cid = contact_id
-            contact_res = await _db_optional(lambda: supabase.table("contacts").select(
-                "name, phone"
-            ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
-            if not contact_res.data:
+            _tid = tenant_id
+            tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
+                "name, wa_phone_number_id, wa_access_token"
+            ).eq("id", _tid).eq("is_active", True).maybe_single().execute())
+            if not tenant_res.data:
                 continue
 
-            phone = contact_res.data.get("phone", "")
-            if not phone:
+            clinic_name    = tenant_res.data.get("name", "our clinic")
+            phone_number_id = tenant_res.data.get("wa_phone_number_id")
+            access_token    = tenant_res.data.get("wa_access_token")
+            if not phone_number_id or not access_token:
                 continue
 
-            name    = contact_res.data.get("name") or "there"
-            message = tmpl.replace("{name}", name).replace("{clinic}", clinic_name)
+            # Contacts with ANY booking inside the recall window → still active, skip
+            _tid2 = tenant_id
+            _cut  = cutoff
+            recent_res = await _db(lambda: supabase.table("bookings").select(
+                "contact_id"
+            ).eq("tenant_id", _tid2).not_.in_(
+                "status", ["cancelled"]
+            ).gte("scheduled_at", _cut).execute())
+            recent_ids = {b["contact_id"] for b in (recent_res.data or []) if b.get("contact_id")}
 
-            try:
-                await _send_wa(phone, message, phone_number_id, access_token)
+            # All contacts who ever booked with this tenant
+            _tid3 = tenant_id
+            all_res = await _db(lambda: supabase.table("bookings").select(
+                "contact_id"
+            ).eq("tenant_id", _tid3).not_.in_("status", ["cancelled"]).execute())
+            all_ids = {b["contact_id"] for b in (all_res.data or []) if b.get("contact_id")}
 
-                _p = phone
-                thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(
-                    "tenant_id", tenant_id
-                ).eq("contact_number", _p).order("created_at", desc=True).limit(1).execute())
-                thread_id = thread_res.data[0]["id"] if thread_res.data else None
+            dormant_ids = all_ids - recent_ids
+            if not dormant_ids:
+                continue
 
-                _cid2 = contact_id
-                _thid = thread_id
-                await _db(lambda: supabase.table("campaigns").insert({
-                    "tenant_id":  tenant_id,
-                    "contact_id": _cid2,
-                    "thread_id":  _thid,
-                    "type":       "recall",
-                    "status":     "sent",
-                    "sent_at":    datetime.now().isoformat(),
-                }).execute())
+            # Contacts already sent a recall in the window (don't double-up)
+            _tid4 = tenant_id
+            _cut2 = cutoff
+            existing_res = await _db(lambda: supabase.table("campaigns").select(
+                "contact_id"
+            ).eq("tenant_id", _tid4).eq("type", "recall").gte("sent_at", _cut2).execute())
+            already_recalled = {c["contact_id"] for c in (existing_res.data or [])}
 
-                if thread_id:
-                    _thid2 = thread_id
-                    _cid3  = contact_id
-                    await _db(lambda: supabase.table("messages").insert({
-                        "thread_id":  _thid2,
+            to_contact = list(dormant_ids - already_recalled)[:50]
+            if not to_contact:
+                continue
+
+            tmpl = settings.get("recall_message_template") or DEFAULT_RECALL_MSG
+
+            for contact_id in to_contact:
+                _cid = contact_id
+                contact_res = await _db_optional(lambda: supabase.table("contacts").select(
+                    "name, phone"
+                ).eq("id", _cid).eq("opted_out", False).maybe_single().execute())
+                if not contact_res.data:
+                    continue
+
+                phone = contact_res.data.get("phone", "")
+                if not phone:
+                    continue
+
+                name    = contact_res.data.get("name") or "there"
+                message = tmpl.replace("{name}", name).replace("{clinic}", clinic_name)
+
+                try:
+                    await _send_wa(phone, message, phone_number_id, access_token)
+
+                    _p = phone
+                    thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(
+                        "tenant_id", tenant_id
+                    ).eq("contact_number", _p).order("created_at", desc=True).limit(1).execute())
+                    thread_id = thread_res.data[0]["id"] if thread_res.data else None
+
+                    _cid2 = contact_id
+                    _thid = thread_id
+                    await _db(lambda: supabase.table("campaigns").insert({
                         "tenant_id":  tenant_id,
-                        "contact_id": _cid3,
-                        "role":       "assistant",
-                        "body":       message,
-                        "handled_by": "ai",
+                        "contact_id": _cid2,
+                        "thread_id":  _thid,
+                        "type":       "recall",
+                        "status":     "sent",
+                        "sent_at":    datetime.now().isoformat(),
                     }).execute())
-                    _thid3 = thread_id
-                    await _db(lambda: supabase.table("whatsapp_threads").update({
-                        "last_message_at": datetime.now().isoformat()
-                    }).eq("id", _thid3).execute())
 
-                logger.info(f"Recall sent | tenant={tenant_id} | contact={contact_id}")
+                    if thread_id:
+                        _thid2 = thread_id
+                        _cid3  = contact_id
+                        await _db(lambda: supabase.table("messages").insert({
+                            "thread_id":  _thid2,
+                            "tenant_id":  tenant_id,
+                            "contact_id": _cid3,
+                            "role":       "assistant",
+                            "body":       message,
+                            "handled_by": "ai",
+                        }).execute())
+                        _thid3 = thread_id
+                        await _db(lambda: supabase.table("whatsapp_threads").update({
+                            "last_message_at": datetime.now().isoformat()
+                        }).eq("id", _thid3).execute())
 
-            except Exception as e:
-                logger.error(f"Recall send failed | tenant={tenant_id} | contact={contact_id} | {e}")
+                    logger.info(f"Recall sent | tenant={tenant_id} | contact={contact_id}")
+
+                except Exception as e:
+                    logger.error(f"Recall send failed | tenant={tenant_id} | contact={contact_id} | {e}")
+
+        except Exception as e:
+            logger.error(f"Recall messages: tenant {tenant_id} failed, skipping | {e}", exc_info=True)
+            continue
 
 
 # ── Campaign cleanup ──────────────────────────────────────────────────────────
