@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 
 # ── Default message templates ─────────────────────────────────────────────────
 
+# Mirrors the actual approved Meta template's wording — used only for the
+# readable thread-history log, since the real send uses the fixed template.
 DEFAULT_FEEDBACK_MSG = (
-    "Hi {name}! 😊 Thank you for visiting us today for your {service}. "
-    "How was your experience? Please reply with a number:\n"
-    "1 ⭐ – Poor\n2 ⭐⭐ – Fair\n3 ⭐⭐⭐ – Good\n4 ⭐⭐⭐⭐ – Great\n5 ⭐⭐⭐⭐⭐ – Excellent"
+    "Hi {name},\n\n"
+    "Thank you for visiting us for your {service}!\n\n"
+    "We'd love to hear your feedback — please reply with a number from 1 to 5, "
+    "where 5 means excellent.\n\n"
+    "Reply STOP to opt out"
 )
 
 DEFAULT_REVIEW_MSG = (
@@ -138,7 +142,7 @@ async def send_feedback_requests():
                 tmpl    = DEFAULT_FEEDBACK_MSG
                 message = tmpl.replace("{name}", name).replace("{service}", service)
                 template_name = settings.get("feedback_template_name") or "feedback_request"
-                language_code = settings.get("whatsapp_template_language") or "en_US"
+                language_code = settings.get("whatsapp_template_language") or "en"
 
                 try:
                     await send_whatsapp_template(

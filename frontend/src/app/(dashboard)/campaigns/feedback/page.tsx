@@ -13,11 +13,12 @@ import { toast } from 'sonner'
 import { Loader2, Star, FlaskConical, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react'
 import CsvCampaignUploader from '@/components/campaigns/csv-campaign-uploader'
 
+// Mirrors the actual approved Meta template's wording exactly.
 const FEEDBACK_REQUEST_PREVIEW =
-  'Hi {name}! 😊 Thank you for visiting us for your {service}. How was your experience? Please reply with a number 1–5.'
+  "Hi {name},\n\nThank you for visiting us for your {service}!\n\nWe'd love to hear your feedback — please reply with a number from 1 to 5, where 5 means excellent.\n\nReply STOP to opt out"
 
 function fillPreview(tmpl: string) {
-  return tmpl.replace('{name}', 'Sarah').replace('{service}', 'Dental Checkup')
+  return tmpl.replace('{name}', 'Sarah').replace('{service}', 'Dental Scaling')
 }
 
 export default function FeedbackAndReviewSystemPage() {
@@ -148,7 +149,7 @@ export default function FeedbackAndReviewSystemPage() {
 
               <div className="space-y-1.5">
                 <Label className="text-xs">Approved template preview</Label>
-                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed">
+                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
                   {fillPreview(FEEDBACK_REQUEST_PREVIEW)}
                 </div>
               </div>

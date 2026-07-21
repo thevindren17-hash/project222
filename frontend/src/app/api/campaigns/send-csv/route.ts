@@ -135,7 +135,7 @@ async function sendOneCampaignMessage(params: {
           type: 'template',
           template: {
             name: templateName,
-            language: { code: templateLanguage || 'en_US' },
+            language: { code: templateLanguage || 'en' },
             components: [
               {
                 type: 'body',
@@ -274,7 +274,7 @@ export async function POST(req: NextRequest) {
       feedback: tenantSettings?.feedback_template_name || 'feedback_request',
       recall: tenantSettings?.recall_template_name || null,
     }
-    const templateLanguage = tenantSettings?.whatsapp_template_language || 'en_US'
+    const templateLanguage = tenantSettings?.whatsapp_template_language || 'en'
 
     const results = { sent: 0, skipped: 0, failed: 0 }
     const errors: string[] = []

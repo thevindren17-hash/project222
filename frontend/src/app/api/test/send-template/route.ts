@@ -32,16 +32,14 @@ async function verifyTenantAccess(tenantId: string): Promise<boolean> {
   return !!staff
 }
 
+// Mirrors the actual approved Meta template wording — this is what's
+// really sent for reminder/feedback, so the display text should match it
+// exactly rather than a made-up "TEST" message.
 const DEFAULT_REMINDER =
-  'Hi {name}, this is a TEST reminder that your {service} appointment is tomorrow, ' +
-  '{date} at {time}. (This is a test message from your AI Receptionist dashboard.)'
+  'Hi {name},\n\nThis is a reminder that you have a {service} appointment on {date} at {time}.\n\nReply CANCEL if you need to reschedule.'
 
 const DEFAULT_FEEDBACK =
-  'Hi {name}! 😊 This is a TEST feedback request.\n\n' +
-  'How was your experience? Please reply with a number:\n' +
-  '1 ⭐ – Poor\n2 ⭐⭐ – Fair\n3 ⭐⭐⭐ – Good\n' +
-  '4 ⭐⭐⭐⭐ – Great\n5 ⭐⭐⭐⭐⭐ – Excellent\n\n' +
-  '(Reply with 4 or 5 to test the Google review link. Reply 1–3 to test the escalation.)'
+  "Hi {name},\n\nThank you for visiting us for your {service}!\n\nWe'd love to hear your feedback — please reply with a number from 1 to 5, where 5 means excellent.\n\nReply STOP to opt out"
 
 const DEFAULT_RECALL =
   'Hi {name}! 👋 This is a TEST recall message from {clinic}.\n\n' +
@@ -137,7 +135,7 @@ export async function POST(req: NextRequest) {
     // so the test send must use the real approved template too — otherwise
     // this button would "succeed" in a way production sends never can.
     // Recall stays on free text until its template is approved.
-    const languageCode = settings?.whatsapp_template_language || 'en_US'
+    const languageCode = settings?.whatsapp_template_language || 'en'
     let waBody: Record<string, unknown> = {
       messaging_product: 'whatsapp',
       to: phone.replace(/^\+/, ''),

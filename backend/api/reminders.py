@@ -21,14 +21,15 @@ logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler(timezone="Asia/Kuala_Lumpur")
 
+# Both the 1-day and 3-hour reminders send the SAME approved Meta template
+# (only one reminder template exists per tenant) — this text mirrors its
+# actual approved wording, used only for the readable thread-history log.
 DEFAULT_1D_TEMPLATE = (
-    "Hi {name}, this is a reminder that your {service} appointment is tomorrow, "
-    "{date} at {time}. Reply CANCEL if you need to cancel. See you then!"
+    "Hi {name},\n\n"
+    "This is a reminder that you have a {service} appointment on {date} at {time}.\n\n"
+    "Reply CANCEL if you need to reschedule."
 )
-DEFAULT_3H_TEMPLATE = (
-    "Hi {name}, your {service} appointment is in about 3 hours at {time} today. "
-    "We look forward to seeing you!"
-)
+DEFAULT_3H_TEMPLATE = DEFAULT_1D_TEMPLATE
 
 
 def _format_message(template: str, name: str, service: str, scheduled_at: datetime) -> str:
@@ -70,7 +71,7 @@ async def send_appointment_reminders():
             # is fixed once approved, so there's no per-tenant custom text
             # here anymore, only which approved template name/language to use.
             template_name = settings.get("reminder_template_name") or "appointment_reminder"
-            language_code = settings.get("whatsapp_template_language") or "en_US"
+            language_code = settings.get("whatsapp_template_language") or "en"
 
             tasks = []
             if settings.get("reminder_1d_enabled"):

@@ -12,17 +12,17 @@ import { toast } from 'sonner'
 import { Loader2, Bell, FlaskConical, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react'
 import CsvCampaignUploader from '@/components/campaigns/csv-campaign-uploader'
 
-const REMINDER_1D_PREVIEW =
-  'Hi {name}, this is a reminder that your {service} appointment is tomorrow, {date} at {time}. Reply CANCEL if you need to cancel. See you then!'
-const REMINDER_3H_PREVIEW =
-  'Hi {name}, your {service} appointment is in about 3 hours at {time} today. We look forward to seeing you!'
+// Both the 1-day and 3-hour reminders send the SAME approved Meta template —
+// this mirrors its actual approved wording exactly.
+const REMINDER_TEMPLATE_PREVIEW =
+  'Hi {name},\n\nThis is a reminder that you have a {service} appointment on {date} at {time}.\n\nReply CANCEL if you need to reschedule.'
 
 function fillPreview(tmpl: string) {
   return tmpl
     .replace('{name}', 'Sarah')
-    .replace('{service}', 'Dental Checkup')
-    .replace('{date}', '22 Jul 2026')
-    .replace('{time}', '10:00 AM')
+    .replace('{service}', 'Dental Scaling')
+    .replace('{date}', 'July 25, 2026')
+    .replace('{time}', '11:00 AM')
 }
 
 export default function AppointmentReminderSystemPage() {
@@ -117,9 +117,10 @@ export default function AppointmentReminderSystemPage() {
           <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
             <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
             <span>
-              Reminders are sent as Meta-approved WhatsApp message templates (required outside the 24-hour
+              Reminders are sent as a Meta-approved WhatsApp message template (required outside the 24-hour
               customer service window). The wording below is fixed once approved and can&apos;t be edited here —
-              only the name, service, date, and time change per patient.
+              only the name, service, date, and time change per patient. Both timings below send this same
+              approved template.
             </span>
           </div>
 
@@ -135,8 +136,8 @@ export default function AppointmentReminderSystemPage() {
             {reminder1dEnabled && (
               <div className="space-y-1.5">
                 <Label className="text-xs">Approved template preview</Label>
-                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed">
-                  {fillPreview(REMINDER_1D_PREVIEW)}
+                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
+                  {fillPreview(REMINDER_TEMPLATE_PREVIEW)}
                 </div>
               </div>
             )}
@@ -154,8 +155,8 @@ export default function AppointmentReminderSystemPage() {
             {reminder3hEnabled && (
               <div className="space-y-1.5">
                 <Label className="text-xs">Approved template preview</Label>
-                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed">
-                  {fillPreview(REMINDER_3H_PREVIEW)}
+                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
+                  {fillPreview(REMINDER_TEMPLATE_PREVIEW)}
                 </div>
               </div>
             )}
@@ -182,7 +183,7 @@ export default function AppointmentReminderSystemPage() {
             type="reminder"
             tenantId={tenant?.id || ''}
             isConnected={isConnected}
-            messageTemplate={REMINDER_1D_PREVIEW}
+            messageTemplate={REMINDER_TEMPLATE_PREVIEW}
             extraColumns={[
               { key: 'service', label: 'Service', candidates: ['service', 'treatment'] },
               { key: 'date', label: 'Date', candidates: ['date', 'appointment date'] },
