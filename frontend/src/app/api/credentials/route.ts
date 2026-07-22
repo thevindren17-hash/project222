@@ -3,8 +3,11 @@
  * The browser never receives actual key values — only boolean existence flags.
  *
  * GET  /api/credentials?type=voice|agent  → { groq: true, openai: false, ... }
- * POST /api/credentials                   → save one provider key
- * DELETE /api/credentials?provider=groq&type=agent → remove a key
+ * POST /api/credentials                   → save one provider's credential(s).
+ *   Legacy single-value shape:  { provider, api_key, type }
+ *   Multi-field shape (e.g. an OAuth client_id + client_secret pair):
+ *                                { provider, fields: { client_id, client_secret }, type }
+ * DELETE /api/credentials?provider=groq&type=agent → remove a credential
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
@@ -14,6 +17,12 @@ type CredType = 'agent' | 'voice'
 const FIELD: Record<CredType, string> = {
   agent: 'provider_credentials',
   voice: 'voice_provider_credentials',
+}
+
+// Most providers just need `api_key` to count as "configured" — a few store
+// multiple fields and need all of them present before they're usable.
+const REQUIRED_FIELDS: Record<string, string[]> = {
+  google: ['client_id', 'client_secret'],
 }
 
 async function getServerSupabase() {
@@ -56,7 +65,8 @@ export async function GET(req: NextRequest) {
   const creds = (data?.[field as keyof typeof data] ?? {}) as Record<string, Record<string, string>>
   const existence: Record<string, boolean> = {}
   for (const [provider, val] of Object.entries(creds)) {
-    existence[provider] = !!val?.api_key
+    const required = REQUIRED_FIELDS[provider]
+    existence[provider] = required ? required.every((f) => !!val?.[f]) : !!val?.api_key
   }
   return NextResponse.json(existence)
 }
@@ -69,37 +79,46 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => null)
   const provider: string = body?.provider
-  const apiKey: string  = body?.api_key
   const type: CredType  = body?.type ?? 'agent'
 
-  if (!provider || !apiKey) {
-    return NextResponse.json({ error: 'provider and api_key are required' }, { status: 400 })
+  // Accept either the legacy single-value shape ({api_key}) or a generic
+  // multi-field shape ({fields: {...}}) — an OAuth client_id/client_secret
+  // pair needs two values, a plain API key needs one.
+  const fieldsToStore: Record<string, string> =
+    body?.fields && typeof body.fields === 'object'
+      ? body.fields
+      : body?.api_key ? { api_key: body.api_key } : {}
+
+  if (!provider || Object.keys(fieldsToStore).length === 0) {
+    return NextResponse.json({ error: 'provider and api_key (or fields) are required' }, { status: 400 })
   }
   const field = FIELD[type] ?? FIELD.agent
 
-  // Encrypt at rest (pgcrypto, see migrations/005_encrypt_credentials.sql).
+  // Encrypt each value at rest (pgcrypto, see migrations/005_encrypt_credentials.sql).
   // If no encryption key is configured yet, fall back to storing plaintext
   // rather than blocking key saves — this is only a temporary state until
   // CREDENTIAL_ENCRYPTION_KEY is set in the environment.
-  let storedValue: string = apiKey
   const encKey = process.env.CREDENTIAL_ENCRYPTION_KEY || ''
-  if (encKey) {
+  const storedFields: Record<string, string> = {}
+  for (const [key, value] of Object.entries(fieldsToStore)) {
+    if (!value) continue
+    if (!encKey) { storedFields[key] = value; continue }
     const { data: ciphertext, error: encErr } = await supabase.rpc('encrypt_credential', {
-      plaintext: apiKey,
+      plaintext: value,
       key: encKey,
     })
     if (encErr || !ciphertext) {
-      return NextResponse.json({ error: 'Failed to encrypt credential' }, { status: 500 })
+      return NextResponse.json({ error: `Failed to encrypt ${key}` }, { status: 500 })
     }
-    storedValue = `enc:v1:${ciphertext}`
+    storedFields[key] = `enc:v1:${ciphertext}`
   }
 
   // Read current, merge, write back
   const { data: existing } = await supabase
     .from('tenant_settings').select(field).eq('tenant_id', tenantId).maybeSingle()
   const raw = existing?.[field as keyof typeof existing]
-  const current = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
-  const updated = { ...current, [provider]: { api_key: storedValue } }
+  const current = (raw && typeof raw === 'object' ? raw : {}) as Record<string, Record<string, string>>
+  const updated = { ...current, [provider]: { ...(current[provider] || {}), ...storedFields } }
 
   const { error } = await supabase.from('tenant_settings').upsert(
     { tenant_id: tenantId, [field]: updated },

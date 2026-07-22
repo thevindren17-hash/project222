@@ -8,18 +8,7 @@ export async function GET(req: NextRequest) {
 
   const code = searchParams.get('code')
   const state = searchParams.get('state')
-
-  // The service (calendar vs sheets) determines which settings page to send
-  // the user back to — parse it from state before we know if anything else
-  // succeeded, so even error redirects land on the right page.
-  let servicePage = 'calendar'
-  if (state) {
-    try {
-      const parsed = JSON.parse(state) as { service?: string }
-      if (parsed.service === 'sheets') servicePage = 'sheets'
-    } catch {}
-  }
-  const destPage = `${origin}/settings/plugins/${servicePage}`
+  const destPage = `${origin}/settings/plugins/google`
 
   const error = searchParams.get('error')
   if (error) {

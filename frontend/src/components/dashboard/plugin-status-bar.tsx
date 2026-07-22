@@ -10,7 +10,7 @@ import Link from 'next/link'
 
 const PLUGINS = [
   { name: 'WhatsApp', key: 'whatsapp', href: '/settings/plugins/whatsapp' },
-  { name: 'Calendar', key: 'calendar', href: '/settings/plugins/calendar' },
+  { name: 'Google',   key: 'google',   href: '/settings/plugins/google' },
   { name: 'Agent',    key: 'agent',    href: '/settings/plugins/agent' },
 ] as const
 
@@ -22,7 +22,7 @@ export default function PluginStatusBar() {
       if (!tenant) return null
       const { data: settings } = await supabase
         .from('tenant_settings')
-        .select('llm_config,google_calendar_id,provider_credentials')
+        .select('llm_config,google_access_token,google_refresh_token,provider_credentials')
         .eq('tenant_id', tenant.id)
         .single()
       // Booking flow & safety rules are always active — the agent is only
@@ -30,7 +30,7 @@ export default function PluginStatusBar() {
       const llmProvider = settings?.llm_config?.provider
       return {
         whatsapp: !!tenant.wa_phone_number_id,
-        calendar: !!settings?.google_calendar_id,
+        google:   !!(settings?.google_access_token || settings?.google_refresh_token),
         agent:    !!(llmProvider && (settings?.provider_credentials as Record<string, Record<string, string>> | undefined)?.[llmProvider]?.api_key),
       }
     },

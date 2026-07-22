@@ -1,6 +1,8 @@
 """
 Integration Endpoints
-Google Calendar and Sheets OAuth callbacks + disconnect endpoints.
+Google OAuth callback + disconnect — one unified connection covering
+Calendar + Sheets + Drive together, using each clinic's own OAuth client
+(BYOK, not a platform-shared app).
 """
 
 import os
@@ -19,9 +21,13 @@ router = APIRouter()
 
 
 @router.get("/google/auth")
-async def google_auth_start(tenant_id: str, service: str):
+async def google_auth_start(tenant_id: str):
     from shared.google_integrations import get_google_oauth_url
-    oauth_url = await get_google_oauth_url(tenant_id, service)
+    try:
+        oauth_url = await get_google_oauth_url(tenant_id)
+    except RuntimeError as e:
+        frontend_url = (os.getenv("FRONTEND_URL") or "https://project222-livid.vercel.app").strip().rstrip("/")
+        return RedirectResponse(url=f"{frontend_url}/settings/plugins/google?error={e}")
     return RedirectResponse(url=oauth_url)
 
 
@@ -36,47 +42,39 @@ async def google_oauth_callback(request: Request):
     error = request.query_params.get("error")
 
     frontend_url = (os.getenv("FRONTEND_URL") or "https://project222-livid.vercel.app").strip().rstrip("/")
-    calendar_page = f"{frontend_url}/settings/plugins/calendar" if frontend_url else None
+    google_page = f"{frontend_url}/settings/plugins/google"
 
     if error:
-        url = f"{calendar_page}?error={error}" if calendar_page else f"/?error={error}"
-        return RedirectResponse(url=url)
+        return RedirectResponse(url=f"{google_page}?error={error}")
 
     if not code or not state:
-        url = f"{calendar_page}?error=missing_params" if calendar_page else "/?error=missing_params"
-        return RedirectResponse(url=url)
+        return RedirectResponse(url=f"{google_page}?error=missing_params")
 
     try:
         state_data = json.loads(state)
         tenant_id = state_data["tenant_id"]
-        service = state_data["service"]
     except Exception:
-        url = f"{calendar_page}?error=invalid_state" if calendar_page else "/?error=invalid_state"
-        return RedirectResponse(url=url)
+        return RedirectResponse(url=f"{google_page}?error=invalid_state")
 
     try:
-        access_token, refresh_token = await _exchange_google_code(code)
+        access_token, refresh_token = await _exchange_google_code(tenant_id, code)
     except Exception as e:
         err_str = str(e)
         logger.error(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {err_str}")
         # Surface the actual Google error in the redirect so we can debug
         import urllib.parse
-        url = f"{calendar_page}?error={urllib.parse.quote(err_str[:120])}" if calendar_page else "/?error=token_exchange_failed"
-        return RedirectResponse(url=url)
+        return RedirectResponse(url=f"{google_page}?error={urllib.parse.quote(err_str[:120])}")
 
     if not access_token:
-        url = f"{calendar_page}?error=token_exchange_failed" if calendar_page else "/?error=token_exchange_failed"
-        return RedirectResponse(url=url)
+        return RedirectResponse(url=f"{google_page}?error=token_exchange_failed")
 
     try:
-        await _complete_google_connection(tenant_id, service, access_token, refresh_token)
+        await _complete_google_connection(tenant_id, access_token, refresh_token)
     except Exception as e:
         logger.error(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
-        url = f"{calendar_page}?error=storage_failed" if calendar_page else "/?error=storage_failed"
-        return RedirectResponse(url=url)
+        return RedirectResponse(url=f"{google_page}?error=storage_failed")
 
-    url = f"{calendar_page}?success=true" if calendar_page else "/?success=true"
-    return RedirectResponse(url=url)
+    return RedirectResponse(url=f"{google_page}?success=true")
 
 
 class ExchangeRequest(BaseModel):
@@ -93,12 +91,11 @@ async def google_exchange(req: ExchangeRequest):
     try:
         state_data = json.loads(req.state)
         tenant_id = state_data["tenant_id"]
-        service = state_data["service"]
     except Exception:
         raise HTTPException(status_code=400, detail="invalid_state")
 
     try:
-        access_token, refresh_token = await _exchange_google_code(req.code)
+        access_token, refresh_token = await _exchange_google_code(tenant_id, req.code)
     except Exception as e:
         logger.error(f"[Google OAuth] Token exchange failed for tenant {tenant_id}: {e}")
         raise HTTPException(status_code=400, detail=f"token_exchange_failed: {str(e)}")
@@ -107,45 +104,43 @@ async def google_exchange(req: ExchangeRequest):
         raise HTTPException(status_code=400, detail="token_exchange_failed: no access token")
 
     try:
-        await _complete_google_connection(tenant_id, service, access_token, refresh_token)
+        await _complete_google_connection(tenant_id, access_token, refresh_token)
     except Exception as e:
         logger.error(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
         raise HTTPException(status_code=500, detail="storage_failed")
 
-    return {"success": True, "service": service, "tenant_id": tenant_id}
+    return {"success": True, "tenant_id": tenant_id}
 
 
-async def _complete_google_connection(tenant_id: str, service: str, access_token: str, refresh_token: str):
+async def _complete_google_connection(tenant_id: str, access_token: str, refresh_token: str):
     """
-    Shared by both the legacy callback and the new exchange endpoint.
-    Calendar just needs 'primary'. Sheets needs an actual spreadsheet to
-    write to — auto-provision one now rather than making the clinic paste a
-    URL/ID, so the connection is immediately usable.
+    One connection now covers both Calendar ('primary' calendar) and Sheets
+    (a spreadsheet auto-provisioned right here, rather than making the
+    clinic paste a URL/ID) since both scopes are always requested together.
     """
     from shared.google_integrations import store_google_tokens, create_patient_spreadsheet
     from shared.tenant_config import get_supabase_client, _db_optional
 
+    supabase = get_supabase_client()
+    tenant_res = await _db_optional(lambda: supabase.table("tenants").select("name").eq(
+        "id", tenant_id
+    ).maybe_single().execute())
+    clinic_name = (tenant_res.data or {}).get("name") or "Clinic"
+
     spreadsheet_id = None
-    if service == "sheets":
-        supabase = get_supabase_client()
-        tenant_res = await _db_optional(lambda: supabase.table("tenants").select("name").eq(
-            "id", tenant_id
-        ).maybe_single().execute())
-        clinic_name = (tenant_res.data or {}).get("name") or "Clinic"
-        try:
-            spreadsheet_id = await create_patient_spreadsheet(clinic_name, access_token)
-        except Exception as e:
-            logger.error(f"[Google OAuth] Spreadsheet auto-creation failed for tenant {tenant_id}: {e}")
-            # Still store the tokens — the clinic is connected even if sheet
-            # creation failed; log_lead() will just no-op with no sheet ID
-            # until this is retried (e.g. by disconnecting and reconnecting).
+    try:
+        spreadsheet_id = await create_patient_spreadsheet(clinic_name, access_token)
+    except Exception as e:
+        logger.error(f"[Google OAuth] Spreadsheet auto-creation failed for tenant {tenant_id}: {e}")
+        # Still store the tokens — the clinic is connected even if sheet
+        # creation failed; log_lead() will just no-op with no sheet ID
+        # until this is retried (e.g. by disconnecting and reconnecting).
 
     await store_google_tokens(
         tenant_id=tenant_id,
-        service=service,
         access_token=access_token,
         refresh_token=refresh_token,
-        calendar_id="primary" if service == "calendar" else None,
+        calendar_id="primary",
         spreadsheet_id=spreadsheet_id,
     )
 
@@ -154,38 +149,32 @@ async def _complete_google_connection(tenant_id: str, service: str, access_token
 async def google_disconnect(request: Request):
     body = await request.json()
     tenant_id = body.get("tenant_id")
-    service = body.get("service")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id is required")
 
-    if not tenant_id or not service:
-        raise HTTPException(status_code=400, detail="tenant_id and service are required")
-
-    from shared.tenant_config import get_supabase_client
+    from shared.tenant_config import get_supabase_client, _db
     supabase = get_supabase_client()
 
-    if service == "calendar":
-        update_data = {
-            "google_calendar_token": None,
-            "google_calendar_refresh": None,
-            "google_calendar_id": None,
-        }
-    elif service == "sheets":
-        update_data = {
-            "google_sheets_token": None,
-            "google_sheets_refresh": None,
-            "google_sheets_id": None,
-        }
-    else:
-        raise HTTPException(status_code=400, detail="Invalid service. Use 'calendar' or 'sheets'.")
-
-    supabase.table("tenant_settings").update(update_data).eq("tenant_id", tenant_id).execute()
-    return {"success": True, "service": service}
+    await _db(lambda: supabase.table("tenant_settings").update({
+        "google_access_token": None,
+        "google_refresh_token": None,
+        "google_calendar_id": None,
+        "google_sheets_id": None,
+    }).eq("tenant_id", tenant_id).execute())
+    return {"success": True}
 
 
-async def _exchange_google_code(code: str):
+async def _exchange_google_code(tenant_id: str, code: str):
     import httpx
+    from shared.tenant_config import get_tenant_by_id
+    from shared.providers import _cred
 
-    client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
-    client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
+    tenant = await get_tenant_by_id(tenant_id)
+    client_id = tenant and _cred(tenant, "google", "client_id")
+    client_secret = tenant and _cred(tenant, "google", "client_secret")
+    if not client_id or not client_secret:
+        raise Exception("Google OAuth client not configured — save your Client ID and Secret first")
+
     backend_url = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
     redirect_uri = f"{backend_url}/api/integrations/google/callback"
 

@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import AddBookingModal from '@/components/calendar/add-booking-modal'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
-import { initiateGoogleCalendarOAuth, fetchGoogleCalendarEvents } from '@/lib/api'
+import { fetchGoogleCalendarEvents } from '@/lib/api'
 import { BOOKING_STATUS } from '@/lib/booking-status'
 import type { Booking } from '@/lib/types'
 import { Plus, Link2, CheckCircle2 } from 'lucide-react'
@@ -34,7 +34,7 @@ export default function CalendarPage() {
       if (!tenant) return null
       const { data } = await supabase
         .from('tenant_settings')
-        .select('google_calendar_token,google_calendar_refresh,google_calendar_id')
+        .select('google_access_token,google_refresh_token,google_calendar_id')
         .eq('tenant_id', tenant.id)
         .maybeSingle()
       return data
@@ -57,7 +57,7 @@ export default function CalendarPage() {
     },
   })
 
-  const isConnected = !!(settings?.google_calendar_token || settings?.google_calendar_refresh)
+  const isConnected = !!(settings?.google_access_token || settings?.google_refresh_token)
 
   const { data: googleEvents } = useQuery({
     queryKey: ['google-calendar-events', tenant?.id],
@@ -162,7 +162,7 @@ export default function CalendarPage() {
             ) : (
               <button
                 className="flex items-center gap-2.5 px-1 py-1 rounded-md hover:bg-muted w-full text-left transition-colors group"
-                onClick={() => tenant && initiateGoogleCalendarOAuth(tenant.id)}
+                onClick={() => { window.location.href = '/settings/plugins/google' }}
               >
                 <GoogleIcon className="h-3.5 w-3.5 shrink-0 opacity-40 group-hover:opacity-70 transition-opacity" />
                 <span className="text-sm text-muted-foreground">Connect Google</span>

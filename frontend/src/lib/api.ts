@@ -24,31 +24,19 @@ export async function fetchGoogleCalendarEvents(tenantId: string): Promise<Googl
   }
 }
 
-export async function initiateGoogleCalendarOAuth(tenantId: string) {
-  window.location.href = `/api/integrations/google/auth?tenant_id=${tenantId}&service=calendar`
+// One unified Google connection covers Calendar + Sheets + Drive together —
+// a clinic connects once, using their own Google OAuth client (BYOK).
+export async function initiateGoogleOAuth(tenantId: string) {
+  window.location.href = `/api/integrations/google/auth?tenant_id=${tenantId}`
 }
 
-export async function disconnectGoogleCalendar(tenantId: string) {
+export async function disconnectGoogle(tenantId: string) {
   // Routed through our own Next.js server (not Railway directly) so the
   // caller's session/tenant ownership gets verified before disconnecting.
   const res = await fetch(`/api/integrations/google/disconnect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tenant_id: tenantId, service: 'calendar' }),
-  })
-  if (!res.ok) throw new Error('Disconnect failed')
-  return res.json()
-}
-
-export async function initiateGoogleSheetsOAuth(tenantId: string) {
-  window.location.href = `/api/integrations/google/auth?tenant_id=${tenantId}&service=sheets`
-}
-
-export async function disconnectGoogleSheets(tenantId: string) {
-  const res = await fetch(`/api/integrations/google/disconnect`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tenant_id: tenantId, service: 'sheets' }),
+    body: JSON.stringify({ tenant_id: tenantId }),
   })
   if (!res.ok) throw new Error('Disconnect failed')
   return res.json()

@@ -1,6 +1,15 @@
 """
 Google Integrations — Calendar and Sheets
 Clinics connect their own Google account via OAuth to sync appointments and track leads.
+
+One unified connection (not two): each clinic brings its own Google OAuth
+client (client_id/client_secret, stored BYOK in provider_credentials.google —
+same encrypted pattern as their LLM keys), and one "Connect Google" grant
+covers Calendar + Sheets + Drive together via a single combined-scope OAuth
+flow and one access/refresh token pair. Using a shared platform-wide OAuth
+app doesn't scale past Google's ~100-user cap for unverified apps without
+completing Google's own app verification, so BYOK per clinic sidesteps that
+entirely — each clinic's app only ever has itself as a user.
 """
 
 import os
@@ -26,51 +35,27 @@ class GoogleCalendarIntegration:
         from shared.tenant_config import get_supabase_client, _db_optional
         supabase = get_supabase_client()
         result = await _db_optional(lambda: supabase.table("tenant_settings")
-            .select("google_calendar_token,google_calendar_refresh")
+            .select("google_access_token,google_refresh_token")
             .eq("tenant_id", self.tenant_id)
             .maybe_single()
             .execute()
         )
         if not result.data:
-            raise RuntimeError("No Google Calendar credentials found")
+            raise RuntimeError("No Google credentials found")
 
-        token = result.data.get("google_calendar_token")
-        refresh = result.data.get("google_calendar_refresh")
+        token = result.data.get("google_access_token")
+        refresh = result.data.get("google_refresh_token")
 
         if not token and not refresh:
-            raise RuntimeError("Google Calendar not connected")
+            raise RuntimeError("Google not connected")
 
         if refresh:
-            token = await self._refresh_token(refresh)
+            token = await _refresh_google_token(self.tenant_id, refresh)
 
         return token
 
     async def _refresh_token(self, refresh_token: str) -> str:
-        client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
-        client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "refresh_token": refresh_token,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "grant_type": "refresh_token",
-                },
-            )
-        if r.status_code != 200:
-            raise RuntimeError(f"Token refresh failed: {r.text[:200]}")
-        new_token = r.json().get("access_token")
-        if not new_token:
-            raise RuntimeError("Token refresh returned no access_token")
-
-        from shared.tenant_config import get_supabase_client, _db
-        supabase = get_supabase_client()
-        await _db(lambda: supabase.table("tenant_settings").update(
-            {"google_calendar_token": new_token}
-        ).eq("tenant_id", self.tenant_id).execute())
-
-        return new_token
+        return await _refresh_google_token(self.tenant_id, refresh_token)
 
     async def create_appointment(
         self,
@@ -261,51 +246,27 @@ class GoogleSheetsIntegration:
         from shared.tenant_config import get_supabase_client, _db_optional
         supabase = get_supabase_client()
         result = await _db_optional(lambda: supabase.table("tenant_settings")
-            .select("google_sheets_token,google_sheets_refresh")
+            .select("google_access_token,google_refresh_token")
             .eq("tenant_id", self.tenant_id)
             .maybe_single()
             .execute()
         )
         if not result.data:
-            raise RuntimeError("No Google Sheets credentials found")
+            raise RuntimeError("No Google credentials found")
 
-        token = result.data.get("google_sheets_token")
-        refresh = result.data.get("google_sheets_refresh")
+        token = result.data.get("google_access_token")
+        refresh = result.data.get("google_refresh_token")
 
         if not token and not refresh:
-            raise RuntimeError("Google Sheets not connected")
+            raise RuntimeError("Google not connected")
 
         if refresh:
-            token = await self._refresh_token(refresh)
+            token = await _refresh_google_token(self.tenant_id, refresh)
 
         return token
 
     async def _refresh_token(self, refresh_token: str) -> str:
-        client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
-        client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "refresh_token": refresh_token,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "grant_type": "refresh_token",
-                },
-            )
-        if r.status_code != 200:
-            raise RuntimeError(f"Token refresh failed: {r.text[:200]}")
-        new_token = r.json().get("access_token")
-        if not new_token:
-            raise RuntimeError("Token refresh returned no access_token")
-
-        from shared.tenant_config import get_supabase_client, _db
-        supabase = get_supabase_client()
-        await _db(lambda: supabase.table("tenant_settings").update(
-            {"google_sheets_token": new_token}
-        ).eq("tenant_id", self.tenant_id).execute())
-
-        return new_token
+        return await _refresh_google_token(self.tenant_id, refresh_token)
 
     async def log_lead(
         self,
@@ -352,24 +313,41 @@ class GoogleSheetsIntegration:
 
 
 # ── OAuth helpers ──────────────────────────────────────────────────────────────
+# One combined scope covers Calendar + Sheets + Drive — a clinic connects
+# once and both features just work, rather than two separate OAuth grants
+# for what's really one Google account.
+GOOGLE_OAUTH_SCOPE = (
+    "https://www.googleapis.com/auth/calendar "
+    "https://www.googleapis.com/auth/calendar.events "
+    "https://www.googleapis.com/auth/spreadsheets "
+    "https://www.googleapis.com/auth/drive.file"
+)
 
-async def get_google_oauth_url(tenant_id: str, service: str) -> str:
-    """Generate OAuth URL for clinic to authorize Google Calendar/Sheets access."""
+
+async def get_google_oauth_url(tenant_id: str) -> str:
+    """
+    Generate the OAuth URL for a clinic to authorize Google access — using
+    THAT CLINIC's own OAuth client (BYOK), not a platform-wide shared app.
+    Raises if the clinic hasn't saved their client_id yet, so the caller can
+    show a clear "set up your Google Client ID first" error.
+    """
+    from shared.tenant_config import get_tenant_by_id
+    from shared.providers import _cred
+
+    tenant = await get_tenant_by_id(tenant_id)
+    client_id = tenant and _cred(tenant, "google", "client_id")
+    if not client_id:
+        raise RuntimeError("google_client_not_configured")
+
     backend_url = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
     redirect_uri = f"{backend_url}/api/integrations/google/callback"
-    state = json.dumps({"tenant_id": tenant_id, "service": service})
-    scopes = {
-        "calendar": "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events",
-        "sheets": "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file",
-    }
-    scope = scopes.get(service, scopes["calendar"])
-    client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+    state = json.dumps({"tenant_id": tenant_id})
     import urllib.parse
     params = urllib.parse.urlencode({
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": scope,
+        "scope": GOOGLE_OAUTH_SCOPE,
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -377,34 +355,60 @@ async def get_google_oauth_url(tenant_id: str, service: str) -> str:
     return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
 
 
+async def _refresh_google_token(tenant_id: str, refresh_token: str) -> str:
+    """Refresh an expired access token using THIS tenant's own OAuth client."""
+    from shared.tenant_config import get_tenant_by_id, get_supabase_client, _db
+    from shared.providers import _cred
+
+    tenant = await get_tenant_by_id(tenant_id)
+    client_id = tenant and _cred(tenant, "google", "client_id")
+    client_secret = tenant and _cred(tenant, "google", "client_secret")
+    if not client_id or not client_secret:
+        raise RuntimeError("Google OAuth client not configured for this tenant")
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "refresh_token",
+            },
+        )
+    if r.status_code != 200:
+        raise RuntimeError(f"Token refresh failed: {r.text[:200]}")
+    new_token = r.json().get("access_token")
+    if not new_token:
+        raise RuntimeError("Token refresh returned no access_token")
+
+    supabase = get_supabase_client()
+    await _db(lambda: supabase.table("tenant_settings").update(
+        {"google_access_token": new_token}
+    ).eq("tenant_id", tenant_id).execute())
+
+    return new_token
+
+
 async def store_google_tokens(
     tenant_id: str,
-    service: str,
     access_token: str,
     refresh_token: str,
     calendar_id: Optional[str] = None,
     spreadsheet_id: Optional[str] = None,
 ):
-    """Store Google OAuth tokens in Supabase tenant_settings."""
-    from shared.tenant_config import get_supabase_client
+    """Store the (single, unified) Google OAuth tokens in tenant_settings."""
+    from shared.tenant_config import get_supabase_client, _db
 
     supabase = get_supabase_client()
-    update_data: Dict[str, Any] = {}
+    update_data: Dict[str, Any] = {"google_access_token": access_token}
+    if refresh_token:  # never overwrite an existing refresh_token with None
+        update_data["google_refresh_token"] = refresh_token
+    if calendar_id:
+        update_data["google_calendar_id"] = calendar_id
+    if spreadsheet_id:
+        update_data["google_sheets_id"] = spreadsheet_id
 
-    if service == "calendar":
-        update_data["google_calendar_token"] = access_token
-        if refresh_token:  # never overwrite an existing refresh_token with None
-            update_data["google_calendar_refresh"] = refresh_token
-        if calendar_id:
-            update_data["google_calendar_id"] = calendar_id
-    elif service == "sheets":
-        update_data["google_sheets_token"] = access_token
-        if refresh_token:
-            update_data["google_sheets_refresh"] = refresh_token
-        if spreadsheet_id:
-            update_data["google_sheets_id"] = spreadsheet_id
-
-    from shared.tenant_config import _db
     await _db(lambda: supabase.table("tenant_settings").update(update_data).eq("tenant_id", tenant_id).execute())
 
 
@@ -445,14 +449,14 @@ async def get_google_calendar(tenant_id: str) -> Optional[GoogleCalendarIntegrat
     from shared.tenant_config import get_supabase_client, _db_optional
     supabase = get_supabase_client()
     result = await _db_optional(lambda: supabase.table("tenant_settings")
-        .select("google_calendar_token,google_calendar_refresh,google_calendar_id")
+        .select("google_access_token,google_refresh_token,google_calendar_id")
         .eq("tenant_id", tenant_id)
         .maybe_single()
         .execute()
     )
     if not result.data:
         return None
-    has_token = result.data.get("google_calendar_token") or result.data.get("google_calendar_refresh")
+    has_token = result.data.get("google_access_token") or result.data.get("google_refresh_token")
     if not has_token:
         return None
     calendar_id = result.data.get("google_calendar_id") or "primary"
