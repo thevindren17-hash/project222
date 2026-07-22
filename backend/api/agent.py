@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from shared.tenant_config import get_tenant_by_id
 from shared.providers import load_llm_client
 from shared.security import require_internal_secret, RateLimiter
-from shared.tools import TOOL_DEFINITIONS, get_faq
+from shared.tools import get_faq
 from shared.utils import logger
 
 router = APIRouter()
@@ -373,23 +373,23 @@ async def test_agent(req: TestMessage):
 
     llm_client = load_llm_client(tenant)
 
-    now = datetime.now()
-    date_context = (
-        f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}).\n"
-        "TOOL CALLING RULES — follow these strictly:\n"
-        "1. NEVER call any tool until you have collected ALL required information from the user in prior messages.\n"
-        "2. For book_appointment: you MUST have the patient's name, phone number, service type, date AND time confirmed by the user before calling. Ask for missing info naturally — do NOT call the tool speculatively.\n"
-        "3. For check_slots: only call once you know which date the user is asking about.\n"
-        "4. For cancel/reschedule: confirm the patient's phone or booking ID first.\n"
-        "5. When you have all info, convert natural-language dates/times yourself before calling:\n"
-        "   - 'tomorrow' → actual date e.g. 2026-05-15\n"
-        "   - 'next Friday' / 'jumaat depan' → correct YYYY-MM-DD\n"
-        "   - 'minggu depan' / 'next week' → 7 days from today\n"
-        "   - 'selasa depan' → next Tuesday's date\n"
-        "   - '3pm' / '3 petang' → 15:00, '9am' / '9 pagi' → 09:00\n"
-        "6. Always pass actual values — NEVER pass example text or descriptions as parameter values.\n"
-        "TEST MODE — all tools run for real and save to the database.]"
-    )
+    # Test Agent must behave exactly like real WhatsApp conversations, or
+    # testing here doesn't actually validate what a real patient will
+    # experience — so this reuses the SAME booking-flow prompt and the SAME
+    # per-tenant tool schema (custom fields included) as handle_whatsapp_message,
+    # rather than a separately-maintained, simpler copy.
+    from api.whatsapp import _build_date_context, _tool_definitions_for_tenant
+    from shared.utils import detect_language
+
+    is_new_conversation = len(req.history) == 0
+    detected_lang = detect_language(req.message)
+    date_context = _build_date_context(
+        reply_language=getattr(tenant, "reply_language", "ask"),
+        is_new_conversation=is_new_conversation,
+        conversation_language=detected_lang,
+        timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
+        custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
+    ) + "\n\n[TEST MODE — all tools run for real and save to the database.]"
 
     conversation = list(req.history) + [{"role": "user", "content": req.message}]
 
@@ -402,7 +402,7 @@ async def test_agent(req: TestMessage):
     ]
 
     enabled_tools = [
-        t for t in TOOL_DEFINITIONS
+        t for t in _tool_definitions_for_tenant(tenant)
         if tenant.tool_config.get(t["function"]["name"], True)
     ]
 

@@ -497,6 +497,22 @@ def _build_date_context(
     )
 
 
+# Keys a clinic can't reuse for a custom field — the built-in property names
+# (already collected via the core booking flow) plus the most likely aliases
+# a clinic might type by mistake (e.g. "name" instead of realizing
+# contact_name already covers it). Without this guard, a colliding custom
+# field creates a second, differently-named property that means the same
+# thing — the LLM can fill the "wrong" one, and book_appointment never gets
+# a valid contact_name/contact_phone, so the booking (and the Sheets/Calendar
+# sync that only happens once a booking actually succeeds) silently never
+# completes.
+_RESERVED_FIELD_KEYS = {
+    "contact_name", "contact_phone", "service_type", "date", "time", "notes",
+    "new_date", "new_time", "booking_id",
+    "name", "phone", "phone_number", "full_name", "patient_name", "patient_phone",
+}
+
+
 def _tool_definitions_for_tenant(tenant) -> list:
     """
     Clone TOOL_DEFINITIONS, injecting this tenant's custom fields as extra
@@ -518,6 +534,12 @@ def _tool_definitions_for_tenant(tenant) -> list:
         for f in custom_fields:
             key = f.get("key")
             if not key or f.get("action", "book_appointment") != tool_name:
+                continue
+            if key in _RESERVED_FIELD_KEYS:
+                logger.warning(
+                    f"Skipping custom field '{key}' for tenant {getattr(tenant, 'tenant_id', '?')} — "
+                    "collides with a built-in property, already collected automatically."
+                )
                 continue
             props[key] = {
                 "type": "string",
