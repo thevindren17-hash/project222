@@ -8,6 +8,24 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+// Best-effort per-tenant limiter (in-memory — resets on cold start / across
+// instances, but still blocks the obvious "spam the test button" abuse case).
+const _testSendCalls = new Map<string, number[]>()
+const _TEST_SEND_WINDOW_MS = 5 * 60_000
+const _TEST_SEND_MAX_CALLS = 10
+
+function isTestSendRateLimited(tenantId: string): boolean {
+  const now = Date.now()
+  const calls = (_testSendCalls.get(tenantId) ?? []).filter((t) => now - t < _TEST_SEND_WINDOW_MS)
+  if (calls.length >= _TEST_SEND_MAX_CALLS) {
+    _testSendCalls.set(tenantId, calls)
+    return true
+  }
+  calls.push(now)
+  _testSendCalls.set(tenantId, calls)
+  return false
+}
+
 async function verifyTenantAccess(tenantId: string): Promise<boolean> {
   const cookieStore = await cookies()
   const supabase = createServerClient(
@@ -75,6 +93,12 @@ export async function POST(req: NextRequest) {
     if (!await verifyTenantAccess(tenant_id)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
     }
+    if (isTestSendRateLimited(tenant_id)) {
+      return NextResponse.json(
+        { error: 'Too many test sends in a short time — please wait a few minutes and try again.' },
+        { status: 429 }
+      )
+    }
 
     const phone = normalizePhone(rawPhone)
     if (!phone) {
@@ -93,12 +117,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'WhatsApp credentials not configured on this tenant' }, { status: 400 })
     }
 
-    // Load message templates from settings
+    // Load message templates from settings. reminder/feedback intentionally
+    // don't read a custom column here — the real send always uses the fixed,
+    // Meta-approved template text (DEFAULT_REMINDER/DEFAULT_FEEDBACK below),
+    // so the preview must match that exactly rather than a stale unused
+    // column. recall is still genuinely free text, so its column is real.
     const { data: settings } = await supabaseAdmin
       .from('tenant_settings')
-      .select(
-        'feedback_message_template, recall_message_template, reminder_1d_template, reminder_template_name, feedback_template_name, whatsapp_template_language'
-      )
+      .select('recall_message_template, reminder_template_name, feedback_template_name, whatsapp_template_language')
       .eq('tenant_id', tenant_id)
       .maybeSingle()
 
@@ -117,15 +143,13 @@ export async function POST(req: NextRequest) {
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
 
     if (type === 'reminder') {
-      const tmpl = settings?.reminder_1d_template || DEFAULT_REMINDER
-      message = tmpl
+      message = DEFAULT_REMINDER
         .replace('{name}', name)
         .replace('{service}', 'Test Appointment')
         .replace('{date}', formatDate(tomorrow))
         .replace('{time}', formatTime(tomorrow))
     } else if (type === 'feedback') {
-      const tmpl = settings?.feedback_message_template || DEFAULT_FEEDBACK
-      message = tmpl.replace('{name}', name).replace('{service}', 'Test Appointment')
+      message = DEFAULT_FEEDBACK.replace('{name}', name).replace('{service}', 'Test Appointment')
     } else if (type === 'recall') {
       const tmpl = settings?.recall_message_template || DEFAULT_RECALL
       message = tmpl.replace('{name}', name).replace('{clinic}', tenant.name)

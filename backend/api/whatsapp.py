@@ -476,153 +476,189 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         logger.warning(f"Rate limited: {formatted_phone} tenant={tenant.tenant_id}")
         return
 
-    contact_result = await get_or_create_contact(
-        tenant_id=tenant.tenant_id, phone=formatted_phone, source="whatsapp",
-    )
-    contact = contact_result.get("contact", {})
+    # This whole setup phase (contact/thread lookup, opt-out check, guardrails,
+    # feedback intercept, conversation-history build) runs before the LLM's own
+    # try/except further below. Left unguarded, a failure anywhere here (a
+    # transient DB error, a bug in the feedback-intercept call, etc.) would
+    # propagate out of this background task and the patient would get total
+    # silence — not even the LLM block's fallback reply, since we'd never
+    # reach it. Catch broadly here too, so the worst case is still a reply.
+    contact: dict = {}
+    thread = None
+    try:
+        contact_result = await get_or_create_contact(
+            tenant_id=tenant.tenant_id, phone=formatted_phone, source="whatsapp",
+        )
+        contact = contact_result.get("contact", {})
 
-    thread_result = await _db(lambda: supabase.table("whatsapp_threads").select("*").eq(
-        "tenant_id", tenant.tenant_id
-    ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute())
+        thread_result = await _db(lambda: supabase.table("whatsapp_threads").select("*").eq(
+            "tenant_id", tenant.tenant_id
+        ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute())
 
-    if thread_result.data:
-        thread = thread_result.data[0]
-        thread_lang = thread.get("language") or "en"
-        language = detected_lang if detected_lang in ("ms", "zh") else thread_lang
-        if thread.get("status") == "human_takeover":
-            await _db(lambda: supabase.table("messages").insert({
-                "thread_id": thread["id"],
+        if thread_result.data:
+            thread = thread_result.data[0]
+            thread_lang = thread.get("language") or "en"
+            language = detected_lang if detected_lang in ("ms", "zh") else thread_lang
+            if thread.get("status") == "human_takeover":
+                await _db(lambda: supabase.table("messages").insert({
+                    "thread_id": thread["id"],
+                    "tenant_id": tenant.tenant_id,
+                    "contact_id": contact.get("id"),
+                    "wa_message_id": message.get("id"),
+                    "role": "user",
+                    "body": message_text,
+                    "language": language,
+                    "handled_by": "human",
+                }).execute())
+                return
+        else:
+            language = detected_lang
+            new_thread = await _db(lambda: supabase.table("whatsapp_threads").insert({
                 "tenant_id": tenant.tenant_id,
                 "contact_id": contact.get("id"),
-                "wa_message_id": message.get("id"),
-                "role": "user",
-                "body": message_text,
+                "contact_number": formatted_phone,
+                "contact_name": contact.get("name"),
                 "language": language,
-                "handled_by": "human",
+                "status": "ai",
+                "last_message_at": datetime.now().isoformat(),
             }).execute())
+            thread = new_thread.data[0]
+
+        # ── Opt-out / unsubscribe ──────────────────────────────────────────────
+        if _OPT_OUT_RE.search(message_text):
+            if contact.get("id"):
+                _optcid = contact["id"]
+                await _db(lambda: supabase.table("contacts").update(
+                    {"opted_out": True}
+                ).eq("id", _optcid).execute())
+                await _log_contact_change(
+                    tenant_id=tenant.tenant_id, contact_id=_optcid,
+                    field="opted_out", old_value="false", new_value="true",
+                )
+            ack = _OPT_OUT_REPLIES.get(detected_lang, _OPT_OUT_REPLIES["en"])
+            try:
+                await send_whatsapp_message(
+                    to=from_number, text=ack,
+                    phone_number_id=tenant.wa_phone_number_id,
+                    access_token=tenant.wa_access_token,
+                )
+            except Exception as _e:
+                logger.warning(f"Opt-out ack failed: {_e}")
+            logger.info(f"WA opt-out | tenant={tenant.tenant_id} | contact={contact.get('id')}")
             return
-    else:
-        language = detected_lang
-        new_thread = await _db(lambda: supabase.table("whatsapp_threads").insert({
+
+        # ── Guardrails ───────────────────────────────────────────────────────────
+        if check_emergency(message_text):
+            logger.info(f"WA emergency keyword | tenant={tenant.tenant_id}")
+            await _handle_wa_escalation(
+                tenant, thread, contact, from_number,
+                reason="emergency",
+                reply="This sounds urgent. I'm connecting you with our staff right away.",
+                supabase=supabase,
+            )
+            return
+
+        if check_escalation_request(message_text):
+            logger.info(f"WA escalation request | tenant={tenant.tenant_id}")
+            await _handle_wa_escalation(
+                tenant, thread, contact, from_number,
+                reason="user_requested",
+                reply="Of course! I'll connect you with someone now. Please give us a moment.",
+                supabase=supabase,
+            )
+            return
+
+        # ── Feedback campaign intercept ─────────────────────────────────────────
+        # Check before LLM: if there's a pending feedback campaign and the patient
+        # replied with a 1-5 rating, handle it here and skip the booking AI entirely.
+        if contact.get("id"):
+            from api.campaigns import get_pending_feedback_campaign, extract_rating, handle_feedback_response
+            _pending = await get_pending_feedback_campaign(tenant.tenant_id, contact["id"])
+            if _pending:
+                _rating = extract_rating(message_text)
+                if _rating is not None:
+                    await handle_feedback_response(
+                        tenant=tenant,
+                        contact=contact,
+                        thread=thread,
+                        from_number=from_number,
+                        campaign=_pending,
+                        rating=_rating,
+                        message_text=message_text,
+                        language=language,
+                    )
+                    return
+
+        history_result = await _db(lambda: supabase.table("messages").select("role, body").eq(
+            "thread_id", thread["id"]
+        ).order("created_at", desc=False).limit(20).execute())
+
+        # Cap total history size sent to LLM at 50 KB to control token cost
+        _MAX_HISTORY_BYTES = 50_000
+        history_messages = history_result.data
+        total_bytes = sum(len((m.get("body") or "").encode()) for m in history_messages)
+        while history_messages and total_bytes > _MAX_HISTORY_BYTES:
+            removed = history_messages.pop(0)
+            total_bytes -= len((removed.get("body") or "").encode())
+
+        conversation_history = [
+            {"role": m["role"], "content": m["body"]} for m in history_messages
+        ]
+        conversation_history.append({"role": "user", "content": message_text})
+
+        await _db(lambda: supabase.table("messages").insert({
+            "thread_id": thread["id"],
             "tenant_id": tenant.tenant_id,
             "contact_id": contact.get("id"),
-            "contact_number": formatted_phone,
-            "contact_name": contact.get("name"),
+            "wa_message_id": message.get("id"),
+            "role": "user",
+            "body": message_text,
             "language": language,
-            "status": "ai",
-            "last_message_at": datetime.now().isoformat(),
+            "handled_by": "ai",
         }).execute())
-        thread = new_thread.data[0]
 
-    # ── Opt-out / unsubscribe ──────────────────────────────────────────────────
-    if _OPT_OUT_RE.search(message_text):
-        if contact.get("id"):
-            _optcid = contact["id"]
-            await _db(lambda: supabase.table("contacts").update(
-                {"opted_out": True}
-            ).eq("id", _optcid).execute())
-            await _log_contact_change(
-                tenant_id=tenant.tenant_id, contact_id=_optcid,
-                field="opted_out", old_value="false", new_value="true",
-            )
-        ack = _OPT_OUT_REPLIES.get(detected_lang, _OPT_OUT_REPLIES["en"])
+        llm_client = load_llm_client(tenant)
+        is_new_conversation = len(conversation_history) == 1
+        date_context = _build_date_context(
+            reply_language=getattr(tenant, "reply_language", "ask"),
+            is_new_conversation=is_new_conversation,
+            conversation_language=language,
+            timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
+        )
+
+        messages_payload = [
+            {"role": "system", "content": tenant.system_prompt + date_context},
+            *conversation_history,
+        ]
+
+        all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
+        enabled_tools = _select_tools(all_tools, history_messages, message_text)
+    except Exception as setup_err:
+        logger.error(
+            f"WA message setup failed | tenant={tenant.tenant_id} | from={from_number} | error={setup_err}",
+            exc_info=True,
+        )
         try:
             await send_whatsapp_message(
-                to=from_number, text=ack,
+                to=from_number,
+                text="Sorry, I'm having trouble responding right now. Our team will follow up with you shortly.",
                 phone_number_id=tenant.wa_phone_number_id,
                 access_token=tenant.wa_access_token,
             )
-        except Exception as _e:
-            logger.warning(f"Opt-out ack failed: {_e}")
-        logger.info(f"WA opt-out | tenant={tenant.tenant_id} | contact={contact.get('id')}")
+        except Exception:
+            pass
+        try:
+            await escalate_to_human(
+                tenant_id=tenant.tenant_id,
+                reason="ai_error",
+                context=f"WA message setup error: {setup_err}",
+                source="whatsapp",
+                contact_name=contact.get("name", ""),
+                contact_phone=formatted_phone,
+            )
+        except Exception:
+            pass
         return
-
-    # ── Guardrails ──────────────────────────────────────────────────────────────
-    if check_emergency(message_text):
-        logger.info(f"WA emergency keyword | tenant={tenant.tenant_id}")
-        await _handle_wa_escalation(
-            tenant, thread, contact, from_number,
-            reason="emergency",
-            reply="This sounds urgent. I'm connecting you with our staff right away.",
-            supabase=supabase,
-        )
-        return
-
-    if check_escalation_request(message_text):
-        logger.info(f"WA escalation request | tenant={tenant.tenant_id}")
-        await _handle_wa_escalation(
-            tenant, thread, contact, from_number,
-            reason="user_requested",
-            reply="Of course! I'll connect you with someone now. Please give us a moment.",
-            supabase=supabase,
-        )
-        return
-
-    # ── Feedback campaign intercept ─────────────────────────────────────────────
-    # Check before LLM: if there's a pending feedback campaign and the patient
-    # replied with a 1-5 rating, handle it here and skip the booking AI entirely.
-    if contact.get("id"):
-        from api.campaigns import get_pending_feedback_campaign, extract_rating, handle_feedback_response
-        _pending = await get_pending_feedback_campaign(tenant.tenant_id, contact["id"])
-        if _pending:
-            _rating = extract_rating(message_text)
-            if _rating is not None:
-                await handle_feedback_response(
-                    tenant=tenant,
-                    contact=contact,
-                    thread=thread,
-                    from_number=from_number,
-                    campaign=_pending,
-                    rating=_rating,
-                    message_text=message_text,
-                    language=language,
-                )
-                return
-
-    history_result = await _db(lambda: supabase.table("messages").select("role, body").eq(
-        "thread_id", thread["id"]
-    ).order("created_at", desc=False).limit(20).execute())
-
-    # Cap total history size sent to LLM at 50 KB to control token cost
-    _MAX_HISTORY_BYTES = 50_000
-    history_messages = history_result.data
-    total_bytes = sum(len((m.get("body") or "").encode()) for m in history_messages)
-    while history_messages and total_bytes > _MAX_HISTORY_BYTES:
-        removed = history_messages.pop(0)
-        total_bytes -= len((removed.get("body") or "").encode())
-
-    conversation_history = [
-        {"role": m["role"], "content": m["body"]} for m in history_messages
-    ]
-    conversation_history.append({"role": "user", "content": message_text})
-
-    await _db(lambda: supabase.table("messages").insert({
-        "thread_id": thread["id"],
-        "tenant_id": tenant.tenant_id,
-        "contact_id": contact.get("id"),
-        "wa_message_id": message.get("id"),
-        "role": "user",
-        "body": message_text,
-        "language": language,
-        "handled_by": "ai",
-    }).execute())
-
-    llm_client = load_llm_client(tenant)
-    is_new_conversation = len(conversation_history) == 1
-    date_context = _build_date_context(
-        reply_language=getattr(tenant, "reply_language", "ask"),
-        is_new_conversation=is_new_conversation,
-        conversation_language=language,
-        timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
-    )
-
-    messages_payload = [
-        {"role": "system", "content": tenant.system_prompt + date_context},
-        *conversation_history,
-    ]
-
-    all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
-    enabled_tools = _select_tools(all_tools, history_messages, message_text)
 
     # This runs as a background task — the webhook already returned 200 to
     # Meta by now, so an uncaught exception here (missing/invalid LLM key,

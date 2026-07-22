@@ -39,6 +39,14 @@ export async function POST(req: Request) {
   if (new Date(invite.expires_at) < new Date()) {
     return NextResponse.json({ error: 'This invite has expired' }, { status: 410 })
   }
+  // A leaked/forwarded invite link must not let the wrong person join as
+  // staff — only the account whose email matches the invite can accept it.
+  if ((invite.email || '').trim().toLowerCase() !== (user.email || '').trim().toLowerCase()) {
+    return NextResponse.json(
+      { error: `This invite was sent to ${invite.email}. Please log in with that email to accept it.` },
+      { status: 403 }
+    )
+  }
 
   // Insert into staff_profiles
   const { error: insertError } = await supabaseAdmin

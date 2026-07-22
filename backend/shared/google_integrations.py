@@ -23,20 +23,14 @@ class GoogleCalendarIntegration:
         self.calendar_id = calendar_id or "primary"
 
     async def _get_token(self) -> str:
-        from shared.tenant_config import get_supabase_client
+        from shared.tenant_config import get_supabase_client, _db_optional
         supabase = get_supabase_client()
-        try:
-            result = (
-                supabase.table("tenant_settings")
-                .select("google_calendar_token,google_calendar_refresh")
-                .eq("tenant_id", self.tenant_id)
-                .maybe_single()
-                .execute()
-            )
-        except Exception as e:
-            if "PGRST116" in str(e) or "Not Acceptable" in str(e):
-                raise RuntimeError("No Google Calendar credentials found")
-            raise
+        result = await _db_optional(lambda: supabase.table("tenant_settings")
+            .select("google_calendar_token,google_calendar_refresh")
+            .eq("tenant_id", self.tenant_id)
+            .maybe_single()
+            .execute()
+        )
         if not result.data:
             raise RuntimeError("No Google Calendar credentials found")
 
@@ -70,11 +64,11 @@ class GoogleCalendarIntegration:
         if not new_token:
             raise RuntimeError("Token refresh returned no access_token")
 
-        from shared.tenant_config import get_supabase_client
+        from shared.tenant_config import get_supabase_client, _db
         supabase = get_supabase_client()
-        supabase.table("tenant_settings").update(
+        await _db(lambda: supabase.table("tenant_settings").update(
             {"google_calendar_token": new_token}
-        ).eq("tenant_id", self.tenant_id).execute()
+        ).eq("tenant_id", self.tenant_id).execute())
 
         return new_token
 
@@ -363,28 +357,21 @@ async def store_google_tokens(
         if spreadsheet_id:
             update_data["google_sheets_id"] = spreadsheet_id
 
-    supabase.table("tenant_settings").update(update_data).eq("tenant_id", tenant_id).execute()
+    from shared.tenant_config import _db
+    await _db(lambda: supabase.table("tenant_settings").update(update_data).eq("tenant_id", tenant_id).execute())
 
 
 # ── Per-tenant instance getters ────────────────────────────────────────────────
 
 async def get_google_calendar(tenant_id: str) -> Optional[GoogleCalendarIntegration]:
-    from shared.tenant_config import get_supabase_client
+    from shared.tenant_config import get_supabase_client, _db_optional
     supabase = get_supabase_client()
-    try:
-        result = (
-            supabase.table("tenant_settings")
-            .select("google_calendar_token,google_calendar_refresh,google_calendar_id")
-            .eq("tenant_id", tenant_id)
-            .maybe_single()
-            .execute()
-        )
-    except Exception as e:
-        # PostgREST 406s (PGRST116) when maybe_single() matches zero rows —
-        # normal for any tenant that hasn't connected Google Calendar yet.
-        if "PGRST116" in str(e) or "Not Acceptable" in str(e):
-            return None
-        raise
+    result = await _db_optional(lambda: supabase.table("tenant_settings")
+        .select("google_calendar_token,google_calendar_refresh,google_calendar_id")
+        .eq("tenant_id", tenant_id)
+        .maybe_single()
+        .execute()
+    )
     if not result.data:
         return None
     has_token = result.data.get("google_calendar_token") or result.data.get("google_calendar_refresh")

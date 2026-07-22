@@ -18,6 +18,29 @@ const DEDUP_HOURS: Record<Exclude<CampaignType, 'recall'>, number> = {
   feedback: 24,
 }
 
+// Bulk sends can each dispatch hundreds of real WhatsApp messages, so this
+// endpoint needs its own cap independent of everyday API abuse protection —
+// a bug or a compromised session hammering this route in a loop could burn a
+// clinic's Meta message quota fast enough to get the WABA flagged for spam.
+// Best-effort per-tenant limiter (in-memory — resets on cold start / across
+// instances, but still blocks the obvious "spam the button" abuse case).
+const MAX_CONTACTS_PER_UPLOAD = 300
+const _bulkSendCalls = new Map<string, number[]>()
+const _BULK_SEND_WINDOW_MS = 15 * 60_000
+const _BULK_SEND_MAX_CALLS = 5
+
+function isBulkSendRateLimited(tenantId: string): boolean {
+  const now = Date.now()
+  const calls = (_bulkSendCalls.get(tenantId) ?? []).filter((t) => now - t < _BULK_SEND_WINDOW_MS)
+  if (calls.length >= _BULK_SEND_MAX_CALLS) {
+    _bulkSendCalls.set(tenantId, calls)
+    return true
+  }
+  calls.push(now)
+  _bulkSendCalls.set(tenantId, calls)
+  return false
+}
+
 async function verifyTenantAccess(tenantId: string): Promise<boolean> {
   const cookieStore = await cookies()
   const supabase = createServerClient(
@@ -216,11 +239,16 @@ async function sendOneCampaignMessage(params: {
   }
 }
 
+// Reminder/feedback are only ever shown here for the readable thread-history
+// log — the real send always uses the fixed, Meta-approved template text via
+// `templateName` above. These mirror that approved wording exactly so the
+// log never shows text the patient didn't actually receive. Recall is the
+// one type still genuinely sent as free text, so its wording here is real.
 const DEFAULT_TEMPLATES: Record<CampaignType, string> = {
   reminder:
-    'Hi {name}, this is a reminder that your {service} appointment is coming up. Reply CANCEL if you need to cancel.',
+    'Hi {name},\n\nThis is a reminder that you have a {service} appointment on {date} at {time}.\n\nReply CANCEL if you need to reschedule.',
   feedback:
-    'Hi {name}! 😊 Thank you for visiting us for your {service}. How was your experience? Please reply with a number 1–5.',
+    "Hi {name},\n\nThank you for visiting us for your {service}!\n\nWe'd love to hear your feedback — please reply with a number from 1 to 5, where 5 means excellent.\n\nReply STOP to opt out",
   recall:
     "Hi {name}! 👋 It's been a while since your last visit at {clinic}. We'd love to see you again! Just reply to book your next appointment. 😊",
 }
@@ -245,8 +273,14 @@ export async function POST(req: NextRequest) {
     if (!await verifyTenantAccess(tenant_id)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
     }
-    if (contacts.length > 500) {
-      return NextResponse.json({ error: 'Maximum 500 contacts per upload' }, { status: 400 })
+    if (contacts.length > MAX_CONTACTS_PER_UPLOAD) {
+      return NextResponse.json({ error: `Maximum ${MAX_CONTACTS_PER_UPLOAD} contacts per upload` }, { status: 400 })
+    }
+    if (isBulkSendRateLimited(tenant_id)) {
+      return NextResponse.json(
+        { error: 'Too many bulk sends in a short time — please wait a few minutes and try again.' },
+        { status: 429 }
+      )
     }
 
     // Load tenant credentials
@@ -277,7 +311,11 @@ export async function POST(req: NextRequest) {
     const templateLanguage = tenantSettings?.whatsapp_template_language || 'en'
 
     const results = { sent: 0, skipped: 0, failed: 0 }
-    const errors: string[] = []
+    // Per-contact detail for skipped/failed rows — a bare aggregate count
+    // ("12 failed") gives the receptionist no way to know which patients
+    // weren't reminded or why, so they can't fix and resend without
+    // re-uploading the whole batch and guessing.
+    const details: { name: string; phone: string; status: 'skipped' | 'failed'; reason: string }[] = []
 
     // Send in chunks of 5 to stay within rate limits without timing out
     const CHUNK = 5
@@ -299,16 +337,17 @@ export async function POST(req: NextRequest) {
           })
         )
       )
-      for (const r of chunkResults) {
+      chunkResults.forEach((r, idx) => {
         const outcome = r.status === 'fulfilled' ? r.value : { status: 'failed' as const, reason: r.reason?.message }
         results[outcome.status]++
         if (outcome.reason && (outcome.status === 'failed' || outcome.status === 'skipped')) {
-          errors.push(outcome.reason)
+          const c = chunk[idx]
+          details.push({ name: c.name || '(no name)', phone: c.phone, status: outcome.status, reason: outcome.reason })
         }
-      }
+      })
     }
 
-    return NextResponse.json({ ...results, errors })
+    return NextResponse.json({ ...results, details })
   } catch (e) {
     console.error('send-csv error:', e)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

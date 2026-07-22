@@ -34,18 +34,6 @@ export default function AppointmentsPage() {
     },
   })
 
-  const { data: templates } = useQuery({
-    queryKey: ['tenant-settings', 'campaign-templates'],
-    queryFn: async () => {
-      const tenant = await getCurrentTenant()
-      if (!tenant) return null
-      const { data } = await supabase.from('tenant_settings')
-        .select('reminder_1d_template,feedback_message_template')
-        .eq('tenant_id', tenant.id).maybeSingle()
-      return data
-    },
-  })
-
   async function sendOneOff(booking: any, type: 'reminder' | 'feedback') {
     const tenant = await getCurrentTenant()
     if (!tenant || !booking.contact?.phone) return
@@ -58,7 +46,6 @@ export default function AppointmentsPage() {
         body: JSON.stringify({
           tenant_id: tenant.id,
           type,
-          message_template: type === 'reminder' ? templates?.reminder_1d_template : templates?.feedback_message_template,
           contacts: [{
             name: booking.contact?.name || '',
             phone: booking.contact.phone,
@@ -71,8 +58,8 @@ export default function AppointmentsPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Send failed')
       if (data.sent > 0) toast.success(type === 'reminder' ? 'Reminder sent' : 'Feedback request sent')
-      else if (data.skipped > 0) toast.info(data.errors?.[0] || 'Already sent recently — skipped to avoid spamming this patient')
-      else toast.error(data.errors?.[0] || 'Send failed')
+      else if (data.skipped > 0) toast.info(data.details?.[0]?.reason || 'Already sent recently — skipped to avoid spamming this patient')
+      else toast.error(data.details?.[0]?.reason || 'Send failed')
       queryClient.invalidateQueries({ queryKey: ['bookings'] })
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Send failed')

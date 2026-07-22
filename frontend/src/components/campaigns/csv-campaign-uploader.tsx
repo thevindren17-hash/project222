@@ -17,7 +17,8 @@ export interface ExtraColumn {
   candidates: string[]
 }
 
-interface CsvResult { sent: number; skipped: number; failed: number }
+interface CsvResultDetail { name: string; phone: string; status: 'skipped' | 'failed'; reason: string }
+interface CsvResult { sent: number; skipped: number; failed: number; details?: CsvResultDetail[] }
 
 function detectCol(headers: string[], candidates: string[]): string {
   const lower = headers.map(h => h.toLowerCase().trim())
@@ -260,19 +261,44 @@ export default function CsvCampaignUploader({
 
       {/* Results */}
       {result && (
-        <div className="grid grid-cols-3 gap-3 text-center">
-          <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3">
-            <p className="text-xl font-bold text-green-600 dark:text-green-400">{result.sent}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Sent</p>
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3">
+              <p className="text-xl font-bold text-green-600 dark:text-green-400">{result.sent}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Sent</p>
+            </div>
+            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-3">
+              <p className="text-xl font-bold text-yellow-600 dark:text-yellow-400">{result.skipped}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Already contacted</p>
+            </div>
+            <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3">
+              <p className="text-xl font-bold text-destructive">{result.failed}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Failed</p>
+            </div>
           </div>
-          <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-3">
-            <p className="text-xl font-bold text-yellow-600 dark:text-yellow-400">{result.skipped}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Already contacted</p>
-          </div>
-          <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3">
-            <p className="text-xl font-bold text-destructive">{result.failed}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Failed</p>
-          </div>
+
+          {!!result.details?.length && (
+            <div className="rounded-md border overflow-hidden">
+              <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-muted/60 border-b">
+                Skipped / failed contacts — fix and re-upload just these rows if needed
+              </div>
+              <div className="max-h-56 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <tbody>
+                    {result.details.map((d, i) => (
+                      <tr key={i} className="border-t">
+                        <td className="px-3 py-2 whitespace-nowrap">{d.name}</td>
+                        <td className="px-3 py-2 font-mono whitespace-nowrap">{d.phone}</td>
+                        <td className={`px-3 py-2 ${d.status === 'failed' ? 'text-destructive' : 'text-yellow-600 dark:text-yellow-400'}`}>
+                          {d.reason}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
