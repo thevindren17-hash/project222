@@ -117,8 +117,11 @@ async def _complete_google_connection(tenant_id: str, access_token: str, refresh
     One connection now covers both Calendar ('primary' calendar) and Sheets
     (a spreadsheet auto-provisioned right here, rather than making the
     clinic paste a URL/ID) since both scopes are always requested together.
+    A clinic can later switch to their own existing spreadsheet instead via
+    /google/select-sheet — this auto-created one is just the zero-setup
+    default.
     """
-    from shared.google_integrations import store_google_tokens, create_patient_spreadsheet
+    from shared.google_integrations import store_google_tokens, create_patient_spreadsheet, SHEETS_TAB_NAME
     from shared.tenant_config import get_supabase_client, _db_optional
 
     supabase = get_supabase_client()
@@ -142,6 +145,7 @@ async def _complete_google_connection(tenant_id: str, access_token: str, refresh
         refresh_token=refresh_token,
         calendar_id="primary",
         spreadsheet_id=spreadsheet_id,
+        sheets_tab=SHEETS_TAB_NAME if spreadsheet_id else None,
     )
 
 
@@ -160,6 +164,7 @@ async def google_disconnect(request: Request):
         "google_refresh_token": None,
         "google_calendar_id": None,
         "google_sheets_id": None,
+        "google_sheets_tab": None,
     }).eq("tenant_id", tenant_id).execute())
     return {"success": True}
 
@@ -174,32 +179,48 @@ async def google_select_sheet(req: SelectSheetRequest):
     """
     Point the patient-mirror at a clinic's own existing spreadsheet (pasted
     link or bare ID) instead of the one we auto-created — total control,
-    matches how they're used to picking a sheet in tools like n8n. We only
-    ever add/write our own dedicated "Patients" tab in it, never touch any
-    other tab (inventory, whatever else lives in the same file).
+    matches how they're used to picking a sheet in tools like n8n. No fixed
+    layout: we never create, rename, or add columns to their sheet — we
+    only confirm a header row already exists (so we know what to match
+    against later) and remember which tab to use.
+
+    If the pasted link includes #gid=... (i.e. they copied the link while
+    looking at one specific tab), that exact tab is used. Otherwise we use
+    the spreadsheet's first tab.
     """
     from shared.google_integrations import (
-        extract_spreadsheet_id, get_valid_access_token, get_spreadsheet_info, ensure_patients_tab,
+        parse_sheet_link, get_valid_access_token, get_spreadsheet_info, check_tab_has_headers,
     )
     from shared.tenant_config import get_supabase_client, _db
 
-    spreadsheet_id = extract_spreadsheet_id(req.sheet_link)
+    spreadsheet_id, gid = parse_sheet_link(req.sheet_link)
     if not spreadsheet_id:
         raise HTTPException(status_code=400, detail="Couldn't read a spreadsheet ID from that link")
 
     try:
         access_token = await get_valid_access_token(req.tenant_id)
         info = await get_spreadsheet_info(spreadsheet_id, access_token)
-        await ensure_patients_tab(spreadsheet_id, access_token, info["tab_names"])
+        if not info["tabs"]:
+            raise RuntimeError("That spreadsheet has no tabs")
+        tab_name = info["tabs"][0]["title"]
+        if gid is not None:
+            matched = next((t for t in info["tabs"] if str(t["sheet_id"]) == gid), None)
+            if matched:
+                tab_name = matched["title"]
+        if not await check_tab_has_headers(spreadsheet_id, tab_name, access_token):
+            raise RuntimeError(
+                f"The '{tab_name}' tab doesn't have a header row yet — add your own column names "
+                "(e.g. Name, Phone, Service) in row 1 first, then try again."
+            )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     supabase = get_supabase_client()
     await _db(lambda: supabase.table("tenant_settings").update(
-        {"google_sheets_id": spreadsheet_id}
+        {"google_sheets_id": spreadsheet_id, "google_sheets_tab": tab_name}
     ).eq("tenant_id", req.tenant_id).execute())
 
-    return {"success": True, "spreadsheet_id": spreadsheet_id, "title": info["title"]}
+    return {"success": True, "spreadsheet_id": spreadsheet_id, "title": info["title"], "tab_name": tab_name}
 
 
 async def _exchange_google_code(tenant_id: str, code: str):

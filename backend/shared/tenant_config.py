@@ -231,6 +231,7 @@ class TenantConfig:
     wa_verify_token: Optional[str] = None
     google_calendar_id: Optional[str] = None
     google_sheets_id: Optional[str] = None
+    google_sheets_tab: Optional[str] = None
     provider_credentials: Dict[str, Any] = field(default_factory=dict)
     voice_reply_enabled: bool = False
     voice_stt_provider: str = "openai"
@@ -298,6 +299,7 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         wa_verify_token=tenant_row.get("wa_verify_token"),
         google_calendar_id=settings.get("google_calendar_id"),
         google_sheets_id=settings.get("google_sheets_id"),
+        google_sheets_tab=settings.get("google_sheets_tab"),
         provider_credentials=settings.get("provider_credentials") or {},
         voice_reply_enabled=bool(settings.get("voice_reply_enabled", False)),
         voice_stt_provider=settings.get("voice_stt_provider") or "openai",

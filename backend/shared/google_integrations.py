@@ -223,11 +223,50 @@ class GoogleCalendarIntegration:
 
 
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
+# Only used for the spreadsheet we auto-create ourselves (a blank file, so
+# WE get to choose its layout). A clinic's own existing spreadsheet keeps
+# whatever tab/headers they already made — see _match_header_to_field below.
 SHEETS_TAB_NAME = "Patients"
-SHEETS_HEADER_ROW = [
-    "Timestamp", "Event", "Patient Name", "Phone", "Source",
-    "Service", "Notes", "Custom Fields",
-]
+SHEETS_HEADER_ROW = ["Timestamp", "Event", "Patient Name", "Phone", "Source", "Service", "Notes"]
+
+# Recognized aliases for the built-in fields, so a clinic's own column names
+# ("Date", "Client Name", "Contact No.") still get matched without them
+# needing to use our exact wording. Compared against normalized headers
+# (lowercased, punctuation/spaces stripped) — see _normalize_header.
+_CANONICAL_FIELD_ALIASES: Dict[str, List[str]] = {
+    "timestamp": ["timestamp", "date", "datetime", "dateandtime", "createdat", "time"],
+    "event": ["event", "status", "type"],
+    "patient_name": ["name", "patientname", "patient", "fullname", "clientname"],
+    "phone": ["phone", "phonenumber", "contact", "mobile", "contactnumber", "contactno"],
+    "source": ["source"],
+    "service": ["service", "servicetype", "treatment"],
+    "notes": ["notes", "note", "remarks", "remark"],
+}
+
+
+def _normalize_header(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _match_header_to_field(header: str, available: Dict[str, str]) -> Optional[str]:
+    """
+    Given one column header from a clinic's sheet, find which (if any) of
+    the not-yet-placed values belongs there. Built-in fields match via the
+    alias list above; custom fields match by their own key (normalized the
+    same way a label gets slugified into a key, e.g. "Insurance Provider"
+    and "insurance_provider" both normalize to "insuranceprovider").
+    """
+    h = _normalize_header(header)
+    if not h:
+        return None
+    for canonical, aliases in _CANONICAL_FIELD_ALIASES.items():
+        if h in aliases and canonical in available:
+            return canonical
+    for key in available:
+        if key not in _CANONICAL_FIELD_ALIASES and _normalize_header(key) == h:
+            return key
+    return None
 
 
 class GoogleSheetsIntegration:
@@ -238,9 +277,10 @@ class GoogleSheetsIntegration:
     already knows how to use.
     """
 
-    def __init__(self, tenant_id: str, spreadsheet_id: Optional[str] = None):
+    def __init__(self, tenant_id: str, spreadsheet_id: Optional[str] = None, tab_name: Optional[str] = None):
         self.tenant_id = tenant_id
         self.spreadsheet_id = spreadsheet_id
+        self.tab_name = tab_name or SHEETS_TAB_NAME
 
     async def _get_token(self) -> str:
         from shared.tenant_config import get_supabase_client, _db_optional
@@ -280,32 +320,57 @@ class GoogleSheetsIntegration:
     ) -> Dict[str, Any]:
         if not self.spreadsheet_id:
             return {"success": False, "error": "No spreadsheet configured"}
-        custom_fields_str = "; ".join(f"{k}: {v}" for k, v in (custom_fields or {}).items())
-        row_data = [
-            datetime.now().isoformat(),
-            status,
-            name,
-            phone,
-            source,
-            service_interest or "",
-            notes or "",
-            custom_fields_str,
-        ]
+        values = {
+            "timestamp": datetime.now().isoformat(),
+            "event": status,
+            "patient_name": name,
+            "phone": phone,
+            "source": source,
+            "service": service_interest or "",
+            "notes": notes or "",
+            **(custom_fields or {}),
+        }
         try:
-            await self._append_row(row_data)
+            await self._append_mapped_row(values)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def _append_row(self, row_data: List[str]):
+    async def _append_mapped_row(self, values: Dict[str, str]):
+        """
+        No fixed column layout — read whatever header row already exists in
+        the target tab and write each value into whichever column is
+        actually named for it (matched by normalized name, so "Insurance
+        Provider", "insurance_provider", and "insuranceprovider" all match
+        the same custom field key). Any header we have no matching value
+        for is left blank; any value with no matching header is simply not
+        written — nothing here ever adds, renames, or reorders a clinic's
+        own columns.
+        """
         token = await self._get_token()
-        range_ = f"{SHEETS_TAB_NAME}!A:H"
         async with httpx.AsyncClient(timeout=15) as client:
+            header_res = await client.get(
+                f"{SHEETS_API}/{self.spreadsheet_id}/values/{self.tab_name}!1:1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if header_res.status_code != 200:
+                raise RuntimeError(f"Could not read the '{self.tab_name}' tab's header row ({header_res.status_code}): {header_res.text[:200]}")
+            header_rows = header_res.json().get("values") or []
+            headers = header_rows[0] if header_rows else []
+            if not headers:
+                raise RuntimeError(f"The '{self.tab_name}' tab has no header row yet — add your own column headers first")
+
+            remaining = dict(values)
+            row: List[str] = []
+            for header in headers:
+                match_key = _match_header_to_field(header, remaining)
+                row.append(str(remaining.pop(match_key)) if match_key else "")
+
             r = await client.post(
-                f"{SHEETS_API}/{self.spreadsheet_id}/values/{range_}:append",
+                f"{SHEETS_API}/{self.spreadsheet_id}/values/{self.tab_name}!A1:append",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
-                json={"values": [row_data]},
+                json={"values": [row]},
             )
         if r.status_code not in (200, 201):
             raise RuntimeError(f"Sheets append failed ({r.status_code}): {r.text[:200]}")
@@ -400,6 +465,7 @@ async def store_google_tokens(
     refresh_token: str,
     calendar_id: Optional[str] = None,
     spreadsheet_id: Optional[str] = None,
+    sheets_tab: Optional[str] = None,
 ):
     """Store the (single, unified) Google OAuth tokens in tenant_settings."""
     from shared.tenant_config import get_supabase_client, _db
@@ -412,6 +478,8 @@ async def store_google_tokens(
         update_data["google_calendar_id"] = calendar_id
     if spreadsheet_id:
         update_data["google_sheets_id"] = spreadsheet_id
+    if sheets_tab:
+        update_data["google_sheets_tab"] = sheets_tab
 
     await _db(lambda: supabase.table("tenant_settings").update(update_data).eq("tenant_id", tenant_id).execute())
 
@@ -447,23 +515,27 @@ async def create_patient_spreadsheet(clinic_name: str, access_token: str) -> str
     return spreadsheet_id
 
 
-def extract_spreadsheet_id(url_or_id: str) -> Optional[str]:
+def parse_sheet_link(url_or_id: str) -> "tuple[Optional[str], Optional[str]]":
     """
     Accept either a bare spreadsheet ID or a full Google Sheets URL (any of
-    its usual forms) and return just the ID — this is what lets a clinic
-    literally paste the link from their browser address bar.
+    its usual forms, including a #gid=... pointing at one specific tab) and
+    return (spreadsheet_id, gid). gid is None if the link didn't include
+    one (e.g. a bare ID, or a link to the first/only tab) — in that case
+    the caller falls back to the spreadsheet's first tab.
     """
     import re
     s = (url_or_id or "").strip()
     if not s:
-        return None
-    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", s)
-    if match:
-        return match.group(1)
+        return None, None
+    gid_match = re.search(r"[#&?]gid=(\d+)", s)
+    gid = gid_match.group(1) if gid_match else None
+    id_match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", s)
+    if id_match:
+        return id_match.group(1), gid
     # Not a URL — assume they pasted the bare ID directly.
     if re.fullmatch(r"[a-zA-Z0-9_-]{20,}", s):
-        return s
-    return None
+        return s, gid
+    return None, None
 
 
 async def get_valid_access_token(tenant_id: str) -> str:
@@ -493,13 +565,14 @@ async def get_spreadsheet_info(spreadsheet_id: str, access_token: str) -> Dict[s
     """
     Confirm the connected account can actually access this spreadsheet (a
     clinic could paste a link to a sheet their Google account has no access
-    to, or a mistyped ID) and return its title + existing tab names.
+    to, or a mistyped ID) and return its title + every tab's name/sheetId
+    (sheetId is what a pasted link's #gid= refers to).
     """
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(
             f"{SHEETS_API}/{spreadsheet_id}",
             headers={"Authorization": f"Bearer {access_token}"},
-            params={"fields": "properties.title,sheets.properties.title"},
+            params={"fields": "properties.title,sheets.properties.title,sheets.properties.sheetId"},
         )
     if r.status_code == 404:
         raise RuntimeError("Spreadsheet not found — check the link and try again")
@@ -510,35 +583,29 @@ async def get_spreadsheet_info(spreadsheet_id: str, access_token: str) -> Dict[s
     data = r.json()
     return {
         "title": data.get("properties", {}).get("title", ""),
-        "tab_names": [s["properties"]["title"] for s in data.get("sheets", [])],
+        "tabs": [
+            {"title": s["properties"]["title"], "sheet_id": s["properties"]["sheetId"]}
+            for s in data.get("sheets", [])
+        ],
     }
 
 
-async def ensure_patients_tab(spreadsheet_id: str, access_token: str, existing_tab_names: List[str]) -> None:
+async def check_tab_has_headers(spreadsheet_id: str, tab_name: str, access_token: str) -> bool:
     """
-    Add a dedicated "Patients" tab (+ header row) to a clinic's existing
-    spreadsheet if it doesn't already have one — never touches any of their
-    other tabs (inventory, whatever else they keep in the same file).
+    We never create or rewrite a clinic's own header row (no fixed layout
+    to impose) — just confirm one already exists before saving the
+    connection, so the error surfaces now instead of on the first silent
+    failed sync later.
     """
-    if SHEETS_TAB_NAME in existing_tab_names:
-        return
     async with httpx.AsyncClient(timeout=15) as client:
-        add_res = await client.post(
-            f"{SHEETS_API}/{spreadsheet_id}:batchUpdate",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            json={"requests": [{"addSheet": {"properties": {"title": SHEETS_TAB_NAME}}}]},
+        r = await client.get(
+            f"{SHEETS_API}/{spreadsheet_id}/values/{tab_name}!1:1",
+            headers={"Authorization": f"Bearer {access_token}"},
         )
-        if add_res.status_code not in (200, 201):
-            raise RuntimeError(f"Could not add a Patients tab ({add_res.status_code}): {add_res.text[:200]}")
-
-        header_res = await client.put(
-            f"{SHEETS_API}/{spreadsheet_id}/values/{SHEETS_TAB_NAME}!A1:H1",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            params={"valueInputOption": "RAW"},
-            json={"values": [SHEETS_HEADER_ROW]},
-        )
-        if header_res.status_code not in (200, 201):
-            logger.warning(f"Patients tab header write failed (non-fatal): {header_res.text[:200]}")
+    if r.status_code != 200:
+        raise RuntimeError(f"Could not read the '{tab_name}' tab ({r.status_code}): {r.text[:200]}")
+    rows = r.json().get("values") or []
+    return bool(rows and rows[0])
 
 
 # ── Per-tenant instance getters ────────────────────────────────────────────────
@@ -566,5 +633,9 @@ async def get_google_sheets(tenant_id: str) -> Optional[GoogleSheetsIntegration]
 
     tenant = await get_tenant_by_id(tenant_id)
     if tenant and tenant.google_sheets_id:
-        return GoogleSheetsIntegration(tenant_id=tenant_id, spreadsheet_id=tenant.google_sheets_id)
+        return GoogleSheetsIntegration(
+            tenant_id=tenant_id,
+            spreadsheet_id=tenant.google_sheets_id,
+            tab_name=getattr(tenant, "google_sheets_tab", None),
+        )
     return None

@@ -55,7 +55,7 @@ export default function GoogleIntegrationPage() {
       if (!tenant) return null
       const { data } = await supabase
         .from('tenant_settings')
-        .select('google_access_token, google_refresh_token, google_calendar_id, google_sheets_id, updated_at')
+        .select('google_access_token, google_refresh_token, google_calendar_id, google_sheets_id, google_sheets_tab, updated_at')
         .eq('tenant_id', tenant.id)
         .maybeSingle()
       return data
@@ -129,10 +129,10 @@ export default function GoogleIntegrationPage() {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Could not use that spreadsheet')
-      return data as { title: string }
+      return data as { title: string; tab_name: string }
     },
     onSuccess: (data) => {
-      toast.success(`Now using "${data.title}" — a Patients tab was added if it didn't already have one`)
+      toast.success(`Now using the "${data.tab_name}" tab in "${data.title}"`)
       setSheetLink('')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'google'] })
     },
@@ -307,9 +307,13 @@ export default function GoogleIntegrationPage() {
               <div>
                 <CardTitle>Spreadsheet</CardTitle>
                 <CardDescription>
-                  By default we created a new spreadsheet for you. If you'd rather use one of your own —
-                  even one you already use for something else, like inventory — paste its link below. We
-                  only ever add our own "Patients" tab to it; nothing else in the file is touched.
+                  By default we created a new spreadsheet for you. To use your own instead — even one you
+                  already use for something else, like inventory — paste its link below. No fixed layout:
+                  we match your existing column headers by name (however you've named them), so your own
+                  structure is never changed. Just make sure the tab you want already has a header row
+                  (Name, Phone, Service, etc. — whatever you use). To target one specific tab in a
+                  multi-tab file, copy the link while that tab is open (it includes #gid=...); otherwise
+                  the first tab is used.
                 </CardDescription>
               </div>
             </div>
@@ -317,7 +321,7 @@ export default function GoogleIntegrationPage() {
           <CardContent className="space-y-3">
             {spreadsheetUrl && (
               <p className="text-xs text-muted-foreground">
-                Currently using:{' '}
+                Currently using{settings?.google_sheets_tab ? ` the "${settings.google_sheets_tab}" tab in` : ''}:{' '}
                 <a href={spreadsheetUrl} target="_blank" rel="noopener noreferrer" className="underline">
                   {spreadsheetUrl}
                 </a>
