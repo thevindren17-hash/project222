@@ -20,12 +20,23 @@ CREATE POLICY "Staff can view own voice sessions" ON voice_sessions
 -- 2. Pin search_path on functions the Supabase security advisor flagged as
 --    mutable-search-path (schema-hijacking hardening) — includes the two
 --    functions that encrypt/decrypt BYOK provider credentials at rest.
+--
+--    encrypt_credential/decrypt_credential call pgp_sym_encrypt/decrypt,
+--    which live in the `extensions` schema on Supabase (not `public`) — so
+--    those two need BOTH schemas on the search_path, or the function can no
+--    longer find pgp_sym_encrypt at all and every credential save fails
+--    with "Failed to encrypt". (This broke in production once already —
+--    fixed live via migration 012, corrected here so a fresh run of this
+--    file doesn't reintroduce it.) Note the syntax: `TO public, extensions`
+--    as bare comma-separated identifiers, NOT a single quoted string
+--    ('public, extensions') — the quoted form is stored as one schema name
+--    containing a literal comma, which silently fails the same way.
 ALTER FUNCTION public.update_updated_at_column() SET search_path = 'public';
 ALTER FUNCTION public.check_booking_slot_available(uuid, timestamptz, uuid) SET search_path = 'public';
 ALTER FUNCTION public.reset_daily_booking_count() SET search_path = 'public';
 ALTER FUNCTION public.purge_old_rate_limit_entries() SET search_path = 'public';
-ALTER FUNCTION public.encrypt_credential(text, text) SET search_path = 'public';
-ALTER FUNCTION public.decrypt_credential(text, text) SET search_path = 'public';
+ALTER FUNCTION public.encrypt_credential(text, text) SET search_path TO public, extensions;
+ALTER FUNCTION public.decrypt_credential(text, text) SET search_path TO public, extensions;
 
 -- NOT done here (needs the Supabase Dashboard, not SQL):
 -- Authentication -> Policies -> enable "Leaked password protection"
