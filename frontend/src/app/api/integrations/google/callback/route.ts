@@ -5,25 +5,36 @@ const BACKEND = (process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL 
 
 export async function GET(req: NextRequest) {
   const { searchParams, origin } = new URL(req.url)
-  const calendarPage = `${origin}/settings/plugins/calendar`
+
+  const code = searchParams.get('code')
+  const state = searchParams.get('state')
+
+  // The service (calendar vs sheets) determines which settings page to send
+  // the user back to — parse it from state before we know if anything else
+  // succeeded, so even error redirects land on the right page.
+  let servicePage = 'calendar'
+  if (state) {
+    try {
+      const parsed = JSON.parse(state) as { service?: string }
+      if (parsed.service === 'sheets') servicePage = 'sheets'
+    } catch {}
+  }
+  const destPage = `${origin}/settings/plugins/${servicePage}`
 
   const error = searchParams.get('error')
   if (error) {
     const messages: Record<string, string> = {
       access_denied: 'access_denied',
     }
-    return NextResponse.redirect(`${calendarPage}?error=${messages[error] ?? error}`)
+    return NextResponse.redirect(`${destPage}?error=${messages[error] ?? error}`)
   }
 
-  const code = searchParams.get('code')
-  const state = searchParams.get('state')
-
   if (!code || !state) {
-    return NextResponse.redirect(`${calendarPage}?error=missing_params`)
+    return NextResponse.redirect(`${destPage}?error=missing_params`)
   }
 
   if (!BACKEND) {
-    return NextResponse.redirect(`${calendarPage}?error=backend_not_configured`)
+    return NextResponse.redirect(`${destPage}?error=backend_not_configured`)
   }
 
   // The `state` param carries which tenant this connection is for — confirm the
@@ -33,10 +44,10 @@ export async function GET(req: NextRequest) {
     const { tenant_id } = JSON.parse(state) as { tenant_id?: string }
     const { verifyTenantAccess } = await import('@/lib/server/verify-tenant-access')
     if (!tenant_id || !(await verifyTenantAccess(tenant_id))) {
-      return NextResponse.redirect(`${calendarPage}?error=unauthorized`)
+      return NextResponse.redirect(`${destPage}?error=unauthorized`)
     }
   } catch {
-    return NextResponse.redirect(`${calendarPage}?error=invalid_state`)
+    return NextResponse.redirect(`${destPage}?error=invalid_state`)
   }
 
   try {
@@ -51,11 +62,11 @@ export async function GET(req: NextRequest) {
 
     if (!res.ok || !data.success) {
       const detail = data.detail || data.error || 'token_exchange_failed'
-      return NextResponse.redirect(`${calendarPage}?error=${encodeURIComponent(detail)}`)
+      return NextResponse.redirect(`${destPage}?error=${encodeURIComponent(detail)}`)
     }
 
-    return NextResponse.redirect(`${calendarPage}?success=true`)
+    return NextResponse.redirect(`${destPage}?success=true`)
   } catch {
-    return NextResponse.redirect(`${calendarPage}?error=network_error`)
+    return NextResponse.redirect(`${destPage}?error=network_error`)
   }
 }

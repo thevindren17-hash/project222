@@ -25,6 +25,7 @@ export interface TenantSettings {
   tool_config: Record<string, boolean>
   google_calendar_id?: string
   google_sheets_id?: string
+  custom_booking_fields?: Array<{ key: string; label: string; instruction: string }>
   provider_credentials: Record<string, Record<string, string>>
   escalation_keywords: string[]
   max_turns_before_handoff: number
@@ -50,6 +51,7 @@ export interface Booking {
   status: 'pending' | 'confirmed' | 'cancelled' | 'completed'
   source: string
   notes?: string
+  details?: Record<string, string>
   calendar_event_id?: string
   created_at: string
   contact?: Contact

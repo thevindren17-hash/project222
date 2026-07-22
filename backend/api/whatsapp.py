@@ -18,6 +18,7 @@ import hashlib
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
+from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Request, HTTPException, Response, BackgroundTasks
@@ -384,6 +385,7 @@ def _build_date_context(
     is_new_conversation: bool = False,
     conversation_language: str = "en",
     timezone: str = "Asia/Kuala_Lumpur",
+    custom_booking_fields: Optional[list] = None,
 ) -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -424,6 +426,23 @@ def _build_date_context(
                 "No Malay, no Chinese, no mixed language. This is MANDATORY. No exceptions."
             )
 
+    custom_fields_step = ""
+    custom_fields_rule = ""
+    if custom_booking_fields:
+        field_lines = "\n".join(
+            f"    - {f.get('label') or f.get('key')}: {f.get('instruction') or ''}".rstrip(": ")
+            for f in custom_booking_fields if f.get("key")
+        )
+        custom_fields_step = (
+            f"  Step 8b: This clinic also wants to know (ask briefly, one at a time, optional — accept 'skip' or 'no'):\n"
+            f"{field_lines}\n"
+        )
+        custom_fields_rule = (
+            "- When calling book_appointment, pass any of these clinic-specific fields the patient answered "
+            f"using these exact argument names: {', '.join(f['key'] for f in custom_booking_fields if f.get('key'))}. "
+            "Omit any the patient skipped — never invent a value.\n"
+        )
+
     return (
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
@@ -437,6 +456,7 @@ def _build_date_context(
         "  Step 6: Ask for their NAME (if not already given in this conversation).\n"
         "  Step 7: Ask for their PHONE NUMBER (if not already given).\n"
         "  Step 8: Ask if they have any NOTES or special requests for this visit (optional — one short question, accept 'no' as an answer).\n"
+        f"{custom_fields_step}"
         "  Step 9: Confirm: service, date, time, name, phone, notes — then call book_appointment.\n"
         "HARD RULES:\n"
         "- NEVER call check_slots unless you already know the specific date the user wants.\n"
@@ -446,8 +466,37 @@ def _build_date_context(
         "- When user picks a time from the shown list, proceed to collect name/phone — do not show slots again.\n"
         "- Date/time: 'esok'/'tomorrow' → exact date above, '3pm'/'3 petang' → 15:00, '9am' → 09:00, '10' after seeing slots → 10:00.\n"
         "- Always pass real values to tools — never pass placeholder text.\n"
+        f"{custom_fields_rule}"
         "You are on WhatsApp. Keep replies concise — one question at a time, under 2 sentences.]"
     )
+
+
+def _tool_definitions_for_tenant(tenant) -> list:
+    """
+    Clone TOOL_DEFINITIONS, injecting this tenant's custom booking fields as
+    extra optional properties on book_appointment. Each clinic can define its
+    own fields (e.g. insurance provider), so this can't be a static schema —
+    it has to be built per-tenant, per-request. TOOL_DEFINITIONS itself is
+    shared across all tenants and must never be mutated in place.
+    """
+    custom_fields = getattr(tenant, "custom_booking_fields", None) or []
+    if not custom_fields:
+        return TOOL_DEFINITIONS
+
+    import copy
+    tools = copy.deepcopy(TOOL_DEFINITIONS)
+    for t in tools:
+        if t["function"]["name"] == "book_appointment":
+            props = t["function"]["parameters"]["properties"]
+            for f in custom_fields:
+                key = f.get("key")
+                if not key:
+                    continue
+                props[key] = {
+                    "type": "string",
+                    "description": f.get("instruction") or f.get("label") or key,
+                }
+    return tools
 
 
 async def handle_whatsapp_message(tenant, message: dict, value: dict):
@@ -649,6 +698,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             is_new_conversation=is_new_conversation,
             conversation_language=language,
             timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
+            custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
         )
 
         messages_payload = [
@@ -656,7 +706,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             *conversation_history,
         ]
 
-        all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
+        all_tools = [t for t in _tool_definitions_for_tenant(tenant) if tenant.tool_config.get(t["function"]["name"], True)]
         enabled_tools = _select_tools(all_tools, history_messages, message_text)
     except Exception as setup_err:
         logger.error(
@@ -825,12 +875,13 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         is_new_conversation=is_new_conversation,
         conversation_language=language,
         timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
+        custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,
     ]
-    all_tools = [t for t in TOOL_DEFINITIONS if tenant.tool_config.get(t["function"]["name"], True)]
+    all_tools = [t for t in _tool_definitions_for_tenant(tenant) if tenant.tool_config.get(t["function"]["name"], True)]
     enabled_tools = _select_tools(all_tools, history.data, transcript)
 
     try:
@@ -1004,6 +1055,12 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                     results.append("I couldn't understand the date and time. Please clarify.")
                 continue
 
+            custom_fields = {
+                f["key"]: args[f["key"]]
+                for f in (getattr(tenant, "custom_booking_fields", None) or [])
+                if f.get("key") and args.get(f["key"])
+            }
+
             result = await book_appointment(
                 tenant_id=tenant.tenant_id,
                 contact_id=contact.get("id"),
@@ -1014,6 +1071,7 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                 tenant_config=tenant,
                 notes=args.get("notes"),
                 source="whatsapp",
+                custom_fields=custom_fields or None,
             )
             if result["success"]:
                 # Update contact record so appointments dashboard shows real name

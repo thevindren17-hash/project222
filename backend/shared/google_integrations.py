@@ -237,12 +237,75 @@ class GoogleCalendarIntegration:
         return hours["open"] <= time_str <= hours["close"]
 
 
+SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
+SHEETS_TAB_NAME = "Patients"
+SHEETS_HEADER_ROW = [
+    "Timestamp", "Event", "Patient Name", "Phone", "Source",
+    "Service", "Notes", "Custom Fields",
+]
+
+
 class GoogleSheetsIntegration:
-    """Track leads and contacts in Google Sheets."""
+    """
+    One-way mirror of patient/booking activity into a clinic's own Google
+    Sheet — write-only, the app never reads back from it. Supabase stays the
+    real database; this is purely a convenience copy in a format the clinic
+    already knows how to use.
+    """
 
     def __init__(self, tenant_id: str, spreadsheet_id: Optional[str] = None):
         self.tenant_id = tenant_id
         self.spreadsheet_id = spreadsheet_id
+
+    async def _get_token(self) -> str:
+        from shared.tenant_config import get_supabase_client, _db_optional
+        supabase = get_supabase_client()
+        result = await _db_optional(lambda: supabase.table("tenant_settings")
+            .select("google_sheets_token,google_sheets_refresh")
+            .eq("tenant_id", self.tenant_id)
+            .maybe_single()
+            .execute()
+        )
+        if not result.data:
+            raise RuntimeError("No Google Sheets credentials found")
+
+        token = result.data.get("google_sheets_token")
+        refresh = result.data.get("google_sheets_refresh")
+
+        if not token and not refresh:
+            raise RuntimeError("Google Sheets not connected")
+
+        if refresh:
+            token = await self._refresh_token(refresh)
+
+        return token
+
+    async def _refresh_token(self, refresh_token: str) -> str:
+        client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+        client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "refresh_token",
+                },
+            )
+        if r.status_code != 200:
+            raise RuntimeError(f"Token refresh failed: {r.text[:200]}")
+        new_token = r.json().get("access_token")
+        if not new_token:
+            raise RuntimeError("Token refresh returned no access_token")
+
+        from shared.tenant_config import get_supabase_client, _db
+        supabase = get_supabase_client()
+        await _db(lambda: supabase.table("tenant_settings").update(
+            {"google_sheets_token": new_token}
+        ).eq("tenant_id", self.tenant_id).execute())
+
+        return new_token
 
     async def log_lead(
         self,
@@ -252,56 +315,40 @@ class GoogleSheetsIntegration:
         status: str,
         notes: Optional[str] = None,
         service_interest: Optional[str] = None,
+        custom_fields: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         if not self.spreadsheet_id:
             return {"success": False, "error": "No spreadsheet configured"}
+        custom_fields_str = "; ".join(f"{k}: {v}" for k, v in (custom_fields or {}).items())
         row_data = [
             datetime.now().isoformat(),
+            status,
             name,
             phone,
             source,
-            status,
             service_interest or "",
             notes or "",
+            custom_fields_str,
         ]
         try:
-            result = await self._append_row(row_data)
-            return {"success": True, "row": result}
+            await self._append_row(row_data)
+            return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-    async def update_lead_status(self, phone: str, new_status: str) -> Dict[str, Any]:
-        try:
-            result = await self._update_by_phone(phone, "Status", new_status)
-            return {"success": True, "updated": result}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    async def get_lead_by_phone(self, phone: str) -> Optional[Dict[str, Any]]:
-        try:
-            row = await self._find_row_by_phone(phone)
-            if row:
-                return {
-                    "name": row[1],
-                    "phone": row[2],
-                    "source": row[3],
-                    "status": row[4],
-                    "service_interest": row[5],
-                    "notes": row[6],
-                }
-            return None
-        except Exception as e:
-            logger.error(f"Error getting lead: {e}")
-            return None
 
     async def _append_row(self, row_data: List[str]):
-        raise NotImplementedError("Google Sheets write via MCP")
-
-    async def _update_by_phone(self, phone: str, column: str, value: str):
-        raise NotImplementedError("Google Sheets update via MCP")
-
-    async def _find_row_by_phone(self, phone: str):
-        raise NotImplementedError("Google Sheets read via MCP")
+        token = await self._get_token()
+        range_ = f"{SHEETS_TAB_NAME}!A:H"
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{SHEETS_API}/{self.spreadsheet_id}/values/{range_}:append",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+                json={"values": [row_data]},
+            )
+        if r.status_code not in (200, 201):
+            raise RuntimeError(f"Sheets append failed ({r.status_code}): {r.text[:200]}")
+        return r.json()
 
 
 # ── OAuth helpers ──────────────────────────────────────────────────────────────
@@ -359,6 +406,37 @@ async def store_google_tokens(
 
     from shared.tenant_config import _db
     await _db(lambda: supabase.table("tenant_settings").update(update_data).eq("tenant_id", tenant_id).execute())
+
+
+async def create_patient_spreadsheet(clinic_name: str, access_token: str) -> str:
+    """
+    Auto-provision a new Google Sheet for a clinic right after they connect
+    Sheets — avoids making them paste a spreadsheet URL/ID (error-prone) and
+    guarantees the header row matches what log_lead() writes.
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        create_res = await client.post(
+            SHEETS_API,
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={
+                "properties": {"title": f"{clinic_name} — Patient Bookings (YourReceiptionist)"},
+                "sheets": [{"properties": {"title": SHEETS_TAB_NAME}}],
+            },
+        )
+        if create_res.status_code not in (200, 201):
+            raise RuntimeError(f"Spreadsheet creation failed ({create_res.status_code}): {create_res.text[:200]}")
+        spreadsheet_id = create_res.json()["spreadsheetId"]
+
+        header_res = await client.put(
+            f"{SHEETS_API}/{spreadsheet_id}/values/{SHEETS_TAB_NAME}!A1:H1",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            params={"valueInputOption": "RAW"},
+            json={"values": [SHEETS_HEADER_ROW]},
+        )
+        if header_res.status_code not in (200, 201):
+            logger.warning(f"Spreadsheet header write failed (non-fatal): {header_res.text[:200]}")
+
+    return spreadsheet_id
 
 
 # ── Per-tenant instance getters ────────────────────────────────────────────────

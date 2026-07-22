@@ -39,3 +39,17 @@ export async function disconnectGoogleCalendar(tenantId: string) {
   if (!res.ok) throw new Error('Disconnect failed')
   return res.json()
 }
+
+export async function initiateGoogleSheetsOAuth(tenantId: string) {
+  window.location.href = `/api/integrations/google/auth?tenant_id=${tenantId}&service=sheets`
+}
+
+export async function disconnectGoogleSheets(tenantId: string) {
+  const res = await fetch(`/api/integrations/google/disconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenant_id: tenantId, service: 'sheets' }),
+  })
+  if (!res.ok) throw new Error('Disconnect failed')
+  return res.json()
+}

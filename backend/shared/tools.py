@@ -72,6 +72,7 @@ async def book_appointment(
     tenant_config: Optional[TenantConfig] = None,
     notes: Optional[str] = None,
     source: str = "whatsapp",
+    custom_fields: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     supabase = get_supabase_client()
 
@@ -112,13 +113,21 @@ async def book_appointment(
     # (Postgres-level, see migration 009) is what actually prevents the
     # double-booking: if the race window is hit, the insert itself fails and
     # we catch that specific error here instead of returning a generic one.
+    # `details` (JSONB) holds the full record including notes + custom fields.
+    # `notes` (a separate flat column) is also set for the dashboard's existing
+    # "Notes" display, which reads that column directly rather than details.
+    details: Dict[str, Any] = dict(custom_fields or {})
+    if notes:
+        details["notes"] = notes
+
     try:
         result = await _db(lambda: supabase.table("bookings").insert({
             "tenant_id": tenant_id,
             "contact_id": contact_id,
             "scheduled_at": scheduled_at.isoformat(),
             "service_type": service_type,
-            "details": {"notes": notes} if notes else {},
+            "details": details,
+            "notes": notes,
             "source": source,
             "status": "pending",
         }).execute())
@@ -166,7 +175,9 @@ async def book_appointment(
                 source=source,
                 status="booked",
                 service_interest=service_type,
-                notes=f"Booked for {scheduled_at.strftime('%Y-%m-%d %H:%M')}",
+                notes=f"Booked for {scheduled_at.strftime('%Y-%m-%d %H:%M')}"
+                + (f" — {notes}" if notes else ""),
+                custom_fields=custom_fields,
             )
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
@@ -286,6 +297,23 @@ async def cancel_appointment(
         if gcal:
             await gcal.delete_appointment(calendar_event_id)
 
+    gsheets = await get_google_sheets(tenant_id)
+    if gsheets:
+        try:
+            contact_res = await _db_optional(lambda: supabase.table("contacts").select(
+                "name, phone"
+            ).eq("id", contact_id).maybe_single().execute())
+            contact_data = contact_res.data or {}
+            await gsheets.log_lead(
+                name=contact_data.get("name") or "Unknown",
+                phone=contact_data.get("phone") or "",
+                source="whatsapp",
+                status="cancelled",
+                notes=f"Cancelled appointment originally at {scheduled.strftime('%Y-%m-%d %H:%M')}",
+            )
+        except Exception as e:
+            logger.warning(f"Sheets sync failed (non-fatal): {e}")
+
     return {"success": True, "booking_id": _bid, "scheduled_at": booking.data["scheduled_at"]}
 
 
@@ -338,6 +366,23 @@ async def reschedule_appointment(
                     "end": {"dateTime": end_time.isoformat(), "timeZone": "Asia/Kuala_Lumpur"},
                 },
             )
+
+    gsheets = await get_google_sheets(tenant_id)
+    if gsheets:
+        try:
+            contact_res = await _db_optional(lambda: supabase.table("contacts").select(
+                "name, phone"
+            ).eq("id", contact_id).maybe_single().execute())
+            contact_data = contact_res.data or {}
+            await gsheets.log_lead(
+                name=contact_data.get("name") or "Unknown",
+                phone=contact_data.get("phone") or "",
+                source="whatsapp",
+                status="rescheduled",
+                notes=f"Rescheduled from {old_scheduled_at} to {new_scheduled_at.strftime('%Y-%m-%d %H:%M')}",
+            )
+        except Exception as e:
+            logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
     return {
         "success": True,

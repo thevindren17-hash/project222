@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import {
   LayoutDashboard, Calendar, ClipboardList, Phone, MessageSquare,
-  BarChart3, Bot, Users, Building2, FlaskConical, Bell, UserRoundCheck, Star,
+  BarChart3, Bot, Users, Building2, FlaskConical, Bell, UserRoundCheck, Star, Sheet,
 } from 'lucide-react'
 
 type SectionItem = {
@@ -58,6 +58,7 @@ const sections: Section[] = [
     items: [
       { name: 'WhatsApp',        href: '/settings/plugins/whatsapp',    icon: MessageSquare, statusKey: 'whatsapp' },
       { name: 'Google Calendar', href: '/settings/plugins/calendar',    icon: Calendar,      statusKey: 'calendar' },
+      { name: 'Google Sheets',   href: '/settings/plugins/sheets',      icon: Sheet,         statusKey: 'sheets' },
     ],
   },
   {
@@ -78,7 +79,7 @@ function usePluginStatus() {
       if (!tenant) return {}
       const { data: settings } = await supabase
         .from('tenant_settings')
-        .select('llm_config,google_calendar_id,provider_credentials')
+        .select('llm_config,google_calendar_id,google_sheets_id,provider_credentials')
         .eq('tenant_id', tenant.id)
         .single()
       // Booking flow & safety rules are always active — the agent is only
@@ -87,6 +88,7 @@ function usePluginStatus() {
       return {
         whatsapp: !!tenant.wa_phone_number_id,
         calendar: !!settings?.google_calendar_id,
+        sheets:   !!settings?.google_sheets_id,
         agent:    !!(llmProvider && (settings?.provider_credentials as Record<string, Record<string, string>> | undefined)?.[llmProvider]?.api_key),
       }
     },

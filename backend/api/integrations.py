@@ -69,14 +69,7 @@ async def google_oauth_callback(request: Request):
         return RedirectResponse(url=url)
 
     try:
-        from shared.google_integrations import store_google_tokens
-        await store_google_tokens(
-            tenant_id=tenant_id,
-            service=service,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            calendar_id="primary" if service == "calendar" else None,
-        )
+        await _complete_google_connection(tenant_id, service, access_token, refresh_token)
     except Exception as e:
         logger.error(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
         url = f"{calendar_page}?error=storage_failed" if calendar_page else "/?error=storage_failed"
@@ -114,19 +107,47 @@ async def google_exchange(req: ExchangeRequest):
         raise HTTPException(status_code=400, detail="token_exchange_failed: no access token")
 
     try:
-        from shared.google_integrations import store_google_tokens
-        await store_google_tokens(
-            tenant_id=tenant_id,
-            service=service,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            calendar_id="primary" if service == "calendar" else None,
-        )
+        await _complete_google_connection(tenant_id, service, access_token, refresh_token)
     except Exception as e:
         logger.error(f"[Google OAuth] Failed to store tokens for tenant {tenant_id}: {e}")
         raise HTTPException(status_code=500, detail="storage_failed")
 
     return {"success": True, "service": service, "tenant_id": tenant_id}
+
+
+async def _complete_google_connection(tenant_id: str, service: str, access_token: str, refresh_token: str):
+    """
+    Shared by both the legacy callback and the new exchange endpoint.
+    Calendar just needs 'primary'. Sheets needs an actual spreadsheet to
+    write to — auto-provision one now rather than making the clinic paste a
+    URL/ID, so the connection is immediately usable.
+    """
+    from shared.google_integrations import store_google_tokens, create_patient_spreadsheet
+    from shared.tenant_config import get_supabase_client, _db_optional
+
+    spreadsheet_id = None
+    if service == "sheets":
+        supabase = get_supabase_client()
+        tenant_res = await _db_optional(lambda: supabase.table("tenants").select("name").eq(
+            "id", tenant_id
+        ).maybe_single().execute())
+        clinic_name = (tenant_res.data or {}).get("name") or "Clinic"
+        try:
+            spreadsheet_id = await create_patient_spreadsheet(clinic_name, access_token)
+        except Exception as e:
+            logger.error(f"[Google OAuth] Spreadsheet auto-creation failed for tenant {tenant_id}: {e}")
+            # Still store the tokens — the clinic is connected even if sheet
+            # creation failed; log_lead() will just no-op with no sheet ID
+            # until this is retried (e.g. by disconnecting and reconnecting).
+
+    await store_google_tokens(
+        tenant_id=tenant_id,
+        service=service,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        calendar_id="primary" if service == "calendar" else None,
+        spreadsheet_id=spreadsheet_id,
+    )
 
 
 @router.post("/google/disconnect", dependencies=[Depends(require_internal_secret)])

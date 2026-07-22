@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS, VOICE_LANGUAGES } from '@/lib/providers'
 import {
   Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check, Languages,
-  Volume2, Play, ExternalLink, CheckCircle2,
+  Volume2, Play, ExternalLink, CheckCircle2, Database,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -36,6 +36,7 @@ const TOOL_LABELS: Record<string, { label: string; desc: string }> = {
 const SECTIONS = [
   { id: 'instructions', label: 'Instructions', icon: Code },
   { id: 'model', label: 'Model Settings', icon: Brain },
+  { id: 'fields', label: 'Data Fields', icon: Database },
   { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
   { id: 'language', label: 'Language', icon: Languages },
   { id: 'voice', label: 'Voice', icon: Mic },
@@ -52,6 +53,18 @@ const LLM_CRED_FIELDS: Record<string, { placeholder: string }> = {
 }
 
 interface FaqItem { q: string; a: string }
+interface CustomFieldItem { key: string; label: string; instruction: string }
+
+// Field keys become tool-call argument names sent to the LLM, so they must be
+// safe identifiers — not raw user text.
+function slugifyFieldKey(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40)
+}
 
 export default function AgentPluginPage() {
   const queryClient = useQueryClient()
@@ -64,7 +77,7 @@ export default function AgentPluginPage() {
       if (!tenant) return null
       // Exclude provider_credentials — keys never leave the server
       const { data, error } = await supabase.from('tenant_settings')
-        .select('agent_name,system_prompt,custom_instructions,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language')
+        .select('agent_name,system_prompt,custom_instructions,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language,custom_booking_fields')
         .eq('tenant_id', tenant.id).maybeSingle()
       if (error) throw error
       return data
@@ -104,6 +117,7 @@ export default function AgentPluginPage() {
   })
 
   const [faq, setFaq] = useState<FaqItem[]>([])
+  const [customFields, setCustomFields] = useState<CustomFieldItem[]>([])
 
   const [llmProvider, setLlmProvider] = useState('groq')
   const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
@@ -141,6 +155,7 @@ export default function AgentPluginPage() {
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
       setHumanTakeover(settings.tool_config?.escalate ?? true)
       setFaq(settings.faq || [])
+      setCustomFields(settings.custom_booking_fields || [])
       setVoiceReplyEnabled(settings.voice_reply_enabled ?? false)
       if (settings.voice_tts_provider) setVoiceTtsProvider(settings.voice_tts_provider)
       if (settings.voice_tts_voice_map) setVoiceTtsVoiceMap(settings.voice_tts_voice_map)
@@ -181,6 +196,7 @@ export default function AgentPluginPage() {
         llm_config: { provider: llmProvider, model: llmModel, temperature, max_tokens: maxTokens },
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
+        custom_booking_fields: customFields.filter((f) => f.key && f.label),
         voice_reply_enabled: voiceReplyEnabled,
         voice_tts_provider: voiceTtsProvider,
         voice_tts_voice_map: voiceTtsVoiceMap,
@@ -277,6 +293,16 @@ export default function AgentPluginPage() {
     const next = [...faq]; next[i] = { ...next[i], [field]: value }; setFaq(next)
   }
   function removeFaq(i: number) { setFaq(faq.filter((_, idx) => idx !== i)) }
+  function addCustomField() { setCustomFields([...customFields, { key: '', label: '', instruction: '' }]) }
+  function updateCustomFieldLabel(i: number, label: string) {
+    const next = [...customFields]
+    next[i] = { ...next[i], label, key: slugifyFieldKey(label) }
+    setCustomFields(next)
+  }
+  function updateCustomFieldInstruction(i: number, instruction: string) {
+    const next = [...customFields]; next[i] = { ...next[i], instruction }; setCustomFields(next)
+  }
+  function removeCustomField(i: number) { setCustomFields(customFields.filter((_, idx) => idx !== i)) }
   function addKeyword() {
     const kw = keywordsInput.trim().toLowerCase()
     if (kw && !escalationKeywords.includes(kw)) setEscalationKeywords([...escalationKeywords, kw])
@@ -648,6 +674,71 @@ export default function AgentPluginPage() {
                   </div>
                 </CardContent>
               </Card>
+            </>
+          )}
+
+          {/* Data Fields */}
+          {section === 'fields' && (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Data Fields</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Extra questions the AI asks during booking, on top of name, phone, service, date, and time —
+                    e.g. insurance provider, referral source, preferred doctor. Captured values are saved with
+                    each booking and, if connected, mirrored to your Google Sheet.
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" onClick={addCustomField}>
+                  <Plus className="h-3.5 w-3.5 mr-1.5" />Add Field
+                </Button>
+              </div>
+
+              <div className="space-y-3">
+                {customFields.length === 0 && (
+                  <Card className="border-dashed">
+                    <CardContent className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
+                      <Database className="h-9 w-9 opacity-25" />
+                      <p className="text-sm font-medium">No custom fields yet</p>
+                      <p className="text-xs text-center max-w-xs">
+                        Add a field like &quot;Insurance Provider&quot; or &quot;Referral Source&quot; for the AI to ask about during booking.
+                      </p>
+                      <Button variant="outline" size="sm" className="mt-2" onClick={addCustomField}>
+                        <Plus className="h-3.5 w-3.5 mr-1.5" />Add First Field
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )}
+                {customFields.map((f, i) => (
+                  <Card key={i}>
+                    <CardContent className="pt-4 pb-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 space-y-2">
+                          <Input
+                            placeholder="Field label — e.g. Insurance Provider"
+                            value={f.label}
+                            onChange={(e) => updateCustomFieldLabel(i, e.target.value)}
+                            className="font-medium"
+                          />
+                          <Textarea
+                            placeholder="What should the AI ask? — e.g. Ask if they have insurance and which provider."
+                            value={f.instruction}
+                            onChange={(e) => updateCustomFieldInstruction(i, e.target.value)}
+                            rows={2}
+                            className="text-sm resize-none"
+                          />
+                          {f.key && (
+                            <p className="text-[11px] text-muted-foreground font-mono">key: {f.key}</p>
+                          )}
+                        </div>
+                        <Button variant="ghost" size="icon" onClick={() => removeCustomField(i)} className="text-muted-foreground hover:text-destructive shrink-0 mt-0.5">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
             </>
           )}
 

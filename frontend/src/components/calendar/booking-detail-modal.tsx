@@ -17,8 +17,16 @@ interface Props {
   onClose: () => void
 }
 
+// Field keys are stored as snake_case identifiers (they double as tool-call
+// argument names for the AI) — show them as a readable label instead.
+function humanizeFieldKey(key: string): string {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
 export default function BookingDetailModal({ booking, open, onClose }: Props) {
   const queryClient = useQueryClient()
+
+  const customFieldEntries = Object.entries(booking.details || {}).filter(([key]) => key !== 'notes')
 
   const updateStatus = useMutation({
     mutationFn: async (status: string) => {
@@ -74,6 +82,22 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
               <div>
                 <p className="text-muted-foreground text-sm">Notes</p>
                 <p className="text-sm mt-1">{booking.notes}</p>
+              </div>
+            </>
+          )}
+          {customFieldEntries.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-muted-foreground text-sm">Additional Details</p>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  {customFieldEntries.map(([key, value]) => (
+                    <div key={key}>
+                      <p className="text-muted-foreground text-xs">{humanizeFieldKey(key)}</p>
+                      <p className="font-medium">{value}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             </>
           )}

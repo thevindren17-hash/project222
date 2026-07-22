@@ -242,6 +242,7 @@ class TenantConfig:
     reminder_1d_template: str = ""
     reminder_3h_template: str = ""
     timezone: str = "Asia/Kuala_Lumpur"
+    custom_booking_fields: List[Dict[str, str]] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.system_prompt:
@@ -308,6 +309,7 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         reminder_1d_template=settings.get("reminder_1d_template") or "",
         reminder_3h_template=settings.get("reminder_3h_template") or "",
         timezone=settings.get("timezone") or "Asia/Kuala_Lumpur",
+        custom_booking_fields=settings.get("custom_booking_fields") or [],
     )
 
 
