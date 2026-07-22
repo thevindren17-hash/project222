@@ -53,7 +53,14 @@ const LLM_CRED_FIELDS: Record<string, { placeholder: string }> = {
 }
 
 interface FaqItem { q: string; a: string }
-interface CustomFieldItem { key: string; label: string; instruction: string }
+type CustomFieldAction = 'book_appointment' | 'cancel_appointment' | 'reschedule_appointment'
+interface CustomFieldItem { key: string; label: string; instruction: string; action: CustomFieldAction }
+
+const CUSTOM_FIELD_ACTIONS: { value: CustomFieldAction; label: string }[] = [
+  { value: 'book_appointment', label: 'Booking' },
+  { value: 'cancel_appointment', label: 'Cancellation' },
+  { value: 'reschedule_appointment', label: 'Reschedule' },
+]
 
 // Field keys become tool-call argument names sent to the LLM, so they must be
 // safe identifiers — not raw user text.
@@ -155,7 +162,12 @@ export default function AgentPluginPage() {
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
       setHumanTakeover(settings.tool_config?.escalate ?? true)
       setFaq(settings.faq || [])
-      setCustomFields(settings.custom_booking_fields || [])
+      setCustomFields(
+        (settings.custom_booking_fields || []).map((f: Partial<CustomFieldItem>) => ({
+          key: f.key || '', label: f.label || '', instruction: f.instruction || '',
+          action: f.action || 'book_appointment',
+        }))
+      )
       setVoiceReplyEnabled(settings.voice_reply_enabled ?? false)
       if (settings.voice_tts_provider) setVoiceTtsProvider(settings.voice_tts_provider)
       if (settings.voice_tts_voice_map) setVoiceTtsVoiceMap(settings.voice_tts_voice_map)
@@ -293,7 +305,7 @@ export default function AgentPluginPage() {
     const next = [...faq]; next[i] = { ...next[i], [field]: value }; setFaq(next)
   }
   function removeFaq(i: number) { setFaq(faq.filter((_, idx) => idx !== i)) }
-  function addCustomField() { setCustomFields([...customFields, { key: '', label: '', instruction: '' }]) }
+  function addCustomField() { setCustomFields([...customFields, { key: '', label: '', instruction: '', action: 'book_appointment' }]) }
   function updateCustomFieldLabel(i: number, label: string) {
     const next = [...customFields]
     next[i] = { ...next[i], label, key: slugifyFieldKey(label) }
@@ -301,6 +313,9 @@ export default function AgentPluginPage() {
   }
   function updateCustomFieldInstruction(i: number, instruction: string) {
     const next = [...customFields]; next[i] = { ...next[i], instruction }; setCustomFields(next)
+  }
+  function updateCustomFieldAction(i: number, action: CustomFieldAction) {
+    const next = [...customFields]; next[i] = { ...next[i], action }; setCustomFields(next)
   }
   function removeCustomField(i: number) { setCustomFields(customFields.filter((_, idx) => idx !== i)) }
   function addKeyword() {
@@ -684,9 +699,10 @@ export default function AgentPluginPage() {
                 <div>
                   <h2 className="text-lg font-semibold">Data Fields</h2>
                   <p className="text-sm text-muted-foreground">
-                    Extra questions the AI asks during booking, on top of name, phone, service, date, and time —
-                    e.g. insurance provider, referral source, preferred doctor. Captured values are saved with
-                    each booking and, if connected, mirrored to your Google Sheet.
+                    Extra questions the AI asks for Booking, Cancellation, or Reschedule — on top of the usual
+                    name, phone, service, date, and time. Each field belongs to one action, since that's the
+                    specific moment the AI actually asks for it. Captured values are saved with the booking
+                    and, if connected, mirrored to your Google Sheet.
                   </p>
                 </div>
                 <Button variant="outline" size="sm" onClick={addCustomField}>
@@ -714,12 +730,24 @@ export default function AgentPluginPage() {
                     <CardContent className="pt-4 pb-4">
                       <div className="flex items-start gap-3">
                         <div className="flex-1 space-y-2">
-                          <Input
-                            placeholder="Field label — e.g. Insurance Provider"
-                            value={f.label}
-                            onChange={(e) => updateCustomFieldLabel(i, e.target.value)}
-                            className="font-medium"
-                          />
+                          <div className="flex items-center gap-2">
+                            <Input
+                              placeholder="Field label — e.g. Insurance Provider"
+                              value={f.label}
+                              onChange={(e) => updateCustomFieldLabel(i, e.target.value)}
+                              className="font-medium flex-1"
+                            />
+                            <Select value={f.action} onValueChange={(v) => updateCustomFieldAction(i, v as CustomFieldAction)}>
+                              <SelectTrigger className="w-[150px] shrink-0">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {CUSTOM_FIELD_ACTIONS.map((a) => (
+                                  <SelectItem key={a.value} value={a.value}>{a.label}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
                           <Textarea
                             placeholder="What should the AI ask? — e.g. Ask if they have insurance and which provider."
                             value={f.instruction}

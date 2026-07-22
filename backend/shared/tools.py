@@ -256,6 +256,7 @@ async def cancel_appointment(
     tenant_id: str,
     contact_id: str,
     booking_id: Optional[str] = None,
+    custom_fields: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     # contact_id must always come from the server-resolved conversation
     # context (the person actually texting), never from the LLM's tool-call
@@ -289,7 +290,10 @@ async def cancel_appointment(
         }
 
     _bid = booking.data["id"]
-    await _db(lambda: supabase.table("bookings").update({"status": "cancelled"}).eq("id", _bid).execute())
+    update_data: Dict[str, Any] = {"status": "cancelled"}
+    if custom_fields:
+        update_data["details"] = {**(booking.data.get("details") or {}), **custom_fields}
+    await _db(lambda: supabase.table("bookings").update(update_data).eq("id", _bid).execute())
 
     calendar_event_id = booking.data.get("calendar_event_id")
     if calendar_event_id:
@@ -310,6 +314,7 @@ async def cancel_appointment(
                 source="whatsapp",
                 status="cancelled",
                 notes=f"Cancelled appointment originally at {scheduled.strftime('%Y-%m-%d %H:%M')}",
+                custom_fields=custom_fields,
             )
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
@@ -323,6 +328,7 @@ async def reschedule_appointment(
     new_date: str,
     new_time: str,
     booking_id: Optional[str] = None,
+    custom_fields: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     # See the same note in cancel_appointment — contact_id is always the
     # server-resolved current contact, never LLM-supplied, and booking_id
@@ -350,9 +356,10 @@ async def reschedule_appointment(
 
     old_scheduled_at = booking.data["scheduled_at"]
     _bid = booking.data["id"]
-    await _db(lambda: supabase.table("bookings").update({
-        "scheduled_at": new_scheduled_at.isoformat(),
-    }).eq("id", _bid).execute())
+    update_data: Dict[str, Any] = {"scheduled_at": new_scheduled_at.isoformat()}
+    if custom_fields:
+        update_data["details"] = {**(booking.data.get("details") or {}), **custom_fields}
+    await _db(lambda: supabase.table("bookings").update(update_data).eq("id", _bid).execute())
 
     calendar_event_id = booking.data.get("calendar_event_id")
     if calendar_event_id:
@@ -380,6 +387,7 @@ async def reschedule_appointment(
                 source="whatsapp",
                 status="rescheduled",
                 notes=f"Rescheduled from {old_scheduled_at} to {new_scheduled_at.strftime('%Y-%m-%d %H:%M')}",
+                custom_fields=custom_fields,
             )
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")

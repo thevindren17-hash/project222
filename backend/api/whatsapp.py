@@ -426,21 +426,46 @@ def _build_date_context(
                 "No Malay, no Chinese, no mixed language. This is MANDATORY. No exceptions."
             )
 
+    # Each custom field belongs to exactly one action/tool (book_appointment,
+    # cancel_appointment, or reschedule_appointment) — matching how the AI
+    # actually calls one tool at a time. Group by action so each gets the
+    # right prompt guidance and tool-call argument names.
+    all_custom_fields = custom_booking_fields or []
+    booking_fields = [f for f in all_custom_fields if f.get("action", "book_appointment") == "book_appointment" and f.get("key")]
+    cancel_fields = [f for f in all_custom_fields if f.get("action") == "cancel_appointment" and f.get("key")]
+    reschedule_fields = [f for f in all_custom_fields if f.get("action") == "reschedule_appointment" and f.get("key")]
+
+    def _field_lines(fields):
+        return "\n".join(
+            f"    - {f.get('label') or f.get('key')}: {f.get('instruction') or ''}".rstrip(": ")
+            for f in fields
+        )
+
     custom_fields_step = ""
     custom_fields_rule = ""
-    if custom_booking_fields:
-        field_lines = "\n".join(
-            f"    - {f.get('label') or f.get('key')}: {f.get('instruction') or ''}".rstrip(": ")
-            for f in custom_booking_fields if f.get("key")
-        )
+    if booking_fields:
         custom_fields_step = (
             f"  Step 8b: This clinic also wants to know (ask briefly, one at a time, optional — accept 'skip' or 'no'):\n"
-            f"{field_lines}\n"
+            f"{_field_lines(booking_fields)}\n"
         )
         custom_fields_rule = (
             "- When calling book_appointment, pass any of these clinic-specific fields the patient answered "
-            f"using these exact argument names: {', '.join(f['key'] for f in custom_booking_fields if f.get('key'))}. "
+            f"using these exact argument names: {', '.join(f['key'] for f in booking_fields)}. "
             "Omit any the patient skipped — never invent a value.\n"
+        )
+
+    cancel_reschedule_rule = ""
+    if cancel_fields:
+        cancel_reschedule_rule += (
+            f"- When cancelling an appointment, also briefly ask (optional):\n{_field_lines(cancel_fields)}\n"
+            f"  Pass answered ones to cancel_appointment using these exact argument names: "
+            f"{', '.join(f['key'] for f in cancel_fields)}. Omit any skipped.\n"
+        )
+    if reschedule_fields:
+        cancel_reschedule_rule += (
+            f"- When rescheduling an appointment, also briefly ask (optional):\n{_field_lines(reschedule_fields)}\n"
+            f"  Pass answered ones to reschedule_appointment using these exact argument names: "
+            f"{', '.join(f['key'] for f in reschedule_fields)}. Omit any skipped.\n"
         )
 
     return (
@@ -467,17 +492,19 @@ def _build_date_context(
         "- Date/time: 'esok'/'tomorrow' → exact date above, '3pm'/'3 petang' → 15:00, '9am' → 09:00, '10' after seeing slots → 10:00.\n"
         "- Always pass real values to tools — never pass placeholder text.\n"
         f"{custom_fields_rule}"
+        f"{cancel_reschedule_rule}"
         "You are on WhatsApp. Keep replies concise — one question at a time, under 2 sentences.]"
     )
 
 
 def _tool_definitions_for_tenant(tenant) -> list:
     """
-    Clone TOOL_DEFINITIONS, injecting this tenant's custom booking fields as
-    extra optional properties on book_appointment. Each clinic can define its
-    own fields (e.g. insurance provider), so this can't be a static schema —
-    it has to be built per-tenant, per-request. TOOL_DEFINITIONS itself is
-    shared across all tenants and must never be mutated in place.
+    Clone TOOL_DEFINITIONS, injecting this tenant's custom fields as extra
+    optional properties on whichever tool each field is tagged for (each
+    field belongs to exactly one action — book_appointment, cancel_appointment,
+    or reschedule_appointment — matching how the AI actually calls one tool
+    at a time). TOOL_DEFINITIONS itself is shared across all tenants and must
+    never be mutated in place.
     """
     custom_fields = getattr(tenant, "custom_booking_fields", None) or []
     if not custom_fields:
@@ -486,16 +513,16 @@ def _tool_definitions_for_tenant(tenant) -> list:
     import copy
     tools = copy.deepcopy(TOOL_DEFINITIONS)
     for t in tools:
-        if t["function"]["name"] == "book_appointment":
-            props = t["function"]["parameters"]["properties"]
-            for f in custom_fields:
-                key = f.get("key")
-                if not key:
-                    continue
-                props[key] = {
-                    "type": "string",
-                    "description": f.get("instruction") or f.get("label") or key,
-                }
+        tool_name = t["function"]["name"]
+        props = t["function"]["parameters"]["properties"]
+        for f in custom_fields:
+            key = f.get("key")
+            if not key or f.get("action", "book_appointment") != tool_name:
+                continue
+            props[key] = {
+                "type": "string",
+                "description": f.get("instruction") or f.get("label") or key,
+            }
     return tools
 
 
@@ -1058,7 +1085,7 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
             custom_fields = {
                 f["key"]: args[f["key"]]
                 for f in (getattr(tenant, "custom_booking_fields", None) or [])
-                if f.get("key") and args.get(f["key"])
+                if f.get("action", "book_appointment") == "book_appointment" and f.get("key") and args.get(f["key"])
             }
 
             result = await book_appointment(
@@ -1142,10 +1169,16 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                     results.append(f"No available slots on {args['date']}. Try another date?")
 
         elif fn_name == "cancel_appointment":
+            cancel_custom_fields = {
+                f["key"]: args[f["key"]]
+                for f in (getattr(tenant, "custom_booking_fields", None) or [])
+                if f.get("action") == "cancel_appointment" and f.get("key") and args.get(f["key"])
+            }
             result = await cancel_appointment(
                 tenant_id=tenant.tenant_id,
                 contact_id=contact.get("id"),
                 booking_id=args.get("booking_id"),
+                custom_fields=cancel_custom_fields or None,
             )
             if result["success"]:
                 from datetime import datetime as dt
@@ -1164,12 +1197,18 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
                     results.append(msg or "I couldn't find that appointment.")
 
         elif fn_name == "reschedule_appointment":
+            reschedule_custom_fields = {
+                f["key"]: args[f["key"]]
+                for f in (getattr(tenant, "custom_booking_fields", None) or [])
+                if f.get("action") == "reschedule_appointment" and f.get("key") and args.get(f["key"])
+            }
             result = await reschedule_appointment(
                 tenant_id=tenant.tenant_id,
                 contact_id=contact.get("id"),
                 new_date=args.get("new_date", ""),
                 new_time=args.get("new_time", ""),
                 booking_id=args.get("booking_id"),
+                custom_fields=reschedule_custom_fields or None,
             )
             if result["success"]:
                 from datetime import datetime as dt

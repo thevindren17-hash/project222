@@ -25,7 +25,12 @@ export interface TenantSettings {
   tool_config: Record<string, boolean>
   google_calendar_id?: string
   google_sheets_id?: string
-  custom_booking_fields?: Array<{ key: string; label: string; instruction: string }>
+  custom_booking_fields?: Array<{
+    key: string
+    label: string
+    instruction: string
+    action: 'book_appointment' | 'cancel_appointment' | 'reschedule_appointment'
+  }>
   provider_credentials: Record<string, Record<string, string>>
   escalation_keywords: string[]
   max_turns_before_handoff: number
