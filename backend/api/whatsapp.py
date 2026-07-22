@@ -65,6 +65,26 @@ def _is_rate_limited(key: str) -> bool:
     q.append(now)
     return False
 
+# ── Per-tenant aggregate rate limiter ─────────────────────────────────────────
+# The per-contact limiter above doesn't cap total volume across MANY distinct
+# senders — an attacker controlling several real WhatsApp numbers could still
+# drive unbounded LLM spend against one clinic's BYOK key. This is a coarse
+# ceiling, generous enough that no real clinic should ever hit it in normal
+# use, but bounds the worst case.
+_tenant_rate_limit_store: dict = defaultdict(lambda: deque(maxlen=200))
+_TENANT_RATE_WINDOW   = 60   # seconds
+_TENANT_RATE_MAX_MSGS = 100  # max messages per tenant per window
+
+def _is_tenant_rate_limited(tenant_id: str) -> bool:
+    now = time.monotonic()
+    q = _tenant_rate_limit_store[tenant_id]
+    while q and now - q[0] > _TENANT_RATE_WINDOW:
+        q.popleft()
+    if len(q) >= _TENANT_RATE_MAX_MSGS:
+        return True
+    q.append(now)
+    return False
+
 # ── Maximum inbound message length before LLM ────────────────────────────────
 _MAX_MSG_CHARS = 4000
 
@@ -470,10 +490,15 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     detected_lang = detect_language(message_text)
     formatted_phone = format_phone_number(from_number)
 
-    # Rate limit: 5 messages per contact per 60 s
+    # Rate limit: 5 messages per contact per 60 s, plus a coarser per-tenant
+    # ceiling so many distinct senders can't collectively drive unbounded
+    # LLM spend against one clinic's BYOK key.
     _rl_key = f"{tenant.tenant_id}:{formatted_phone}"
     if _is_rate_limited(_rl_key):
         logger.warning(f"Rate limited: {formatted_phone} tenant={tenant.tenant_id}")
+        return
+    if _is_tenant_rate_limited(tenant.tenant_id):
+        logger.warning(f"Tenant-wide rate limited: tenant={tenant.tenant_id}")
         return
 
     # This whole setup phase (contact/thread lookup, opt-out check, guardrails,
@@ -1061,8 +1086,8 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
         elif fn_name == "cancel_appointment":
             result = await cancel_appointment(
                 tenant_id=tenant.tenant_id,
+                contact_id=contact.get("id"),
                 booking_id=args.get("booking_id"),
-                contact_phone=args.get("contact_phone") or contact.get("phone"),
             )
             if result["success"]:
                 from datetime import datetime as dt
@@ -1083,10 +1108,10 @@ async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: s
         elif fn_name == "reschedule_appointment":
             result = await reschedule_appointment(
                 tenant_id=tenant.tenant_id,
+                contact_id=contact.get("id"),
                 new_date=args.get("new_date", ""),
                 new_time=args.get("new_time", ""),
                 booking_id=args.get("booking_id"),
-                contact_phone=args.get("contact_phone") or contact.get("phone"),
             )
             if result["success"]:
                 from datetime import datetime as dt

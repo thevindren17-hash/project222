@@ -60,6 +60,17 @@ export default function CsvCampaignUploader({
     setCsvRows([])
     setExtraCols({})
 
+    // Reject oversized files before handing them to Papa.parse/XLSX.read —
+    // both parse entirely on the main thread, so a huge or malformed file
+    // (accidental or malicious) can freeze the tab before the 300-contact
+    // cap ever gets a chance to apply (that cap only kicks in server-side,
+    // after parsing already completed).
+    const MAX_FILE_BYTES = 8 * 1024 * 1024 // 8 MB — generous for a few hundred contact rows
+    if (file.size > MAX_FILE_BYTES) {
+      toast.error('File is too large (max 8MB) — please split it into smaller batches')
+      return
+    }
+
     try {
       if (file.name.endsWith('.csv') || file.type === 'text/csv') {
         const Papa = (await import('papaparse')).default

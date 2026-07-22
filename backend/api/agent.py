@@ -300,30 +300,44 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant) -> str:
         return f"Booking failed: {res.get('message') or res.get('error', 'unknown error')}"
 
     if fn == "cancel_appointment":
-        from shared.tools import cancel_appointment
+        from shared.tools import cancel_appointment, get_or_create_contact
+        contact_result = await get_or_create_contact(
+            tenant_id=tenant_id,
+            phone=args.get("contact_phone", "test-0000"),
+            source="test",
+        )
+        if not contact_result.get("success"):
+            return "Failed to resolve contact record."
         res = await cancel_appointment(
             tenant_id=tenant_id,
+            contact_id=contact_result["contact"]["id"],
             booking_id=args.get("booking_id"),
-            contact_phone=args.get("contact_phone"),
         )
         if res.get("success"):
             return "Appointment cancelled successfully."
         return f"Cancellation failed: {res.get('message') or res.get('error', 'unknown error')}"
 
     if fn == "reschedule_appointment":
-        from shared.tools import reschedule_appointment
+        from shared.tools import reschedule_appointment, get_or_create_contact
         new_dt = _resolve_datetime(args.get("new_date", ""), args.get("new_time", ""))
         if not new_dt:
             return (
                 f"Couldn't parse new date/time (date='{args.get('new_date')}', "
                 f"time='{args.get('new_time')}'). Please ask the customer to clarify."
             )
+        contact_result = await get_or_create_contact(
+            tenant_id=tenant_id,
+            phone=args.get("contact_phone", "test-0000"),
+            source="test",
+        )
+        if not contact_result.get("success"):
+            return "Failed to resolve contact record."
         res = await reschedule_appointment(
             tenant_id=tenant_id,
+            contact_id=contact_result["contact"]["id"],
             new_date=new_dt.strftime("%Y-%m-%d"),
             new_time=new_dt.strftime("%H:%M"),
             booking_id=args.get("booking_id"),
-            contact_phone=args.get("contact_phone"),
         )
         if res.get("success"):
             new_time = res.get("new_time", new_dt.strftime("%A, %d %b %Y at %H:%M"))

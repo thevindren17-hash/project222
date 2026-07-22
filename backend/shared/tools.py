@@ -106,15 +106,30 @@ async def book_appointment(
             "message": f"That time slot is already taken (appointment at {conflict_time}). Would you like to try another time?",
         }
 
-    result = await _db(lambda: supabase.table("bookings").insert({
-        "tenant_id": tenant_id,
-        "contact_id": contact_id,
-        "scheduled_at": scheduled_at.isoformat(),
-        "service_type": service_type,
-        "details": {"notes": notes} if notes else {},
-        "source": source,
-        "status": "pending",
-    }).execute())
+    # The check above is a fast, friendly pre-flight — it is NOT atomic with
+    # the insert below, so two near-simultaneous bookings for the same slot
+    # could both pass it. The `bookings_no_overlap` exclusion constraint
+    # (Postgres-level, see migration 009) is what actually prevents the
+    # double-booking: if the race window is hit, the insert itself fails and
+    # we catch that specific error here instead of returning a generic one.
+    try:
+        result = await _db(lambda: supabase.table("bookings").insert({
+            "tenant_id": tenant_id,
+            "contact_id": contact_id,
+            "scheduled_at": scheduled_at.isoformat(),
+            "service_type": service_type,
+            "details": {"notes": notes} if notes else {},
+            "source": source,
+            "status": "pending",
+        }).execute())
+    except Exception as e:
+        if "23P01" in str(e) or "exclusion" in str(e).lower() or "bookings_no_overlap" in str(e):
+            return {
+                "success": False,
+                "error": "double_booking",
+                "message": "That time slot was just taken by another booking. Would you like to try another time?",
+            }
+        raise
 
     if not result.data:
         return {"success": False, "error": "Failed to create booking"}
@@ -228,30 +243,28 @@ async def check_slots(
 
 async def cancel_appointment(
     tenant_id: str,
+    contact_id: str,
     booking_id: Optional[str] = None,
-    contact_phone: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # contact_id must always come from the server-resolved conversation
+    # context (the person actually texting), never from the LLM's tool-call
+    # arguments — otherwise a crafted message like "cancel the appointment
+    # for +60123456789" could let one patient cancel/reschedule another
+    # patient's booking. booking_id is scoped by contact_id too, so even a
+    # guessed/leaked booking UUID from another patient can't match here.
     supabase = get_supabase_client()
 
     if booking_id:
         _bid_lookup = booking_id
         booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "id", _bid_lookup
-        ).eq("tenant_id", tenant_id).maybe_single().execute())
-    elif contact_phone:
-        contact = await _db_optional(lambda: supabase.table("contacts").select("id").eq(
-            "tenant_id", tenant_id
-        ).eq("phone", contact_phone).maybe_single().execute())
-        if not contact.data:
-            return {"success": False, "error": "Contact not found"}
-        _cid = contact.data["id"]
+        ).eq("tenant_id", tenant_id).eq("contact_id", contact_id).maybe_single().execute())
+    else:
         booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "tenant_id", tenant_id
-        ).eq("contact_id", _cid).eq(
+        ).eq("contact_id", contact_id).eq(
             "status", "pending"
         ).order("scheduled_at", desc=True).limit(1).maybe_single().execute())
-    else:
-        return {"success": False, "error": "Must provide booking_id or contact_phone"}
 
     if not booking.data:
         return {"success": False, "error": "Booking not found"}
@@ -278,11 +291,14 @@ async def cancel_appointment(
 
 async def reschedule_appointment(
     tenant_id: str,
+    contact_id: str,
     new_date: str,
     new_time: str,
     booking_id: Optional[str] = None,
-    contact_phone: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # See the same note in cancel_appointment — contact_id is always the
+    # server-resolved current contact, never LLM-supplied, and booking_id
+    # (if given) is scoped by it too.
     from shared.utils import parse_datetime
     supabase = get_supabase_client()
     new_scheduled_at = parse_datetime(new_date, new_time)
@@ -293,21 +309,13 @@ async def reschedule_appointment(
         _bid_lookup = booking_id
         booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "id", _bid_lookup
-        ).eq("tenant_id", tenant_id).maybe_single().execute())
-    elif contact_phone:
-        contact = await _db_optional(lambda: supabase.table("contacts").select("id").eq(
-            "tenant_id", tenant_id
-        ).eq("phone", contact_phone).maybe_single().execute())
-        if not contact.data:
-            return {"success": False, "error": "Contact not found"}
-        _cid = contact.data["id"]
+        ).eq("tenant_id", tenant_id).eq("contact_id", contact_id).maybe_single().execute())
+    else:
         booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
             "tenant_id", tenant_id
-        ).eq("contact_id", _cid).eq(
+        ).eq("contact_id", contact_id).eq(
             "status", "pending"
         ).order("scheduled_at", desc=True).limit(1).maybe_single().execute())
-    else:
-        return {"success": False, "error": "Must provide booking_id or contact_phone"}
 
     if not booking.data:
         return {"success": False, "error": "Booking not found"}
@@ -521,12 +529,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "cancel_appointment",
-            "description": "Cancel the most recent pending appointment for a patient.",
+            "description": "Cancel the most recent pending appointment for the patient in this conversation. Always acts on the current patient — never a different phone number.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "booking_id": {"type": "string", "description": "Booking ID (optional if contact_phone given)"},
-                    "contact_phone": {"type": "string", "description": "Patient's phone number"},
+                    "booking_id": {"type": "string", "description": "Booking ID, if already known from earlier in this conversation (optional — omit to cancel the current patient's most recent pending booking)"},
                 },
                 "required": [],
             },
@@ -536,14 +543,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "reschedule_appointment",
-            "description": "Reschedule an existing appointment to a new date and time.",
+            "description": "Reschedule the current patient's existing appointment to a new date and time. Always acts on the current patient — never a different phone number.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "new_date": {"type": "string", "description": "New appointment date in YYYY-MM-DD format"},
                     "new_time": {"type": "string", "description": "New appointment time in HH:MM 24-hour format"},
-                    "booking_id": {"type": "string", "description": "Booking ID (optional if contact_phone given)"},
-                    "contact_phone": {"type": "string", "description": "Patient's phone number"},
+                    "booking_id": {"type": "string", "description": "Booking ID, if already known from earlier in this conversation (optional — omit to reschedule the current patient's most recent pending booking)"},
                 },
                 "required": ["new_date", "new_time"],
             },
