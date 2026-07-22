@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { CheckCircle2, XCircle, Calendar, Sheet, Loader2, ExternalLink, Key, Copy } from 'lucide-react'
+import { CheckCircle2, XCircle, Calendar, Sheet, Loader2, ExternalLink, Key, Copy, RefreshCw } from 'lucide-react'
 import { format } from 'date-fns'
 
 const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || '').trim()
@@ -111,6 +111,29 @@ export default function GoogleIntegrationPage() {
     },
     onSuccess: () => {
       toast.success('Google disconnected')
+      queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'google'] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const [sheetLink, setSheetLink] = useState('')
+
+  const selectSheetMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenant) throw new Error('No tenant')
+      if (!sheetLink.trim()) throw new Error('Paste a Google Sheets link first')
+      const res = await fetch('/api/integrations/google/select-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenant.id, sheet_link: sheetLink.trim() }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Could not use that spreadsheet')
+      return data as { title: string }
+    },
+    onSuccess: (data) => {
+      toast.success(`Now using "${data.title}" — a Patients tab was added if it didn't already have one`)
+      setSheetLink('')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'google'] })
     },
     onError: (e: Error) => toast.error(e.message),
@@ -275,6 +298,54 @@ export default function GoogleIntegrationPage() {
         </CardContent>
       </Card>
 
+      {/* Step 3: choose which spreadsheet */}
+      {isConnected && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Sheet className="h-5 w-5 text-primary" />
+              <div>
+                <CardTitle>Spreadsheet</CardTitle>
+                <CardDescription>
+                  By default we created a new spreadsheet for you. If you'd rather use one of your own —
+                  even one you already use for something else, like inventory — paste its link below. We
+                  only ever add our own "Patients" tab to it; nothing else in the file is touched.
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {spreadsheetUrl && (
+              <p className="text-xs text-muted-foreground">
+                Currently using:{' '}
+                <a href={spreadsheetUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                  {spreadsheetUrl}
+                </a>
+              </p>
+            )}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Input
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                value={sheetLink}
+                onChange={(e) => setSheetLink(e.target.value)}
+                className="font-mono text-sm flex-1"
+              />
+              <Button
+                size="sm"
+                onClick={() => selectSheetMutation.mutate()}
+                disabled={selectSheetMutation.isPending}
+                className="shrink-0"
+              >
+                {selectSheetMutation.isPending
+                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  : <RefreshCw className="mr-2 h-4 w-4" />}
+                Use this Sheet
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* How it works */}
       <Card>
         <CardHeader>
@@ -284,8 +355,8 @@ export default function GoogleIntegrationPage() {
           {[
             ['Create your own Google Cloud OAuth Client', 'In your Google Cloud project, create an OAuth Client ID (Web application) and add the redirect URI shown above.'],
             ['Save the Client ID and Secret here', 'Paste them into the fields above — this connects through your own app, not a shared one.'],
-            ['Connect once', 'One click authorizes Calendar, Sheets, and Drive together — no separate steps.'],
-            ['Everything just works', 'Bookings sync to your Google Calendar automatically, and every new lead, booking, reschedule, and cancellation is mirrored as a row in a spreadsheet we create for you.'],
+            ['Connect once', 'One click authorizes both Calendar and Sheets together — no separate steps.'],
+            ['Everything just works', 'Bookings sync to your Google Calendar automatically, and every new lead, booking, reschedule, and cancellation is mirrored as a row in Sheets — either the one we create for you, or your own if you point us at it below.'],
           ].map(([title, desc], i) => (
             <div key={i} className="flex gap-3">
               <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold shrink-0">

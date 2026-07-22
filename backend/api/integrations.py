@@ -164,6 +164,44 @@ async def google_disconnect(request: Request):
     return {"success": True}
 
 
+class SelectSheetRequest(BaseModel):
+    tenant_id: str
+    sheet_link: str
+
+
+@router.post("/google/select-sheet", dependencies=[Depends(require_internal_secret)])
+async def google_select_sheet(req: SelectSheetRequest):
+    """
+    Point the patient-mirror at a clinic's own existing spreadsheet (pasted
+    link or bare ID) instead of the one we auto-created — total control,
+    matches how they're used to picking a sheet in tools like n8n. We only
+    ever add/write our own dedicated "Patients" tab in it, never touch any
+    other tab (inventory, whatever else lives in the same file).
+    """
+    from shared.google_integrations import (
+        extract_spreadsheet_id, get_valid_access_token, get_spreadsheet_info, ensure_patients_tab,
+    )
+    from shared.tenant_config import get_supabase_client, _db
+
+    spreadsheet_id = extract_spreadsheet_id(req.sheet_link)
+    if not spreadsheet_id:
+        raise HTTPException(status_code=400, detail="Couldn't read a spreadsheet ID from that link")
+
+    try:
+        access_token = await get_valid_access_token(req.tenant_id)
+        info = await get_spreadsheet_info(spreadsheet_id, access_token)
+        await ensure_patients_tab(spreadsheet_id, access_token, info["tab_names"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    supabase = get_supabase_client()
+    await _db(lambda: supabase.table("tenant_settings").update(
+        {"google_sheets_id": spreadsheet_id}
+    ).eq("tenant_id", req.tenant_id).execute())
+
+    return {"success": True, "spreadsheet_id": spreadsheet_id, "title": info["title"]}
+
+
 async def _exchange_google_code(tenant_id: str, code: str):
     import httpx
     from shared.tenant_config import get_tenant_by_id

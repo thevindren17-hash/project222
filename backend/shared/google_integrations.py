@@ -313,14 +313,18 @@ class GoogleSheetsIntegration:
 
 
 # ── OAuth helpers ──────────────────────────────────────────────────────────────
-# One combined scope covers Calendar + Sheets + Drive — a clinic connects
-# once and both features just work, rather than two separate OAuth grants
-# for what's really one Google account.
+# One combined scope covers Calendar + Sheets — a clinic connects once and
+# both features just work, rather than two separate OAuth grants for what's
+# really one Google account. The `spreadsheets` scope alone already grants
+# read/write to ANY spreadsheet the account can access (not just ones this
+# app created), so a clinic can point us at an existing sheet — inventory,
+# whatever they already use — just by pasting its link. No separate Drive
+# scope needed for that, so we deliberately don't request one (least
+# privilege — this app never needs to browse or read a clinic's Drive).
 GOOGLE_OAUTH_SCOPE = (
     "https://www.googleapis.com/auth/calendar "
     "https://www.googleapis.com/auth/calendar.events "
-    "https://www.googleapis.com/auth/spreadsheets "
-    "https://www.googleapis.com/auth/drive.file"
+    "https://www.googleapis.com/auth/spreadsheets"
 )
 
 
@@ -441,6 +445,100 @@ async def create_patient_spreadsheet(clinic_name: str, access_token: str) -> str
             logger.warning(f"Spreadsheet header write failed (non-fatal): {header_res.text[:200]}")
 
     return spreadsheet_id
+
+
+def extract_spreadsheet_id(url_or_id: str) -> Optional[str]:
+    """
+    Accept either a bare spreadsheet ID or a full Google Sheets URL (any of
+    its usual forms) and return just the ID — this is what lets a clinic
+    literally paste the link from their browser address bar.
+    """
+    import re
+    s = (url_or_id or "").strip()
+    if not s:
+        return None
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", s)
+    if match:
+        return match.group(1)
+    # Not a URL — assume they pasted the bare ID directly.
+    if re.fullmatch(r"[a-zA-Z0-9_-]{20,}", s):
+        return s
+    return None
+
+
+async def get_valid_access_token(tenant_id: str) -> str:
+    """Get a live access token for this tenant, refreshing if needed — for
+    operations not tied to a specific GoogleCalendarIntegration/GoogleSheetsIntegration
+    instance (e.g. validating a pasted spreadsheet link before saving it)."""
+    from shared.tenant_config import get_supabase_client, _db_optional
+    supabase = get_supabase_client()
+    result = await _db_optional(lambda: supabase.table("tenant_settings")
+        .select("google_access_token,google_refresh_token")
+        .eq("tenant_id", tenant_id)
+        .maybe_single()
+        .execute()
+    )
+    if not result.data:
+        raise RuntimeError("Google not connected")
+    token = result.data.get("google_access_token")
+    refresh = result.data.get("google_refresh_token")
+    if not token and not refresh:
+        raise RuntimeError("Google not connected")
+    if refresh:
+        token = await _refresh_google_token(tenant_id, refresh)
+    return token
+
+
+async def get_spreadsheet_info(spreadsheet_id: str, access_token: str) -> Dict[str, Any]:
+    """
+    Confirm the connected account can actually access this spreadsheet (a
+    clinic could paste a link to a sheet their Google account has no access
+    to, or a mistyped ID) and return its title + existing tab names.
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            f"{SHEETS_API}/{spreadsheet_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"fields": "properties.title,sheets.properties.title"},
+        )
+    if r.status_code == 404:
+        raise RuntimeError("Spreadsheet not found — check the link and try again")
+    if r.status_code == 403:
+        raise RuntimeError("This Google account doesn't have access to that spreadsheet")
+    if r.status_code != 200:
+        raise RuntimeError(f"Could not open spreadsheet ({r.status_code}): {r.text[:200]}")
+    data = r.json()
+    return {
+        "title": data.get("properties", {}).get("title", ""),
+        "tab_names": [s["properties"]["title"] for s in data.get("sheets", [])],
+    }
+
+
+async def ensure_patients_tab(spreadsheet_id: str, access_token: str, existing_tab_names: List[str]) -> None:
+    """
+    Add a dedicated "Patients" tab (+ header row) to a clinic's existing
+    spreadsheet if it doesn't already have one — never touches any of their
+    other tabs (inventory, whatever else they keep in the same file).
+    """
+    if SHEETS_TAB_NAME in existing_tab_names:
+        return
+    async with httpx.AsyncClient(timeout=15) as client:
+        add_res = await client.post(
+            f"{SHEETS_API}/{spreadsheet_id}:batchUpdate",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={"requests": [{"addSheet": {"properties": {"title": SHEETS_TAB_NAME}}}]},
+        )
+        if add_res.status_code not in (200, 201):
+            raise RuntimeError(f"Could not add a Patients tab ({add_res.status_code}): {add_res.text[:200]}")
+
+        header_res = await client.put(
+            f"{SHEETS_API}/{spreadsheet_id}/values/{SHEETS_TAB_NAME}!A1:H1",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            params={"valueInputOption": "RAW"},
+            json={"values": [SHEETS_HEADER_ROW]},
+        )
+        if header_res.status_code not in (200, 201):
+            logger.warning(f"Patients tab header write failed (non-fatal): {header_res.text[:200]}")
 
 
 # ── Per-tenant instance getters ────────────────────────────────────────────────
