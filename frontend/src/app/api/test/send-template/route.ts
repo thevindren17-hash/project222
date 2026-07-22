@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
     // Upsert test contact
     const { data: contact } = await supabaseAdmin
       .from('contacts')
-      .upsert({ tenant_id, phone, source: 'test' }, { onConflict: 'tenant_id,phone' })
+      .upsert({ tenant_id, phone }, { onConflict: 'tenant_id,phone' })
       .select('id, name')
       .single()
 

@@ -116,7 +116,7 @@ async function sendOneCampaignMessage(params: {
     const { data: contactRow, error: upsertErr } = await supabaseAdmin
       .from('contacts')
       .upsert(
-        { tenant_id, phone, name, source: 'csv_import' },
+        { tenant_id, phone, name },
         { onConflict: 'tenant_id,phone' }
       )
       .select('id, opted_out')
