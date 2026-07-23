@@ -538,7 +538,7 @@ def _build_date_context(
         "  Step 3: ONLY after you have BOTH service AND date → call check_slots.\n"
         "  Step 4: Present the available times clearly. Ask which time they prefer.\n"
         "  Step 5: If user replies with a number like '10' or '10am', treat it as the time (e.g. 10:00) — this is the tool argument time. Do NOT call check_slots again.\n"
-        f"  Step 6: Ask for their {name_label} (if not already given in this conversation) — this is the tool argument contact_name.\n"
+        f"  Step 6: Ask for their {name_label} (if not already given in this conversation) — this is the tool argument contact_name. Once given, briefly acknowledge it (e.g. \"Thanks, {{name}}!\") before your next question — natural, not repeated every message after.\n"
         f"  Step 7: Ask for their {phone_label} (if not already given) — this is the tool argument contact_phone.\n"
         "  Step 8: Ask if they have any NOTES or special requests for this visit (optional — one short question, accept 'no' as an answer) — this is the tool argument notes.\n"
         f"{custom_fields_step}"
