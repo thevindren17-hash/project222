@@ -237,12 +237,20 @@ def _resolve_datetime(date_str: str, time_str: str) -> Optional[datetime]:
 
 # ── Tool dispatcher ────────────────────────────────────────────────────────────
 
-async def _run_tool(fn: str, args: dict, tenant_id: str, tenant) -> str:
+async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_history: Optional[list] = None) -> str:
     """Execute a single tool and return a human-readable result string."""
 
     if fn == "get_faq":
         res = await get_faq(tenant, args.get("question", ""))
         return res.get("answer") if res.get("success") else "No matching FAQ found."
+
+    # Same guard as real WhatsApp: a model that skips asking and just
+    # guesses a date still produces a normal-looking argument, so check the
+    # actual conversation text for a date-shaped mention rather than trust it.
+    if fn in ("check_slots", "book_appointment"):
+        from shared.utils import conversation_mentions_a_date
+        if not conversation_mentions_a_date(conversation_history or []):
+            return "I still need to know what date the patient wants — ask them before calling check_slots or book_appointment."
 
     if fn == "check_slots":
         from shared.tools import check_slots
@@ -423,7 +431,7 @@ async def test_agent(req: TestMessage):
         fn = tc["function"]["name"]
         args = tc["function"]["arguments"]
         try:
-            result_text = await _run_tool(fn, args, req.tenant_id, tenant)
+            result_text = await _run_tool(fn, args, req.tenant_id, tenant, conversation)
         except Exception as e:
             logger.error(f"Tool '{fn}' error: {e}")
             result_text = f"Tool error: {str(e)}"

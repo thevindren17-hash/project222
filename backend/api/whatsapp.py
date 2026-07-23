@@ -44,6 +44,7 @@ from shared.utils import (
     format_phone_number,
     check_emergency,
     check_escalation_request,
+    conversation_mentions_a_date,
     logger,
 )
 
@@ -799,7 +800,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
 
         if tool_calls:
-            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
+            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language, conversation_history)
             if tool_result:
                 reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
 
@@ -943,7 +944,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
             reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
 
         if tool_calls:
-            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language)
+            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language, conversation_history)
             if tool_result:
                 reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
 
@@ -1065,13 +1066,27 @@ def _is_valid_phone(phone: str) -> bool:
 
 # ── Tool executor ──────────────────────────────────────────────────────────────
 
-async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: str) -> str:
+async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: str, conversation_history: Optional[list] = None) -> str:
     from api.agent import _resolve_datetime
     results = []
+    # A model that skips asking and just guesses a date (usually "tomorrow")
+    # still produces a normal-looking YYYY-MM-DD argument, so the tool call
+    # itself can't be distinguished from a legitimate one — check the actual
+    # conversation text for a date-shaped mention instead of trusting the arg.
+    has_date_mention = conversation_mentions_a_date(conversation_history or [])
 
     for tc in tool_calls:
         fn_name = tc["function"]["name"]
         args = tc["function"]["arguments"]
+
+        if fn_name in ("book_appointment", "check_slots") and not has_date_mention:
+            if language == "ms":
+                results.append("Tarikh berapa yang anda mahu untuk temujanji ini?")
+            elif language == "zh":
+                results.append("请问您希望预约哪一天？")
+            else:
+                results.append("What date would you like for this appointment?")
+            continue
 
         if fn_name == "book_appointment":
             contact_name = args.get("contact_name", "").strip() or contact.get("name", "")
