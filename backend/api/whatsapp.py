@@ -791,21 +791,18 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     # nothing visible anywhere in the dashboard. Fail loud into a fallback
     # reply + escalation instead of failing silent.
     try:
-        response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
+        has_date_mention = conversation_mentions_a_date(conversation_history)
 
-        reply_text = response.get("content", "")
-        tool_calls = response.get("tool_calls")
+        async def _execute(fn_name: str, args: dict) -> str:
+            return await _execute_wa_tool(fn_name, args, tenant, contact, language, has_date_mention)
 
-        if not tool_calls and reply_text and "<function=" in reply_text:
-            reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
-
-        if tool_calls:
-            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language, conversation_history)
-            if tool_result:
-                reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
-
-        if not reply_text:
-            reply_text = "I'm sorry, I couldn't process that. Please try again or call us directly."
+        result = await llm_client.run_with_tools(
+            messages=messages_payload,
+            tools=enabled_tools or None,
+            execute_tool=_execute,
+            parse_embedded_tool_calls=_parse_embedded_tool_calls,
+        )
+        reply_text = result.get("content") or "I'm sorry, I couldn't process that. Please try again or call us directly."
     except Exception as llm_err:
         logger.error(
             f"LLM generation failed | tenant={tenant.tenant_id} | provider={tenant.llm_config.get('provider')} | error={llm_err}",
@@ -935,21 +932,18 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     enabled_tools = _select_tools(all_tools, history.data, transcript)
 
     try:
-        response = await llm_client.generate(messages=messages_payload, tools=enabled_tools or None)
+        has_date_mention = conversation_mentions_a_date(conversation_history)
 
-        reply_text = response.get("content", "")
-        tool_calls = response.get("tool_calls")
+        async def _execute(fn_name: str, args: dict) -> str:
+            return await _execute_wa_tool(fn_name, args, tenant, contact, language, has_date_mention)
 
-        if not tool_calls and reply_text and "<function=" in reply_text:
-            reply_text, tool_calls = _parse_embedded_tool_calls(reply_text)
-
-        if tool_calls:
-            tool_result = await _execute_wa_tools(tool_calls, tenant, contact, language, conversation_history)
-            if tool_result:
-                reply_text = f"{reply_text}\n\n{tool_result}".strip() if reply_text else tool_result
-
-        if not reply_text:
-            reply_text = "I'm sorry, I couldn't process that. Please try again."
+        result = await llm_client.run_with_tools(
+            messages=messages_payload,
+            tools=enabled_tools or None,
+            execute_tool=_execute,
+            parse_embedded_tool_calls=_parse_embedded_tool_calls,
+        )
+        reply_text = result.get("content") or "I'm sorry, I couldn't process that. Please try again."
     except Exception as llm_err:
         logger.error(
             f"LLM generation failed (voice) | tenant={tenant.tenant_id} | provider={tenant.llm_config.get('provider')} | error={llm_err}",
@@ -1066,222 +1060,220 @@ def _is_valid_phone(phone: str) -> bool:
 
 # ── Tool executor ──────────────────────────────────────────────────────────────
 
-async def _execute_wa_tools(tool_calls: list, tenant, contact: dict, language: str, conversation_history: Optional[list] = None) -> str:
+async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, language: str, has_date_mention: bool) -> str:
+    """
+    Execute a single WhatsApp tool call and return its result text.
+
+    Called once per tool call from LLMClient.run_with_tools, which feeds this
+    text back to the LLM so it can react to it (ask the next question,
+    confirm, etc.) in a follow-up turn instead of this string being the
+    entire bot reply.
+    """
     from api.agent import _resolve_datetime
-    results = []
+
     # A model that skips asking and just guesses a date (usually "tomorrow")
     # still produces a normal-looking YYYY-MM-DD argument, so the tool call
     # itself can't be distinguished from a legitimate one — check the actual
     # conversation text for a date-shaped mention instead of trusting the arg.
-    has_date_mention = conversation_mentions_a_date(conversation_history or [])
+    if fn_name in ("book_appointment", "check_slots") and not has_date_mention:
+        if language == "ms":
+            return "Tarikh berapa yang anda mahu untuk temujanji ini?"
+        elif language == "zh":
+            return "请问您希望预约哪一天？"
+        else:
+            return "What date would you like for this appointment?"
 
-    for tc in tool_calls:
-        fn_name = tc["function"]["name"]
-        args = tc["function"]["arguments"]
+    if fn_name == "book_appointment":
+        contact_name = args.get("contact_name", "").strip() or contact.get("name", "")
+        contact_phone = args.get("contact_phone", "").strip() or contact.get("phone", "")
+        service_type = args.get("service_type", "").strip()
 
-        if fn_name in ("book_appointment", "check_slots") and not has_date_mention:
+        missing = []
+        if _is_placeholder(contact_name):
+            missing.append("name" if language == "en" else "nama" if language == "ms" else "姓名")
+        if not _is_valid_phone(contact_phone):
+            missing.append("phone number" if language == "en" else "nombor telefon" if language == "ms" else "电话")
+        if _is_placeholder(service_type):
+            missing.append("service type" if language == "en" else "jenis perkhidmatan" if language == "ms" else "服务类型")
+
+        if missing:
+            missing_str = ", ".join(missing)
             if language == "ms":
-                results.append("Tarikh berapa yang anda mahu untuk temujanji ini?")
+                return f"Saya masih perlukan: {missing_str}."
             elif language == "zh":
-                results.append("请问您希望预约哪一天？")
+                return f"还需要以下信息：{missing_str}。"
             else:
-                results.append("What date would you like for this appointment?")
-            continue
+                return f"I still need: {missing_str}."
 
-        if fn_name == "book_appointment":
-            contact_name = args.get("contact_name", "").strip() or contact.get("name", "")
-            contact_phone = args.get("contact_phone", "").strip() or contact.get("phone", "")
-            service_type = args.get("service_type", "").strip()
-
-            missing = []
-            if _is_placeholder(contact_name):
-                missing.append("name" if language == "en" else "nama" if language == "ms" else "姓名")
-            if not _is_valid_phone(contact_phone):
-                missing.append("phone number" if language == "en" else "nombor telefon" if language == "ms" else "电话")
-            if _is_placeholder(service_type):
-                missing.append("service type" if language == "en" else "jenis perkhidmatan" if language == "ms" else "服务类型")
-
-            if missing:
-                missing_str = ", ".join(missing)
-                if language == "ms":
-                    results.append(f"Saya masih perlukan: {missing_str}.")
-                elif language == "zh":
-                    results.append(f"还需要以下信息：{missing_str}。")
-                else:
-                    results.append(f"I still need: {missing_str}.")
-                continue
-
-            scheduled_dt = _resolve_datetime(args.get("date", ""), args.get("time", ""))
-            if not scheduled_dt:
-                if language == "ms":
-                    results.append("Saya tidak faham tarikh/masa. Boleh nyatakan semula?")
-                else:
-                    results.append("I couldn't understand the date and time. Please clarify.")
-                continue
-
-            custom_fields = {
-                f["key"]: args[f["key"]]
-                for f in (getattr(tenant, "custom_booking_fields", None) or [])
-                if f.get("action", "book_appointment") == "book_appointment" and f.get("key") and args.get(f["key"])
-            }
-
-            result = await book_appointment(
-                tenant_id=tenant.tenant_id,
-                contact_id=contact.get("id"),
-                contact_name=contact_name,
-                contact_phone=contact_phone,
-                service_type=service_type,
-                scheduled_at=scheduled_dt,
-                tenant_config=tenant,
-                notes=args.get("notes"),
-                source="whatsapp",
-                custom_fields=custom_fields or None,
-            )
-            if result["success"]:
-                # Update contact record so appointments dashboard shows real name
-                existing_name = (contact.get("name") or "").strip().lower()
-                if contact_name and existing_name in ("", "unknown"):
-                    try:
-                        supabase = get_supabase_client()
-                        _cid = contact.get("id")
-                        _safe_name = contact_name[:100]
-                        await _db(lambda: supabase.table("contacts").update(
-                            {"name": _safe_name}
-                        ).eq("id", _cid).execute())
-                        await _log_contact_change(
-                            tenant_id=tenant.tenant_id, contact_id=_cid,
-                            field="name", old_value=existing_name, new_value=_safe_name,
-                        )
-                        contact["name"] = _safe_name
-                    except Exception as _e:
-                        logger.warning(f"Failed to update contact name: {_e}")
-
-                svc = args.get("service_type", "")
-                date_ = args.get("date", "")
-                time_ = args.get("time", "")
-                if language == "ms":
-                    results.append(f"Berjaya! Temujanji {svc} anda telah ditetapkan pada {date_} jam {time_}.")
-                elif language == "zh":
-                    results.append(f"成功！您的{svc}预约已定于{date_} {time_}。")
-                else:
-                    results.append(f"Done! Your {svc} appointment is booked for {date_} at {time_}.")
+        scheduled_dt = _resolve_datetime(args.get("date", ""), args.get("time", ""))
+        if not scheduled_dt:
+            if language == "ms":
+                return "Saya tidak faham tarikh/masa. Boleh nyatakan semula?"
             else:
-                msg = result.get("message", "")
-                if language == "ms":
-                    results.append(msg or "Maaf, penempahan tidak berjaya. Sila cuba lagi.")
-                elif language == "zh":
-                    results.append(msg or "抱歉，预约未能完成，请再试一次。")
-                else:
-                    results.append(msg or "Sorry, I couldn't complete that booking.")
+                return "I couldn't understand the date and time. Please clarify."
 
-        elif fn_name == "check_slots":
-            try:
-                date_obj = datetime.strptime(args["date"], "%Y-%m-%d")
-            except (ValueError, KeyError):
-                if language == "ms":
-                    results.append("Sila berikan tarikh yang tepat.")
-                else:
-                    results.append("Please provide the date in YYYY-MM-DD format.")
-                continue
-            result = await check_slots(
-                tenant_id=tenant.tenant_id,
-                service_type=args.get("service_type", "checkup"),
-                date=date_obj,
-                tenant_config=tenant,
-            )
-            if result["success"] and result["available_slots"]:
-                slots = ", ".join(s["time"] for s in result["available_slots"][:5])
-                if language == "ms":
-                    results.append(f"Masa yang tersedia pada {args['date']}: {slots}\nPilih masa yang sesuai untuk anda.")
-                elif language == "zh":
-                    results.append(f"{args['date']} 的可用时间：{slots}\n请选择您方便的时间。")
-                else:
-                    results.append(f"Available times on {args['date']}: {slots}\nWhich time works for you?")
+        custom_fields = {
+            f["key"]: args[f["key"]]
+            for f in (getattr(tenant, "custom_booking_fields", None) or [])
+            if f.get("action", "book_appointment") == "book_appointment" and f.get("key") and args.get(f["key"])
+        }
+
+        result = await book_appointment(
+            tenant_id=tenant.tenant_id,
+            contact_id=contact.get("id"),
+            contact_name=contact_name,
+            contact_phone=contact_phone,
+            service_type=service_type,
+            scheduled_at=scheduled_dt,
+            tenant_config=tenant,
+            notes=args.get("notes"),
+            source="whatsapp",
+            custom_fields=custom_fields or None,
+        )
+        if result["success"]:
+            # Update contact record so appointments dashboard shows real name
+            existing_name = (contact.get("name") or "").strip().lower()
+            if contact_name and existing_name in ("", "unknown"):
+                try:
+                    supabase = get_supabase_client()
+                    _cid = contact.get("id")
+                    _safe_name = contact_name[:100]
+                    await _db(lambda: supabase.table("contacts").update(
+                        {"name": _safe_name}
+                    ).eq("id", _cid).execute())
+                    await _log_contact_change(
+                        tenant_id=tenant.tenant_id, contact_id=_cid,
+                        field="name", old_value=existing_name, new_value=_safe_name,
+                    )
+                    contact["name"] = _safe_name
+                except Exception as _e:
+                    logger.warning(f"Failed to update contact name: {_e}")
+
+            svc = args.get("service_type", "")
+            date_ = args.get("date", "")
+            time_ = args.get("time", "")
+            if language == "ms":
+                return f"Berjaya! Temujanji {svc} anda telah ditetapkan pada {date_} jam {time_}."
+            elif language == "zh":
+                return f"成功！您的{svc}预约已定于{date_} {time_}。"
             else:
-                if language == "ms":
-                    results.append(f"Tiada masa yang tersedia pada {args['date']}. Cuba tarikh lain?")
-                elif language == "zh":
-                    results.append(f"{args['date']} 没有可用时间，请尝试其他日期。")
-                else:
-                    results.append(f"No available slots on {args['date']}. Try another date?")
-
-        elif fn_name == "cancel_appointment":
-            cancel_custom_fields = {
-                f["key"]: args[f["key"]]
-                for f in (getattr(tenant, "custom_booking_fields", None) or [])
-                if f.get("action") == "cancel_appointment" and f.get("key") and args.get(f["key"])
-            }
-            result = await cancel_appointment(
-                tenant_id=tenant.tenant_id,
-                contact_id=contact.get("id"),
-                booking_id=args.get("booking_id"),
-                custom_fields=cancel_custom_fields or None,
-            )
-            if result["success"]:
-                from datetime import datetime as dt
-                t = dt.fromisoformat(result["scheduled_at"]).strftime("%d %b, %I:%M %p")
-                if language == "ms":
-                    results.append(f"Temujanji anda pada {t} telah dibatalkan.")
-                elif language == "zh":
-                    results.append(f"您在{t}的预约已取消。")
-                else:
-                    results.append(f"Your appointment on {t} has been cancelled.")
+                return f"Done! Your {svc} appointment is booked for {date_} at {time_}."
+        else:
+            msg = result.get("message", "")
+            if language == "ms":
+                return msg or "Maaf, penempahan tidak berjaya. Sila cuba lagi."
+            elif language == "zh":
+                return msg or "抱歉，预约未能完成，请再试一次。"
             else:
-                msg = result.get("message", "")
-                if language == "ms":
-                    results.append(msg or "Saya tidak dapat mencari temujanji tersebut.")
-                else:
-                    results.append(msg or "I couldn't find that appointment.")
+                return msg or "Sorry, I couldn't complete that booking."
 
-        elif fn_name == "reschedule_appointment":
-            reschedule_custom_fields = {
-                f["key"]: args[f["key"]]
-                for f in (getattr(tenant, "custom_booking_fields", None) or [])
-                if f.get("action") == "reschedule_appointment" and f.get("key") and args.get(f["key"])
-            }
-            result = await reschedule_appointment(
-                tenant_id=tenant.tenant_id,
-                contact_id=contact.get("id"),
-                new_date=args.get("new_date", ""),
-                new_time=args.get("new_time", ""),
-                booking_id=args.get("booking_id"),
-                custom_fields=reschedule_custom_fields or None,
-            )
-            if result["success"]:
-                from datetime import datetime as dt
-                new = dt.fromisoformat(result["new_time"]).strftime("%d %b, %I:%M %p")
-                if language == "ms":
-                    results.append(f"Berjaya ditukar! Temujanji baru anda pada {new}.")
-                elif language == "zh":
-                    results.append(f"改期成功！您的新预约时间是{new}。")
-                else:
-                    results.append(f"Rescheduled! Your new appointment is on {new}.")
+    elif fn_name == "check_slots":
+        try:
+            date_obj = datetime.strptime(args["date"], "%Y-%m-%d")
+        except (ValueError, KeyError):
+            if language == "ms":
+                return "Sila berikan tarikh yang tepat."
             else:
-                err = result.get("error", "")
-                if language == "ms":
-                    results.append(err or "Tidak dapat menukar temujanji. Sila hubungi kami.")
-                else:
-                    results.append(err or "Couldn't reschedule that appointment.")
-
-        elif fn_name == "get_faq":
-            result = await get_faq(tenant, args.get("question", ""))
-            if result["success"]:
-                results.append(result["answer"])
+                return "Please provide the date in YYYY-MM-DD format."
+        result = await check_slots(
+            tenant_id=tenant.tenant_id,
+            service_type=args.get("service_type", "checkup"),
+            date=date_obj,
+            tenant_config=tenant,
+        )
+        if result["success"] and result["available_slots"]:
+            slots = ", ".join(s["time"] for s in result["available_slots"][:5])
+            if language == "ms":
+                return f"Masa yang tersedia pada {args['date']}: {slots}\nPilih masa yang sesuai untuk anda."
+            elif language == "zh":
+                return f"{args['date']} 的可用时间：{slots}\n请选择您方便的时间。"
             else:
-                results.append("I don't have that information. Please contact us directly.")
+                return f"Available times on {args['date']}: {slots}\nWhich time works for you?"
+        else:
+            if language == "ms":
+                return f"Tiada masa yang tersedia pada {args['date']}. Cuba tarikh lain?"
+            elif language == "zh":
+                return f"{args['date']} 没有可用时间，请尝试其他日期。"
+            else:
+                return f"No available slots on {args['date']}. Try another date?"
 
-        elif fn_name == "escalate_to_human":
-            await escalate_to_human(
-                tenant_id=tenant.tenant_id,
-                reason=args.get("reason", "user_requested"),
-                context="WA tool escalation",
-                source="whatsapp",
-                contact_name=contact.get("name", ""),
-                contact_phone=contact.get("phone", ""),
-            )
-            results.append("I'm connecting you with one of our staff members now. They'll be in touch shortly.")
+    elif fn_name == "cancel_appointment":
+        cancel_custom_fields = {
+            f["key"]: args[f["key"]]
+            for f in (getattr(tenant, "custom_booking_fields", None) or [])
+            if f.get("action") == "cancel_appointment" and f.get("key") and args.get(f["key"])
+        }
+        result = await cancel_appointment(
+            tenant_id=tenant.tenant_id,
+            contact_id=contact.get("id"),
+            booking_id=args.get("booking_id"),
+            custom_fields=cancel_custom_fields or None,
+        )
+        if result["success"]:
+            from datetime import datetime as dt
+            t = dt.fromisoformat(result["scheduled_at"]).strftime("%d %b, %I:%M %p")
+            if language == "ms":
+                return f"Temujanji anda pada {t} telah dibatalkan."
+            elif language == "zh":
+                return f"您在{t}的预约已取消。"
+            else:
+                return f"Your appointment on {t} has been cancelled."
+        else:
+            msg = result.get("message", "")
+            if language == "ms":
+                return msg or "Saya tidak dapat mencari temujanji tersebut."
+            else:
+                return msg or "I couldn't find that appointment."
 
-    return " ".join(results) if results else ""
+    elif fn_name == "reschedule_appointment":
+        reschedule_custom_fields = {
+            f["key"]: args[f["key"]]
+            for f in (getattr(tenant, "custom_booking_fields", None) or [])
+            if f.get("action") == "reschedule_appointment" and f.get("key") and args.get(f["key"])
+        }
+        result = await reschedule_appointment(
+            tenant_id=tenant.tenant_id,
+            contact_id=contact.get("id"),
+            new_date=args.get("new_date", ""),
+            new_time=args.get("new_time", ""),
+            booking_id=args.get("booking_id"),
+            custom_fields=reschedule_custom_fields or None,
+        )
+        if result["success"]:
+            from datetime import datetime as dt
+            new = dt.fromisoformat(result["new_time"]).strftime("%d %b, %I:%M %p")
+            if language == "ms":
+                return f"Berjaya ditukar! Temujanji baru anda pada {new}."
+            elif language == "zh":
+                return f"改期成功！您的新预约时间是{new}。"
+            else:
+                return f"Rescheduled! Your new appointment is on {new}."
+        else:
+            err = result.get("error", "")
+            if language == "ms":
+                return err or "Tidak dapat menukar temujanji. Sila hubungi kami."
+            else:
+                return err or "Couldn't reschedule that appointment."
+
+    elif fn_name == "get_faq":
+        result = await get_faq(tenant, args.get("question", ""))
+        if result["success"]:
+            return result["answer"]
+        else:
+            return "I don't have that information. Please contact us directly."
+
+    elif fn_name == "escalate_to_human":
+        await escalate_to_human(
+            tenant_id=tenant.tenant_id,
+            reason=args.get("reason", "user_requested"),
+            context="WA tool escalation",
+            source="whatsapp",
+            contact_name=contact.get("name", ""),
+            contact_phone=contact.get("phone", ""),
+        )
+        return "I'm connecting you with one of our staff members now. They'll be in touch shortly."
+
+    return ""
 
 
 async def _handle_wa_escalation(tenant, thread: dict, contact: dict, from_number: str, reason: str, reply: str, supabase):

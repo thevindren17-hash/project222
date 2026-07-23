@@ -414,34 +414,21 @@ async def test_agent(req: TestMessage):
         if tenant.tool_config.get(t["function"]["name"], True)
     ]
 
+    async def _execute(fn: str, args: dict) -> str:
+        return await _run_tool(fn, args, req.tenant_id, tenant, conversation)
+
     try:
-        response = await llm_client.generate(
+        result = await llm_client.run_with_tools(
             messages=messages_payload,
             tools=enabled_tools or None,
+            execute_tool=_execute,
         )
     except Exception as e:
         logger.error(f"Agent test LLM error: {e}")
         raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
 
-    reply = response.get("content", "")
-    tool_calls = response.get("tool_calls") or []
-    tool_results = []
-
-    for tc in tool_calls:
-        fn = tc["function"]["name"]
-        args = tc["function"]["arguments"]
-        try:
-            result_text = await _run_tool(fn, args, req.tenant_id, tenant, conversation)
-        except Exception as e:
-            logger.error(f"Tool '{fn}' error: {e}")
-            result_text = f"Tool error: {str(e)}"
-
-        tool_results.append({"tool": fn, "args": args, "result": result_text})
-        if not reply:
-            reply = result_text
-
-    if not reply:
-        reply = "I'm sorry, I couldn't process that. Please check your LLM configuration."
+    reply = result.get("content") or "I'm sorry, I couldn't process that. Please check your LLM configuration."
+    tool_results = result.get("tool_calls") or []
 
     updated_history = conversation + [{"role": "assistant", "content": reply}]
 

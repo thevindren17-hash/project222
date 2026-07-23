@@ -8,9 +8,10 @@ Text pipeline (WhatsApp):  load_llm_client(tenant) → LLMClient.generate()
 """
 
 import asyncio
+import json
 import random
 import logging
-from typing import Any, Optional, List, Dict
+from typing import Any, Awaitable, Callable, Optional, List, Dict
 
 _logger = logging.getLogger(__name__)
 
@@ -28,6 +29,59 @@ def _cred(tenant, provider: str, key: str, fallback: Optional[str] = None) -> Op
         tenant.provider_credentials.get(provider, {}).get(key)
         or fallback
     )
+
+
+def _to_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Translate the OpenAI-style message list used everywhere in this codebase
+    (plain {role, content}, plus assistant messages carrying a "tool_calls"
+    list and "tool" role messages produced by LLMClient.run_with_tools) into
+    Anthropic's block format. Anthropic requires all tool_result blocks that
+    answer a given assistant turn's tool_use calls to be coalesced into a
+    single following user turn, matched by id — run_with_tools always appends
+    "tool" messages immediately after the assistant tool-call message and
+    before the next real turn, so buffering consecutive ones here is safe.
+    """
+    out: List[Dict[str, Any]] = []
+    pending_tool_results: List[Dict[str, Any]] = []
+
+    def _flush():
+        if pending_tool_results:
+            out.append({"role": "user", "content": list(pending_tool_results)})
+            pending_tool_results.clear()
+
+    for m in messages:
+        role = m["role"]
+        if role == "system":
+            continue
+        if role == "tool":
+            pending_tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": m["tool_call_id"],
+                "content": m["content"],
+            })
+            continue
+
+        _flush()
+
+        if role == "assistant" and m.get("tool_calls"):
+            blocks: List[Dict[str, Any]] = []
+            if m.get("content"):
+                blocks.append({"type": "text", "text": m["content"]})
+            for tc in m["tool_calls"]:
+                raw_args = tc["function"]["arguments"]
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["function"]["name"],
+                    "input": json.loads(raw_args) if isinstance(raw_args, str) else raw_args,
+                })
+            out.append({"role": "assistant", "content": blocks})
+        else:
+            out.append({"role": role, "content": m["content"]})
+
+    _flush()
+    return out
 
 
 # ── Text-only LLM client (WhatsApp) ────────────────────────────────────────────
@@ -68,6 +122,87 @@ class LLMClient:
                 await asyncio.sleep(wait)
         raise last_exc  # type: ignore[misc]
 
+    async def run_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[dict]],
+        execute_tool: Callable[[str, dict], Awaitable[str]],
+        max_steps: int = 4,
+        parse_embedded_tool_calls: Optional[Callable[[str], tuple]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Runs the tool-calling loop to completion instead of a single shot:
+        call the LLM, execute any tool calls, feed the *results* back to the
+        LLM so it can react to them (ask the next question, confirm, etc.),
+        and repeat until it produces a final reply with no more tool calls.
+
+        Without this, a tool's raw return string ends up being used as the
+        bot's entire reply and the model never gets to respond to its own
+        tool call — which is what caused agents to loop, replaying the same
+        tool output verbatim instead of moving the conversation forward.
+
+        Works for any tenant system prompt / any provider: `messages` is the
+        plain OpenAI-style {role, content} list already used throughout this
+        codebase, and the caller's own copy is never mutated — history stored
+        by the caller stays plain text, only this method's local copy grows
+        provider-shaped tool_call/tool turns for the duration of the request.
+
+        `parse_embedded_tool_calls`: optional hook for models (e.g. some
+        Groq/Llama models) that emit "<function=...>" tags in plain text
+        instead of using structured tool calling — given the reply content,
+        returns (cleaned_content, tool_calls) or (content, []) if none found.
+        """
+        local_messages = list(messages)
+        tool_log: List[Dict[str, Any]] = []
+        content = ""
+
+        for _ in range(max_steps):
+            response = await self.generate(messages=local_messages, tools=tools)
+            content = response.get("content", "")
+            tool_calls = response.get("tool_calls")
+
+            if not tool_calls and parse_embedded_tool_calls and content:
+                content, tool_calls = parse_embedded_tool_calls(content)
+
+            if not tool_calls:
+                return {"content": content, "tool_calls": tool_log}
+
+            assistant_tool_calls = []
+            call_results = []
+            for tc in tool_calls:
+                name = tc["function"]["name"]
+                args = tc["function"]["arguments"]
+                call_id = tc.get("id") or f"call_{len(tool_log)}"
+                try:
+                    result_text = await execute_tool(name, args)
+                except Exception as exc:
+                    result_text = f"Tool error: {exc}"
+
+                tool_log.append({"tool": name, "args": args, "result": result_text})
+                assistant_tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                })
+                call_results.append((call_id, result_text))
+
+            local_messages.append({
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": assistant_tool_calls,
+            })
+            for call_id, result_text in call_results:
+                local_messages.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": result_text,
+                })
+
+        # Ran out of steps without a final text reply — degrade gracefully
+        # (e.g. a model stuck re-calling the same tool) rather than erroring.
+        fallback = tool_log[-1]["result"] if tool_log else ""
+        return {"content": content or fallback, "tool_calls": tool_log}
+
     async def _dispatch(
         self,
         messages: List[Dict[str, str]],
@@ -105,7 +240,6 @@ class LLMClient:
         api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         from openai import AsyncOpenAI
-        import json
 
         key = api_key or _cred(self._tenant, "openai", "api_key")
         if not key:
@@ -124,10 +258,11 @@ class LLMClient:
         if choice.tool_calls:
             tool_calls = [
                 {
+                    "id": tc.id,
                     "function": {
                         "name": tc.function.name,
                         "arguments": json.loads(tc.function.arguments),
-                    }
+                    },
                 }
                 for tc in choice.tool_calls
             ]
@@ -148,7 +283,6 @@ class LLMClient:
         client = anthropic.AsyncAnthropic(api_key=key)
 
         system = ""
-        filtered = [m for m in messages if m["role"] != "system"]
         for m in messages:
             if m["role"] == "system":
                 system = m["content"]
@@ -156,7 +290,7 @@ class LLMClient:
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": 1024,
-            "messages": filtered,
+            "messages": _to_anthropic_messages(messages),
         }
         if system:
             kwargs["system"] = system
@@ -181,7 +315,8 @@ class LLMClient:
                 if tool_calls is None:
                     tool_calls = []
                 tool_calls.append({
-                    "function": {"name": block.name, "arguments": block.input}
+                    "id": block.id,
+                    "function": {"name": block.name, "arguments": block.input},
                 })
 
         return {"content": content_text, "tool_calls": tool_calls}
