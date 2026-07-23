@@ -324,6 +324,6 @@ class LLMClient:
 
 def load_llm_client(tenant) -> LLMClient:
     """Return a text-mode LLMClient configured from tenant settings."""
-    provider = tenant.llm_config.get("provider", "openai")
-    model    = tenant.llm_config.get("model", "gpt-4o")
+    provider = tenant.llm_config.get("provider", "groq")
+    model    = tenant.llm_config.get("model", "openai/gpt-oss-120b")
     return LLMClient(provider=provider, model=model, tenant=tenant)

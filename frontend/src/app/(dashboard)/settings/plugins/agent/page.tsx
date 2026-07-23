@@ -170,7 +170,7 @@ export default function AgentPluginPage() {
   const [customTools, setCustomTools] = useState<CustomTool[]>([])
 
   const [llmProvider, setLlmProvider] = useState('groq')
-  const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
+  const [llmModel, setLlmModel] = useState('openai/gpt-oss-120b')
   const [newApiKey, setNewApiKey] = useState('')
 
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
@@ -200,7 +200,7 @@ export default function AgentPluginPage() {
       setRawPrompt(settings.custom_instructions ?? settings.system_prompt ?? '')
       setPromptSeeded(true)
       setLlmProvider(settings.llm_config?.provider || 'groq')
-      setLlmModel(settings.llm_config?.model || 'llama-3.3-70b-versatile')
+      setLlmModel(settings.llm_config?.model || 'openai/gpt-oss-120b')
       setTemperature(settings.llm_config?.temperature ?? 0.7)
       setMaxTokens(settings.llm_config?.max_tokens ?? 1024)
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })

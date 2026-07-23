@@ -251,7 +251,10 @@ class TenantConfig:
         if not self.system_prompt:
             self.system_prompt = _core_agent_rules(self.name, self.agent_name)
         if not self.llm_config:
-            self.llm_config = {"provider": "openai", "model": "gpt-4o"}
+            # Matches the frontend's default provider/model (agent/page.tsx) —
+            # Groq's free tier, so an untouched tenant has a working default
+            # without needing a paid key configured first.
+            self.llm_config = {"provider": "groq", "model": "openai/gpt-oss-120b"}
         if not self.business_hours:
             self.business_hours = {
                 "mon": {"open": "09:00", "close": "18:00"},

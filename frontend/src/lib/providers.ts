@@ -1,14 +1,17 @@
 // ── WhatsApp text agent providers ──────────────────────────────────────────
 
+// Model IDs below are periodically retired by each provider without
+// warning (this is what broke Gemini's "2.5 Flash" option — Google pulled
+// the dated preview snapshot it pointed to). Prefer stable, non-versioned
+// IDs; avoid "-preview"/"-exp-"-suffixed snapshots where a stable
+// equivalent exists, since those are the ones providers retire fastest.
 export const LLM_PROVIDERS = [
   {
     provider: 'groq',
     name: 'Groq (Free)',
     models: [
-      { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B — Fastest (Free)' },
-      { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B — Latest (Free)' },
-      { id: 'llama-3.2-90b-vision-preview', name: 'Llama 3.2 90B — Most Powerful (Free)' },
-      { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B — Versatile (Free)' },
+      { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B — Cheapest & Fastest (Free)' },
+      { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B — Recommended (Free)' },
     ],
     description: 'Free and fast. Best for real-time conversations.',
     recommended: true,
@@ -18,50 +21,49 @@ export const LLM_PROVIDERS = [
     provider: 'openai',
     name: 'OpenAI',
     models: [
-      { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano — Cheapest' },
-      { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini — Fast & Affordable' },
-      { id: 'gpt-4.1', name: 'GPT-4.1 — Latest' },
-      { id: 'o3', name: 'o3 — Most Powerful' },
+      { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano — Cheapest' },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini — Fast & Affordable' },
+      { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna — Latest' },
+      { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol — Most Powerful' },
     ],
     description: 'Most accurate, best for complex conversations.',
     recommended: false,
-    estimatedCostPerCall: '$0.002–$0.01',
+    estimatedCostPerCall: '$0.001–$0.02',
   },
   {
     provider: 'anthropic',
     name: 'Anthropic Claude',
     models: [
       { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5 — Cheapest & Fastest' },
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 — Latest & Balanced' },
-      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7 — Most Powerful' },
+      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5 — Latest & Balanced' },
+      { id: 'claude-opus-4-8', name: 'Claude Opus 4.8 — Most Powerful' },
     ],
     description: 'Excellent at following instructions and nuanced conversations.',
     recommended: false,
-    estimatedCostPerCall: '$0.001–$0.015',
+    estimatedCostPerCall: '$0.001–$0.02',
   },
   {
     provider: 'google',
     name: 'Google Gemini',
     models: [
-      { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite — Cheapest' },
-      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash — Fast & Stable' },
-      { id: 'gemini-2.5-flash-preview-04-17', name: 'Gemini 2.5 Flash — Latest' },
-      { id: 'gemini-2.5-pro-exp-03-25', name: 'Gemini 2.5 Pro — Most Powerful' },
+      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite — Cheapest' },
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash — Fast & Stable' },
+      { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash — Latest' },
+      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro — Most Powerful' },
     ],
     description: 'Best for multilingual support. Free tier available.',
     recommended: false,
-    estimatedCostPerCall: 'Free–$0.002',
+    estimatedCostPerCall: 'Free–$0.01',
   },
   {
     provider: 'mistral',
     name: 'Mistral AI',
     models: [
-      { id: 'open-mistral-nemo', name: 'Mistral Nemo — Free' },
       { id: 'mistral-small-latest', name: 'Mistral Small — Affordable' },
       { id: 'mistral-large-latest', name: 'Mistral Large — Latest & Best' },
       { id: 'codestral-latest', name: 'Codestral — Specialized (Code)' },
     ],
-    description: 'European AI, strong multilingual capabilities. Free tier available.',
+    description: 'European AI, strong multilingual capabilities. "-latest" aliases auto-track the current model generation.',
     recommended: false,
     estimatedCostPerCall: 'Free–$0.003',
   },

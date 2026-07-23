@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS tenant_settings (
     tenant_id                UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     system_prompt            TEXT,
     default_language         TEXT NOT NULL DEFAULT 'en',
-    llm_config               JSONB NOT NULL DEFAULT '{"provider":"openai","model":"gpt-4o"}'::jsonb,
+    llm_config               JSONB NOT NULL DEFAULT '{"provider":"groq","model":"openai/gpt-oss-120b"}'::jsonb,
     business_hours           JSONB NOT NULL DEFAULT '{
         "mon":{"open":"09:00","close":"18:00"},
         "tue":{"open":"09:00","close":"18:00"},
