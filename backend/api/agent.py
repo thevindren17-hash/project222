@@ -244,6 +244,18 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_hi
         res = await get_faq(tenant, args.get("question", ""))
         return res.get("answer") if res.get("success") else "No matching FAQ found."
 
+    if fn == "lookup_patient":
+        from shared.tools import lookup_patient
+        phone = args.get("contact_phone", "")
+        if not phone:
+            return "Could you share your phone number?"
+        res = await lookup_patient(tenant_id=tenant_id, phone=phone)
+        if not res.get("found"):
+            return "No existing patient record found for this number — treat them as a new patient."
+        last = res.get("last_booking")
+        last_str = f", last visit: {last['service_type']} on {last['scheduled_at'][:10]}" if last else ""
+        return f"Existing patient found — name on file: {res.get('name') or 'no name on file'}{last_str}."
+
     # Same guard as real WhatsApp: a model that skips asking and just
     # guesses a date still produces a normal-looking argument, so check the
     # actual conversation text for a date-shaped mention rather than trust it.
@@ -397,6 +409,7 @@ async def test_agent(req: TestMessage):
         conversation_language=detected_lang,
         timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
+        base_field_labels=getattr(tenant, "base_field_labels", None),
     ) + "\n\n[TEST MODE — all tools run for real and save to the database.]"
 
     conversation = list(req.history) + [{"role": "user", "content": req.message}]

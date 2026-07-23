@@ -36,7 +36,9 @@ from shared.tools import (
     get_faq,
     escalate_to_human,
     get_or_create_contact,
+    lookup_patient,
     TOOL_DEFINITIONS,
+    BASE_FIELD_HINTS,
 )
 from shared.utils import (
     detect_language,
@@ -387,6 +389,7 @@ def _build_date_context(
     conversation_language: str = "en",
     timezone: str = "Asia/Kuala_Lumpur",
     custom_booking_fields: Optional[list] = None,
+    base_field_labels: Optional[dict] = None,
 ) -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -455,7 +458,36 @@ def _build_date_context(
             "Omit any the patient skipped — never invent a value.\n"
         )
 
-    cancel_reschedule_rule = ""
+    # A clinic may relabel these for its own vocabulary (e.g. "Case Type"
+    # instead of "Service") — the wording changes, but every step below still
+    # tells the model the exact tool argument key to pass it as, since a
+    # weaker model will otherwise happily invent its own key names (e.g.
+    # "name"/"phone_number"/"services") drawn straight from this prose
+    # instead of the tool schema, which some providers reject outright.
+    labels = base_field_labels or {}
+    service_label = labels.get("service_type") or "SERVICE"
+    date_label = labels.get("date") or "DATE"
+    time_label = labels.get("time") or "TIME"
+    name_label = labels.get("contact_name") or "NAME"
+    phone_label = labels.get("contact_phone") or "PHONE NUMBER"
+
+    # Same anti-hallucination reinforcement as book_appointment above — a
+    # weaker model will otherwise invent its own key names here too (e.g.
+    # "date"/"time" instead of "new_date"/"new_time") since those words are
+    # what a clinic's own cancel/reschedule flow will naturally use in prose.
+    cancel_reschedule_rule = (
+        "- CANCEL: cancel_appointment's only real arguments are booking_id (optional — omit it to target the "
+        "current patient's own most recent pending booking; never invent one) plus any clinic-specific fields "
+        "listed below.\n"
+        "- RESCHEDULE: reschedule_appointment's EXACT, LITERAL argument names are new_date (YYYY-MM-DD) and "
+        f"new_time (HH:MM), plus optional booking_id — this is the tool argument pair for the new {date_label}/{time_label} "
+        "the patient wants, no matter what words the clinic's flow or the patient used for it. NEVER invent "
+        "different key names for these (e.g. NOT 'date', 'time', 'new_datetime').\n"
+        "- Confirm both the existing appointment and the new date/time with the patient before calling "
+        "reschedule_appointment.\n"
+        "- NEVER cancel or reschedule an appointment within 2 hours of its start — tell the patient to call the "
+        "clinic directly instead (enforced by the system regardless of what you attempt).\n"
+    )
     if cancel_fields:
         cancel_reschedule_rule += (
             f"- When cancelling an appointment, also briefly ask (optional):\n{_field_lines(cancel_fields)}\n"
@@ -473,23 +505,31 @@ def _build_date_context(
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
         f"{lang_rule}\n"
-        "BOOKING FLOW — follow these steps strictly, one question per message:\n"
-        "  Step 1: Ask what SERVICE they need (e.g. scaling, checkup, whitening). Do NOT skip this.\n"
-        "  Step 2: Ask what DATE they prefer. Do NOT skip this.\n"
+        "AVAILABLE TOOL: lookup_patient(contact_phone, contact_name?) — read-only, checks if someone is "
+        "already a patient on file by phone number. Use it whenever the clinic's own instructions above "
+        "ask you to tell new patients from returning ones, or whenever it's otherwise useful to check.\n"
+        "DEFAULT BOOKING FLOW — use this ONLY if the clinic's instructions above don't already describe "
+        "their own conversation flow or question order. If they did, follow THEIRS instead — this is "
+        "just a fallback, not an override:\n"
+        f"  Step 1: Ask what {service_label} they need (e.g. scaling, checkup, whitening) — this is the tool argument service_type.\n"
+        f"  Step 2: Ask what {date_label} they prefer — this is the tool argument date.\n"
         "  Step 3: ONLY after you have BOTH service AND date → call check_slots.\n"
         "  Step 4: Present the available times clearly. Ask which time they prefer.\n"
-        "  Step 5: If user replies with a number like '10' or '10am', treat it as the time (e.g. 10:00). Do NOT call check_slots again.\n"
-        "  Step 6: Ask for their NAME (if not already given in this conversation).\n"
-        "  Step 7: Ask for their PHONE NUMBER (if not already given).\n"
-        "  Step 8: Ask if they have any NOTES or special requests for this visit (optional — one short question, accept 'no' as an answer).\n"
+        "  Step 5: If user replies with a number like '10' or '10am', treat it as the time (e.g. 10:00) — this is the tool argument time. Do NOT call check_slots again.\n"
+        f"  Step 6: Ask for their {name_label} (if not already given in this conversation) — this is the tool argument contact_name.\n"
+        f"  Step 7: Ask for their {phone_label} (if not already given) — this is the tool argument contact_phone.\n"
+        "  Step 8: Ask if they have any NOTES or special requests for this visit (optional — one short question, accept 'no' as an answer) — this is the tool argument notes.\n"
         f"{custom_fields_step}"
-        "  Step 9: Confirm: service, date, time, name, phone, notes — then call book_appointment.\n"
-        "HARD RULES:\n"
+        "  Step 9: Confirm all details back to the patient in plain language, then call book_appointment.\n"
+        "HARD RULES (these always apply, regardless of which flow — clinic's own or the default above — you're following):\n"
         "- NEVER call check_slots unless you already know the specific date the user wants.\n"
-        "- NEVER call book_appointment unless you have all 5: name, phone, service, date, time.\n"
+        "- NEVER call book_appointment unless you have all 5 REQUIRED TOOL ARGUMENTS: contact_name, contact_phone, service_type, date, time. "
+        "These are the EXACT, LITERAL JSON argument names the tool expects — always use them exactly as written, no matter what words this "
+        "prompt or the patient used to talk about them. NEVER invent different key names (e.g. NOT 'name', 'phone_number', 'services', "
+        "or a merged date+time field) — doing so makes the tool call fail.\n"
         "- NEVER re-ask for info already given earlier in this conversation.\n"
-        "- The NAME must be text the PATIENT actually typed in this conversation. NEVER invent, guess, assume, or reuse a name from anywhere else — if you don't have a name the patient typed themselves, you MUST ask for it before calling book_appointment.\n"
-        "- When user picks a time from the shown list, proceed to collect name/phone — do not show slots again.\n"
+        "- The contact_name must be text the PATIENT actually typed in this conversation. NEVER invent, guess, assume, or reuse a name from anywhere else — if you don't have a name the patient typed themselves, you MUST ask for it before calling book_appointment.\n"
+        "- When user picks a time from the shown list, proceed to collect the remaining required fields — do not show slots again.\n"
         "- Date/time: 'esok'/'tomorrow' → exact date above, '3pm'/'3 petang' → 15:00, '9am' → 09:00, '10' after seeing slots → 10:00.\n"
         "- Always pass real values to tools — never pass placeholder text.\n"
         f"{custom_fields_rule}"
@@ -513,6 +553,11 @@ _RESERVED_FIELD_KEYS = {
     "name", "phone", "phone_number", "full_name", "patient_name", "patient_phone",
 }
 
+# reschedule_appointment's new_date/new_time map onto the same "date"/"time"
+# base field labels as book_appointment's date/time, just under different
+# tool-argument names.
+_RESCHEDULE_DATE_TIME_ALIAS = {"new_date": "date", "new_time": "time"}
+
 
 def _tool_definitions_for_tenant(tenant) -> list:
     """
@@ -520,11 +565,16 @@ def _tool_definitions_for_tenant(tenant) -> list:
     optional properties on whichever tool each field is tagged for (each
     field belongs to exactly one action — book_appointment, cancel_appointment,
     or reschedule_appointment — matching how the AI actually calls one tool
-    at a time). TOOL_DEFINITIONS itself is shared across all tenants and must
-    never be mutated in place.
+    at a time), and relabelling the 5 fixed base fields (contact_name,
+    contact_phone, service_type, date, time) with this tenant's own wording
+    if configured. The JSON property key never changes — only its
+    description — since book_appointment() and the bookings table depend on
+    those exact keys. TOOL_DEFINITIONS itself is shared across all tenants
+    and must never be mutated in place.
     """
     custom_fields = getattr(tenant, "custom_booking_fields", None) or []
-    if not custom_fields:
+    base_labels = getattr(tenant, "base_field_labels", None) or {}
+    if not custom_fields and not base_labels:
         return TOOL_DEFINITIONS
 
     import copy
@@ -532,6 +582,20 @@ def _tool_definitions_for_tenant(tenant) -> list:
     for t in tools:
         tool_name = t["function"]["name"]
         props = t["function"]["parameters"]["properties"]
+
+        for key, label in base_labels.items():
+            if label and key in props and key in BASE_FIELD_HINTS:
+                props[key]["description"] = f"{label} — {BASE_FIELD_HINTS[key]}"
+
+        # reschedule_appointment uses new_date/new_time (distinct keys, to avoid
+        # colliding with "the current appointment's" date/time mid-conversation)
+        # — same underlying concept as book_appointment's date/time, so reuse
+        # whatever label the clinic set for those.
+        for prop_key, base_key in _RESCHEDULE_DATE_TIME_ALIAS.items():
+            label = base_labels.get(base_key)
+            if label and prop_key in props:
+                props[prop_key]["description"] = f"New {label} — {BASE_FIELD_HINTS[base_key]}"
+
         for f in custom_fields:
             key = f.get("key")
             if not key or f.get("action", "book_appointment") != tool_name:
@@ -749,6 +813,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             conversation_language=language,
             timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
             custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
+            base_field_labels=getattr(tenant, "base_field_labels", None),
         )
 
         messages_payload = [
@@ -923,6 +988,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         conversation_language=language,
         timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
+        base_field_labels=getattr(tenant, "base_field_labels", None),
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
@@ -1008,7 +1074,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 _SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot", "pilih masa")
 _CANCEL_KEYWORDS = ("cancel", "batal", "batalkan", "tak jadi", "cancel", "取消")
 _RESCHEDULE_KEYWORDS = ("reschedule", "tukar masa", "ubah masa", "move", "change appointment", "改期", "tangguh")
-_ALWAYS_ON = {"get_faq", "escalate_to_human"}
+_ALWAYS_ON = {"get_faq", "escalate_to_human", "lookup_patient"}
 
 
 def _select_tools(all_tools: list, history_messages: list, current_text: str) -> list:
@@ -1254,6 +1320,33 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
                 return err or "Tidak dapat menukar temujanji. Sila hubungi kami."
             else:
                 return err or "Couldn't reschedule that appointment."
+
+    elif fn_name == "lookup_patient":
+        phone = args.get("contact_phone", "")
+        if not phone:
+            if language == "ms":
+                return "Boleh kongsikan nombor telefon anda?"
+            elif language == "zh":
+                return "请问您的电话号码是？"
+            else:
+                return "Could you share your phone number?"
+        result = await lookup_patient(tenant_id=tenant.tenant_id, phone=phone)
+        if not result.get("found"):
+            if language == "ms":
+                return "Tiada rekod pesakit sedia ada dijumpai untuk nombor ini — layan sebagai pesakit baru."
+            elif language == "zh":
+                return "未找到该号码的现有病人记录——请作为新病人处理。"
+            else:
+                return "No existing patient record found for this number — treat them as a new patient."
+        last = result.get("last_booking")
+        last_str = f", last visit: {last['service_type']} on {last['scheduled_at'][:10]}" if last else ""
+        name_on_file = result.get("name") or "no name on file"
+        if language == "ms":
+            return f"Pesakit sedia ada dijumpai — nama dalam rekod: {name_on_file}{last_str}."
+        elif language == "zh":
+            return f"找到现有病人记录——档案姓名：{name_on_file}{last_str}。"
+        else:
+            return f"Existing patient found — name on file: {name_on_file}{last_str}."
 
     elif fn_name == "get_faq":
         result = await get_faq(tenant, args.get("question", ""))

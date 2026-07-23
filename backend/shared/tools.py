@@ -451,6 +451,42 @@ async def get_or_create_contact(
     return {"success": True, "contact": contact, "is_new": True}
 
 
+async def lookup_patient(tenant_id: str, phone: str) -> Dict[str, Any]:
+    """
+    Read-only patient lookup by phone number — unlike get_or_create_contact,
+    never creates a record. Lets a clinic's own conversation flow ask
+    "new or existing patient?" and branch on a real answer instead of
+    guessing. Phone is the match key (already how contacts are deduped
+    everywhere else); name is not used for matching since it's unreliable
+    (misspellings, nicknames, booking on someone else's behalf).
+    """
+    from shared.utils import format_phone_number
+
+    supabase = get_supabase_client()
+    formatted = format_phone_number(phone)
+
+    result = await _db(lambda: supabase.table("contacts").select("id, name, created_at").eq(
+        "tenant_id", tenant_id
+    ).eq("phone", formatted).execute())
+
+    if not result.data:
+        return {"success": True, "found": False}
+
+    contact = result.data[0]
+    last_booking = await _db_optional(lambda: supabase.table("bookings").select(
+        "service_type, scheduled_at, status"
+    ).eq("tenant_id", tenant_id).eq("contact_id", contact["id"]).order(
+        "scheduled_at", desc=True
+    ).limit(1).maybe_single().execute())
+
+    return {
+        "success": True,
+        "found": True,
+        "name": contact.get("name"),
+        "last_booking": last_booking.data if last_booking else None,
+    }
+
+
 # ── FAQ ────────────────────────────────────────────────────────────────────────
 
 async def get_faq(tenant_config: TenantConfig, question: str) -> Dict[str, Any]:
@@ -524,6 +560,21 @@ async def escalate_to_human(
     }
 
 
+# ── Base booking field labels ──────────────────────────────────────────────────
+# A clinic can relabel these 5 fixed tool arguments in Agent Configuration —
+# e.g. a lawyer's office renaming "service_type" to "Case Type" — without the
+# underlying JSON key ever changing (book_appointment() and the bookings
+# table depend on these exact keys). The hint is the fixed part of each
+# property's description (format/example), the label is the swappable part.
+BASE_FIELD_HINTS = {
+    "contact_name": "the patient's full name (must be confirmed by user)",
+    "contact_phone": "the patient's phone number (must be confirmed by user)",
+    "service_type": "e.g. scaling, checkup, whitening",
+    "date": "YYYY-MM-DD format",
+    "time": "HH:MM 24-hour format",
+}
+
+
 # ── LLM tool definitions (for WhatsApp text mode) ─────────────────────────────
 
 TOOL_DEFINITIONS = [
@@ -561,6 +612,25 @@ TOOL_DEFINITIONS = [
                     "service_type": {"type": "string", "description": "Service type (optional)"},
                 },
                 "required": ["date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_patient",
+            "description": (
+                "Check whether someone is already a patient on file, by phone number. "
+                "Read-only — never creates a record. Use this whenever the clinic's "
+                "flow asks you to tell a new patient from a returning one."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "contact_phone": {"type": "string", "description": "Phone number to search for (must be confirmed by user)"},
+                    "contact_name": {"type": "string", "description": "Name as given by the caller (optional — matching is by phone, this is for context only)"},
+                },
+                "required": ["contact_phone"],
             },
         },
     },

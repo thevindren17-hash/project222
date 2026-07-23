@@ -29,6 +29,7 @@ const SERVICES = [
 const TOOL_LABELS: Record<string, { label: string; desc: string }> = {
   book_appointment: { label: 'Book Appointments', desc: 'AI can create new appointment bookings' },
   check_slots: { label: 'Check Available Slots', desc: 'AI can look up free appointment times' },
+  lookup_patient: { label: 'Look Up Patient Records', desc: 'AI can check if a caller is an existing patient by phone number (read-only)' },
   get_faq: { label: 'Look Up FAQ', desc: 'AI references your knowledge base when answering' },
   escalate: { label: 'Escalate to Human', desc: 'AI can hand off conversations to staff' },
 }
@@ -62,6 +63,18 @@ const CUSTOM_FIELD_ACTIONS: { value: CustomFieldAction; label: string }[] = [
   { value: 'reschedule_appointment', label: 'Reschedule' },
 ]
 
+// The 5 fields every booking always needs — only the wording is editable
+// per clinic (e.g. a legal office renaming "Service" to "Case Type"). The
+// underlying contact_name/contact_phone/service_type/date/time keys the AI
+// passes to the tool never change, since booking storage depends on them.
+const BASE_FIELD_DEFS: { key: string; defaultLabel: string; placeholder: string }[] = [
+  { key: 'contact_name', defaultLabel: 'Full Name', placeholder: 'e.g. Patient Name, Client Name' },
+  { key: 'contact_phone', defaultLabel: 'Phone Number', placeholder: 'e.g. Contact Number, WhatsApp Number' },
+  { key: 'service_type', defaultLabel: 'Service', placeholder: 'e.g. Case Type, Treatment, Package' },
+  { key: 'date', defaultLabel: 'Date', placeholder: 'e.g. Preferred Date' },
+  { key: 'time', defaultLabel: 'Time', placeholder: 'e.g. Preferred Time' },
+]
+
 // Field keys become tool-call argument names sent to the LLM, so they must be
 // safe identifiers — not raw user text.
 function slugifyFieldKey(label: string): string {
@@ -84,7 +97,7 @@ export default function AgentPluginPage() {
       if (!tenant) return null
       // Exclude provider_credentials — keys never leave the server
       const { data, error } = await supabase.from('tenant_settings')
-        .select('agent_name,system_prompt,custom_instructions,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language,custom_booking_fields')
+        .select('agent_name,system_prompt,custom_instructions,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language,custom_booking_fields,base_field_labels')
         .eq('tenant_id', tenant.id).maybeSingle()
       if (error) throw error
       return data
@@ -146,6 +159,7 @@ export default function AgentPluginPage() {
   ])
   const [keywordsInput, setKeywordsInput] = useState('')
   const [maxTurns, setMaxTurns] = useState(10)
+  const [baseFieldLabels, setBaseFieldLabels] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (tenant) setClinicName(tenant.name || '')
@@ -175,6 +189,7 @@ export default function AgentPluginPage() {
       if (settings.escalation_keywords?.length) setEscalationKeywords(settings.escalation_keywords)
       if (settings.max_turns_before_handoff) setMaxTurns(settings.max_turns_before_handoff)
       if (settings.reply_language) setReplyLanguage(settings.reply_language)
+      setBaseFieldLabels(settings.base_field_labels || {})
     }
   }, [tenant, settings, promptSeeded])
 
@@ -209,6 +224,9 @@ export default function AgentPluginPage() {
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
         custom_booking_fields: customFields.filter((f) => f.key && f.label),
+        base_field_labels: Object.fromEntries(
+          Object.entries(baseFieldLabels).filter(([, v]) => v.trim())
+        ),
         voice_reply_enabled: voiceReplyEnabled,
         voice_tts_provider: voiceTtsProvider,
         voice_tts_voice_map: voiceTtsVoiceMap,
@@ -318,6 +336,9 @@ export default function AgentPluginPage() {
     const next = [...customFields]; next[i] = { ...next[i], action }; setCustomFields(next)
   }
   function removeCustomField(i: number) { setCustomFields(customFields.filter((_, idx) => idx !== i)) }
+  function updateBaseFieldLabel(key: string, value: string) {
+    setBaseFieldLabels((prev) => ({ ...prev, [key]: value }))
+  }
   function addKeyword() {
     const kw = keywordsInput.trim().toLowerCase()
     if (kw && !escalationKeywords.includes(kw)) setEscalationKeywords([...escalationKeywords, kw])
@@ -695,6 +716,31 @@ export default function AgentPluginPage() {
           {/* Data Fields */}
           {section === 'fields' && (
             <>
+              <div>
+                <h2 className="text-lg font-semibold">Base Field Labels</h2>
+                <p className="text-sm text-muted-foreground">
+                  Every booking always collects these 5 — only the wording is yours to change. Leave blank
+                  to use the default. This is what the AI calls the field when asking, and what shows up in
+                  the booking record — it doesn't affect anything technical underneath.
+                </p>
+              </div>
+              <Card>
+                <CardContent className="pt-4 pb-4 space-y-3">
+                  {BASE_FIELD_DEFS.map((f) => (
+                    <div key={f.key} className="grid grid-cols-[140px_1fr] items-center gap-3">
+                      <Label className="text-sm text-muted-foreground">{f.defaultLabel}</Label>
+                      <Input
+                        placeholder={f.placeholder}
+                        value={baseFieldLabels[f.key] || ''}
+                        onChange={(e) => updateBaseFieldLabel(f.key, e.target.value)}
+                      />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Separator />
+
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold">Data Fields</h2>

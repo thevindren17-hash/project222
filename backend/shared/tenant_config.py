@@ -244,6 +244,7 @@ class TenantConfig:
     reminder_3h_template: str = ""
     timezone: str = "Asia/Kuala_Lumpur"
     custom_booking_fields: List[Dict[str, str]] = field(default_factory=list)
+    base_field_labels: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.system_prompt:
@@ -278,7 +279,17 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
     core = _core_agent_rules(name, agent_name)
     full_prompt = (
         core if not custom_instructions.strip()
-        else f"{core}\n\nCLINIC-SPECIFIC NOTES (from {name}, on top of the rules above):\n{custom_instructions.strip()}"
+        else (
+            f"{core}\n\n"
+            f"CLINIC-SPECIFIC INSTRUCTIONS (from {name}) — this clinic has full control over its own "
+            "conversation: what to ask, in what order, and how to handle new vs. returning patients, "
+            "cancellations, rescheduling, or anything else. If anything below describes a specific flow "
+            "or approach, FOLLOW IT EXACTLY over the generic guidance above. The only things above that "
+            "still always apply, no matter what this clinic asks for, are: never give medical/diagnostic "
+            "advice, never expose another patient's data, and the escalation/safety-boundary rules "
+            "(emergency keywords, cancellation cutoff, business-hour and privacy limits).\n\n"
+            f"{custom_instructions.strip()}"
+        )
     )
 
     return TenantConfig(
@@ -312,6 +323,7 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         reminder_3h_template=settings.get("reminder_3h_template") or "",
         timezone=settings.get("timezone") or "Asia/Kuala_Lumpur",
         custom_booking_fields=settings.get("custom_booking_fields") or [],
+        base_field_labels=settings.get("base_field_labels") or {},
     )
 
 
