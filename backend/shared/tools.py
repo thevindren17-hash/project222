@@ -175,6 +175,7 @@ async def book_appointment(
                 source=source,
                 status="booked",
                 service_interest=service_type,
+                appointment_time=scheduled_at.strftime("%Y-%m-%d %H:%M"),
                 notes=f"Booked for {scheduled_at.strftime('%Y-%m-%d %H:%M')}"
                 + (f" — {notes}" if notes else ""),
                 custom_fields=custom_fields,
@@ -313,6 +314,7 @@ async def cancel_appointment(
                 phone=contact_data.get("phone") or "",
                 source="whatsapp",
                 status="cancelled",
+                appointment_time=scheduled.strftime("%Y-%m-%d %H:%M"),
                 notes=f"Cancelled appointment originally at {scheduled.strftime('%Y-%m-%d %H:%M')}",
                 custom_fields=custom_fields,
             )
@@ -386,6 +388,7 @@ async def reschedule_appointment(
                 phone=contact_data.get("phone") or "",
                 source="whatsapp",
                 status="rescheduled",
+                appointment_time=new_scheduled_at.strftime("%Y-%m-%d %H:%M"),
                 notes=f"Rescheduled from {old_scheduled_at} to {new_scheduled_at.strftime('%Y-%m-%d %H:%M')}",
                 custom_fields=custom_fields,
             )

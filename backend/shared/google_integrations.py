@@ -234,6 +234,8 @@ SHEETS_HEADER_ROW = ["Timestamp", "Event", "Patient Name", "Phone", "Source", "S
 # needing to use our exact wording. Compared against normalized headers
 # (lowercased, punctuation/spaces stripped) — see _normalize_header.
 _CANONICAL_FIELD_ALIASES: Dict[str, List[str]] = {
+    # "date"/"datetime" intentionally mean the log row's own timestamp here,
+    # not the appointment time — see "appointment_time" below for that.
     "timestamp": ["timestamp", "date", "datetime", "dateandtime", "createdat", "time"],
     "event": ["event", "status", "type"],
     "patient_name": ["name", "patientname", "patient", "fullname", "clientname"],
@@ -241,6 +243,11 @@ _CANONICAL_FIELD_ALIASES: Dict[str, List[str]] = {
     "source": ["source"],
     "service": ["service", "servicetype", "treatment"],
     "notes": ["notes", "note", "remarks", "remark"],
+    "appointment_time": [
+        "appointmentdatetime", "appointmentdate", "appointmenttime", "appointment",
+        "scheduledat", "scheduledtime", "scheduleddate",
+        "bookingdate", "bookingtime", "bookingdatetime",
+    ],
 }
 
 
@@ -260,11 +267,14 @@ def _match_header_to_field(header: str, available: Dict[str, str]) -> Optional[s
     h = _normalize_header(header)
     if not h:
         return None
+    # A clinic writing "Services" instead of "Service" (or any other simple
+    # plural of a recognized header) shouldn't silently fail to match.
+    candidates = {h, h[:-1]} if h.endswith("s") and len(h) > 1 else {h}
     for canonical, aliases in _CANONICAL_FIELD_ALIASES.items():
-        if h in aliases and canonical in available:
+        if candidates & set(aliases) and canonical in available:
             return canonical
     for key in available:
-        if key not in _CANONICAL_FIELD_ALIASES and _normalize_header(key) == h:
+        if key not in _CANONICAL_FIELD_ALIASES and _normalize_header(key) in candidates:
             return key
     return None
 
@@ -316,6 +326,7 @@ class GoogleSheetsIntegration:
         status: str,
         notes: Optional[str] = None,
         service_interest: Optional[str] = None,
+        appointment_time: Optional[str] = None,
         custom_fields: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         if not self.spreadsheet_id:
@@ -328,6 +339,7 @@ class GoogleSheetsIntegration:
             "source": source,
             "service": service_interest or "",
             "notes": notes or "",
+            "appointment_time": appointment_time or "",
             **(custom_fields or {}),
         }
         try:
