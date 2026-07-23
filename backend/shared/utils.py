@@ -3,6 +3,7 @@ Utility Functions
 """
 
 import re
+import difflib
 import logging
 from typing import Optional
 from datetime import datetime
@@ -67,8 +68,30 @@ _DATE_MENTION_RE = re.compile(
 )
 
 
+# Single-word entries from _DATE_MENTION_RE, used as a typo-tolerant fallback
+# below — a patient typing "tommorow" instead of "tomorrow" is a real date
+# mention that the exact-match regex above would otherwise miss, blocking
+# check_slots/book_appointment and forcing extra, slower LLM round-trips
+# while the model tries (and fails) to get the tool call through.
+_DATE_WORDS = frozenset((
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "isnin", "selasa", "rabu", "khamis", "jumaat", "sabtu", "ahad",
+    "tomorrow", "today", "tonight", "esok", "lusa",
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+))
+
+
 def mentions_a_date(text: str) -> bool:
-    return bool(_DATE_MENTION_RE.search(text or ""))
+    if _DATE_MENTION_RE.search(text or ""):
+        return True
+    words = re.findall(r"[a-z]+", (text or "").lower())
+    return any(
+        len(w) >= 4 and difflib.get_close_matches(w, _DATE_WORDS, n=1, cutoff=0.8)
+        for w in words
+    )
 
 
 def conversation_mentions_a_date(messages: list) -> bool:
