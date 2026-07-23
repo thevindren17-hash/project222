@@ -407,7 +407,7 @@ async def test_agent(req: TestMessage):
     # experience — so this reuses the SAME booking-flow prompt and the SAME
     # per-tenant tool schema (custom fields included) as handle_whatsapp_message,
     # rather than a separately-maintained, simpler copy.
-    from api.whatsapp import _build_date_context, _tool_definitions_for_tenant
+    from api.whatsapp import _build_date_context, _tool_definitions_for_tenant, _select_tools
     from shared.utils import detect_language
 
     is_new_conversation = len(req.history) == 0
@@ -432,10 +432,21 @@ async def test_agent(req: TestMessage):
         *conversation,
     ]
 
-    enabled_tools = [
+    # Same relevance narrowing as real WhatsApp (whatsapp.py's _select_tools)
+    # — without this, check_slots stays in the schema for every turn even
+    # after slots have already been shown, and a model that doesn't
+    # perfectly follow the "don't call it again" prompt instruction will
+    # keep re-calling it, paying a full extra LLM round trip each time.
+    all_tools = [
         t for t in _tool_definitions_for_tenant(tenant)
         if tenant.tool_config.get(t["function"]["name"], True)
     ]
+    _custom_tool_keys = {
+        ct["tool_key"] for ct in (getattr(tenant, "custom_tools", None) or [])
+        if ct.get("enabled", True) and ct.get("tool_key")
+    }
+    _history_for_select = [{"role": m.get("role"), "body": m.get("content", "")} for m in req.history]
+    enabled_tools = _select_tools(all_tools, _history_for_select, req.message, extra_always_on=_custom_tool_keys)
 
     async def _execute(fn: str, args: dict) -> str:
         return await _run_tool(fn, args, req.tenant_id, tenant, conversation)

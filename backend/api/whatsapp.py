@@ -1162,7 +1162,18 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
 # ── Tool selection state machine ───────────────────────────────────────────────
 
-_SLOT_MARKERS = ("available times", "masa yang tersedia", "可用时间", "available slot", "pilih masa")
+# Substring checks against the model's own (paraphrased) reply text — kept
+# as short, literal phrases rather than single words to avoid false
+# positives, but covering both word orders a model commonly uses
+# ("available slot(s)" vs "slot is/are available").
+_SLOT_MARKERS = (
+    "available times", "available time", "available slot",
+    "slot is available", "slots are available",
+    "time is available", "times are available",
+    "masa yang tersedia", "tersedia pada",
+    "可用时间", "有空",
+    "pilih masa",
+)
 _CANCEL_KEYWORDS = ("cancel", "batal", "batalkan", "tak jadi", "cancel", "取消")
 _RESCHEDULE_KEYWORDS = ("reschedule", "tukar masa", "ubah masa", "move", "change appointment", "改期", "tangguh")
 _ALWAYS_ON = {"get_faq", "escalate_to_human", "lookup_patient"}
