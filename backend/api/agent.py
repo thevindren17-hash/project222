@@ -374,6 +374,15 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_hi
         )
         return "Escalating to a human staff member." if res.get("success") else "Escalation logged."
 
+    ct = next(
+        (c for c in (getattr(tenant, "custom_tools", None) or []) if c.get("tool_key") == fn),
+        None,
+    )
+    if ct:
+        from shared.tools import run_custom_tool
+        await run_custom_tool(tenant_id, {}, ct, args)
+        return f"Recorded {ct.get('name', fn)} details."
+
     return f"[Tool '{fn}' not implemented]"
 
 
@@ -410,6 +419,7 @@ async def test_agent(req: TestMessage):
         timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
         base_field_labels=getattr(tenant, "base_field_labels", None),
+        custom_tools=getattr(tenant, "custom_tools", None),
     ) + "\n\n[TEST MODE — all tools run for real and save to the database.]"
 
     conversation = list(req.history) + [{"role": "user", "content": req.message}]

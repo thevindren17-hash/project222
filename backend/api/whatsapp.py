@@ -39,6 +39,8 @@ from shared.tools import (
     lookup_patient,
     TOOL_DEFINITIONS,
     BASE_FIELD_HINTS,
+    RESERVED_TOOL_NAMES,
+    run_custom_tool,
 )
 from shared.utils import (
     detect_language,
@@ -390,6 +392,7 @@ def _build_date_context(
     timezone: str = "Asia/Kuala_Lumpur",
     custom_booking_fields: Optional[list] = None,
     base_field_labels: Optional[dict] = None,
+    custom_tools: Optional[list] = None,
 ) -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -501,6 +504,24 @@ def _build_date_context(
             f"{', '.join(f['key'] for f in reschedule_fields)}. Omit any skipped.\n"
         )
 
+    # Clinic-defined custom tools — unlike book/cancel/reschedule these have
+    # no fixed conversational moment, so the model needs to be told when to
+    # reach for each one and exactly which argument keys to use.
+    custom_tools_block = ""
+    for ct in (custom_tools or []):
+        if not ct.get("enabled", True) or not ct.get("tool_key"):
+            continue
+        ct_fields = [f for f in ct.get("fields", []) if f.get("key")]
+        custom_tools_block += (
+            f"- {ct.get('name') or ct['tool_key']}: {ct.get('trigger_instruction') or 'Use when relevant to the conversation.'} "
+            f"Call {ct['tool_key']} once you have what you need"
+            + (f", asking for each of these (optional — accept 'skip'): {_field_lines(ct_fields)}\n"
+               f"  Use these exact argument names: {', '.join(f['key'] for f in ct_fields)}. Omit any skipped.\n"
+               if ct_fields else ".\n")
+        )
+    if custom_tools_block:
+        custom_tools_block = "CLINIC-DEFINED CUSTOM TOOLS:\n" + custom_tools_block
+
     return (
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
@@ -534,6 +555,7 @@ def _build_date_context(
         "- Always pass real values to tools — never pass placeholder text.\n"
         f"{custom_fields_rule}"
         f"{cancel_reschedule_rule}"
+        f"{custom_tools_block}"
         "You are on WhatsApp. Keep replies concise — one question at a time, under 2 sentences.]"
     )
 
@@ -574,7 +596,8 @@ def _tool_definitions_for_tenant(tenant) -> list:
     """
     custom_fields = getattr(tenant, "custom_booking_fields", None) or []
     base_labels = getattr(tenant, "base_field_labels", None) or {}
-    if not custom_fields and not base_labels:
+    custom_tools = getattr(tenant, "custom_tools", None) or []
+    if not custom_fields and not base_labels and not custom_tools:
         return TOOL_DEFINITIONS
 
     import copy
@@ -610,6 +633,37 @@ def _tool_definitions_for_tenant(tenant) -> list:
                 "type": "string",
                 "description": f.get("instruction") or f.get("label") or key,
             }
+
+    seen_keys = {t["function"]["name"] for t in tools}
+    for ct in custom_tools:
+        if not ct.get("enabled", True):
+            continue
+        tool_key = ct.get("tool_key")
+        if not tool_key or tool_key in RESERVED_TOOL_NAMES or tool_key in seen_keys:
+            logger.warning(
+                f"Skipping custom tool '{tool_key}' for tenant {getattr(tenant, 'tenant_id', '?')} — "
+                "missing or colliding with an existing tool name."
+            )
+            continue
+        seen_keys.add(tool_key)
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": tool_key,
+                "description": ct.get("trigger_instruction") or ct.get("name") or tool_key,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        f["key"]: {
+                            "type": "string",
+                            "description": f.get("instruction") or f.get("label") or f["key"],
+                        }
+                        for f in ct.get("fields", []) if f.get("key")
+                    },
+                    "required": [],
+                },
+            },
+        })
     return tools
 
 
@@ -814,6 +868,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
             custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
             base_field_labels=getattr(tenant, "base_field_labels", None),
+            custom_tools=getattr(tenant, "custom_tools", None),
         )
 
         messages_payload = [
@@ -822,7 +877,11 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         ]
 
         all_tools = [t for t in _tool_definitions_for_tenant(tenant) if tenant.tool_config.get(t["function"]["name"], True)]
-        enabled_tools = _select_tools(all_tools, history_messages, message_text)
+        _custom_tool_keys = {
+            ct["tool_key"] for ct in (getattr(tenant, "custom_tools", None) or [])
+            if ct.get("enabled", True) and ct.get("tool_key")
+        }
+        enabled_tools = _select_tools(all_tools, history_messages, message_text, extra_always_on=_custom_tool_keys)
     except Exception as setup_err:
         logger.error(
             f"WA message setup failed | tenant={tenant.tenant_id} | from={from_number} | error={setup_err}",
@@ -989,13 +1048,18 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
         base_field_labels=getattr(tenant, "base_field_labels", None),
+        custom_tools=getattr(tenant, "custom_tools", None),
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
         *conversation_history,
     ]
     all_tools = [t for t in _tool_definitions_for_tenant(tenant) if tenant.tool_config.get(t["function"]["name"], True)]
-    enabled_tools = _select_tools(all_tools, history.data, transcript)
+    _custom_tool_keys = {
+        ct["tool_key"] for ct in (getattr(tenant, "custom_tools", None) or [])
+        if ct.get("enabled", True) and ct.get("tool_key")
+    }
+    enabled_tools = _select_tools(all_tools, history.data, transcript, extra_always_on=_custom_tool_keys)
 
     try:
         has_date_mention = conversation_mentions_a_date(conversation_history)
@@ -1077,7 +1141,7 @@ _RESCHEDULE_KEYWORDS = ("reschedule", "tukar masa", "ubah masa", "move", "change
 _ALWAYS_ON = {"get_faq", "escalate_to_human", "lookup_patient"}
 
 
-def _select_tools(all_tools: list, history_messages: list, current_text: str) -> list:
+def _select_tools(all_tools: list, history_messages: list, current_text: str, extra_always_on: set = frozenset()) -> list:
     all_text = " ".join(m["body"].lower() for m in history_messages) + " " + current_text.lower()
     assistant_text = " ".join(m["body"].lower() for m in history_messages if m["role"] == "assistant")
 
@@ -1085,7 +1149,10 @@ def _select_tools(all_tools: list, history_messages: list, current_text: str) ->
     wants_cancel = any(kw in all_text for kw in _CANCEL_KEYWORDS)
     wants_reschedule = any(kw in all_text for kw in _RESCHEDULE_KEYWORDS)
 
-    allowed: set[str] = set(_ALWAYS_ON)
+    # extra_always_on carries this tenant's own custom tool keys, which
+    # can't be baked into the module-level _ALWAYS_ON set since they're
+    # per-tenant and unknown ahead of time.
+    allowed: set[str] = set(_ALWAYS_ON) | set(extra_always_on)
 
     if slots_shown:
         allowed.add("book_appointment")
@@ -1365,6 +1432,20 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
             contact_phone=contact.get("phone", ""),
         )
         return "I'm connecting you with one of our staff members now. They'll be in touch shortly."
+
+    ct = next(
+        (c for c in (getattr(tenant, "custom_tools", None) or []) if c.get("tool_key") == fn_name),
+        None,
+    )
+    if ct:
+        await run_custom_tool(tenant.tenant_id, contact, ct, args)
+        ct_name = ct.get("name", fn_name)
+        if language == "ms":
+            return f"Baik, terima kasih! Butiran {ct_name} anda telah direkodkan."
+        elif language == "zh":
+            return f"好的，谢谢！您的{ct_name}信息已记录。"
+        else:
+            return f"Got it, thanks! I've recorded your {ct_name} details."
 
     return ""
 

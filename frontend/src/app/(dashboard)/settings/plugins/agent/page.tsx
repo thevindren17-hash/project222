@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS, VOICE_LANGUAGES } from '@/lib/providers'
 import {
   Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check, Languages,
-  Volume2, Play, ExternalLink, CheckCircle2, Database,
+  Volume2, Play, ExternalLink, CheckCircle2, Database, Wrench,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -38,6 +38,7 @@ const SECTIONS = [
   { id: 'instructions', label: 'Instructions', icon: Code },
   { id: 'model', label: 'Model Settings', icon: Brain },
   { id: 'fields', label: 'Data Fields', icon: Database },
+  { id: 'custom-tools', label: 'Custom Tools', icon: Wrench },
   { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
   { id: 'language', label: 'Language', icon: Languages },
   { id: 'voice', label: 'Voice', icon: Mic },
@@ -63,6 +64,22 @@ const CUSTOM_FIELD_ACTIONS: { value: CustomFieldAction; label: string }[] = [
   { value: 'reschedule_appointment', label: 'Reschedule' },
 ]
 
+// Built-in tool names a clinic-created custom tool's key must never collide
+// with — these have real, hardcoded backend behavior.
+const RESERVED_TOOL_NAMES = new Set([
+  'book_appointment', 'check_slots', 'lookup_patient', 'get_faq',
+  'cancel_appointment', 'reschedule_appointment', 'escalate_to_human',
+])
+
+interface CustomToolField { key: string; label: string; instruction: string }
+interface CustomTool {
+  tool_key: string
+  name: string
+  trigger_instruction: string
+  enabled: boolean
+  fields: CustomToolField[]
+}
+
 // The 5 fields every booking always needs — only the wording is editable
 // per clinic (e.g. a legal office renaming "Service" to "Case Type"). The
 // underlying contact_name/contact_phone/service_type/date/time keys the AI
@@ -86,6 +103,18 @@ function slugifyFieldKey(label: string): string {
     .slice(0, 40)
 }
 
+// A custom tool's key becomes its LLM function name, so it must never
+// collide with a built-in tool or another custom tool for this tenant —
+// append _2, _3, ... until it's unique.
+function slugifyToolKey(name: string, otherKeys: string[]): string {
+  const base = slugifyFieldKey(name) || 'custom_tool'
+  const taken = new Set([...RESERVED_TOOL_NAMES, ...otherKeys])
+  if (!taken.has(base)) return base
+  let i = 2
+  while (taken.has(`${base}_${i}`)) i++
+  return `${base}_${i}`
+}
+
 export default function AgentPluginPage() {
   const queryClient = useQueryClient()
   const [section, setSection] = useState('instructions')
@@ -97,7 +126,7 @@ export default function AgentPluginPage() {
       if (!tenant) return null
       // Exclude provider_credentials — keys never leave the server
       const { data, error } = await supabase.from('tenant_settings')
-        .select('agent_name,system_prompt,custom_instructions,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language,custom_booking_fields,base_field_labels')
+        .select('agent_name,system_prompt,custom_instructions,llm_config,tool_config,faq,voice_reply_enabled,voice_tts_provider,voice_tts_voice_map,voice_stt_provider,escalation_keywords,max_turns_before_handoff,reply_language,custom_booking_fields,base_field_labels,custom_tools')
         .eq('tenant_id', tenant.id).maybeSingle()
       if (error) throw error
       return data
@@ -138,6 +167,7 @@ export default function AgentPluginPage() {
 
   const [faq, setFaq] = useState<FaqItem[]>([])
   const [customFields, setCustomFields] = useState<CustomFieldItem[]>([])
+  const [customTools, setCustomTools] = useState<CustomTool[]>([])
 
   const [llmProvider, setLlmProvider] = useState('groq')
   const [llmModel, setLlmModel] = useState('llama-3.3-70b-versatile')
@@ -190,6 +220,15 @@ export default function AgentPluginPage() {
       if (settings.max_turns_before_handoff) setMaxTurns(settings.max_turns_before_handoff)
       if (settings.reply_language) setReplyLanguage(settings.reply_language)
       setBaseFieldLabels(settings.base_field_labels || {})
+      setCustomTools(
+        (settings.custom_tools || []).map((t: Partial<CustomTool>) => ({
+          tool_key: t.tool_key || '', name: t.name || '', trigger_instruction: t.trigger_instruction || '',
+          enabled: t.enabled ?? true,
+          fields: (t.fields || []).map((f: Partial<CustomToolField>) => ({
+            key: f.key || '', label: f.label || '', instruction: f.instruction || '',
+          })),
+        }))
+      )
     }
   }, [tenant, settings, promptSeeded])
 
@@ -227,6 +266,9 @@ export default function AgentPluginPage() {
         base_field_labels: Object.fromEntries(
           Object.entries(baseFieldLabels).filter(([, v]) => v.trim())
         ),
+        custom_tools: customTools
+          .filter((t) => t.tool_key && t.name)
+          .map((t) => ({ ...t, fields: t.fields.filter((f) => f.key && f.label) })),
         voice_reply_enabled: voiceReplyEnabled,
         voice_tts_provider: voiceTtsProvider,
         voice_tts_voice_map: voiceTtsVoiceMap,
@@ -336,6 +378,46 @@ export default function AgentPluginPage() {
     const next = [...customFields]; next[i] = { ...next[i], action }; setCustomFields(next)
   }
   function removeCustomField(i: number) { setCustomFields(customFields.filter((_, idx) => idx !== i)) }
+  function addCustomTool() {
+    setCustomTools([...customTools, { tool_key: '', name: '', trigger_instruction: '', enabled: true, fields: [] }])
+  }
+  function updateCustomToolName(i: number, name: string) {
+    const next = [...customTools]
+    const otherKeys = customTools.filter((_, idx) => idx !== i).map((t) => t.tool_key)
+    next[i] = { ...next[i], name, tool_key: name.trim() ? slugifyToolKey(name, otherKeys) : '' }
+    setCustomTools(next)
+  }
+  function updateCustomToolTrigger(i: number, trigger_instruction: string) {
+    const next = [...customTools]; next[i] = { ...next[i], trigger_instruction }; setCustomTools(next)
+  }
+  function toggleCustomToolEnabled(i: number, enabled: boolean) {
+    const next = [...customTools]; next[i] = { ...next[i], enabled }; setCustomTools(next)
+  }
+  function removeCustomTool(i: number) { setCustomTools(customTools.filter((_, idx) => idx !== i)) }
+  function addCustomToolField(i: number) {
+    const next = [...customTools]
+    next[i] = { ...next[i], fields: [...next[i].fields, { key: '', label: '', instruction: '' }] }
+    setCustomTools(next)
+  }
+  function updateCustomToolField(i: number, j: number, label: string) {
+    const next = [...customTools]
+    const fields = [...next[i].fields]
+    fields[j] = { ...fields[j], label, key: slugifyFieldKey(label) }
+    next[i] = { ...next[i], fields }
+    setCustomTools(next)
+  }
+  function updateCustomToolFieldInstruction(i: number, j: number, instruction: string) {
+    const next = [...customTools]
+    const fields = [...next[i].fields]
+    fields[j] = { ...fields[j], instruction }
+    next[i] = { ...next[i], fields }
+    setCustomTools(next)
+  }
+  function removeCustomToolField(i: number, j: number) {
+    const next = [...customTools]
+    next[i] = { ...next[i], fields: next[i].fields.filter((_, idx) => idx !== j) }
+    setCustomTools(next)
+  }
   function updateBaseFieldLabel(key: string, value: string) {
     setBaseFieldLabels((prev) => ({ ...prev, [key]: value }))
   }
@@ -808,6 +890,109 @@ export default function AgentPluginPage() {
                         <Button variant="ghost" size="icon" onClick={() => removeCustomField(i)} className="text-muted-foreground hover:text-destructive shrink-0 mt-0.5">
                           <Trash2 className="h-4 w-4" />
                         </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* Custom Tools */}
+          {section === 'custom-tools' && (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Custom Tools</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Give the AI its own tools beyond Booking, Cancellation, and Reschedule — e.g. an
+                    &quot;Intake Form&quot; or &quot;Callback Request&quot;. Each tool collects only the
+                    fields you define here, and every submission is saved and mirrored to your Google
+                    Sheet (if connected) so it&apos;s ready to feed into any CRM.
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" onClick={addCustomTool}>
+                  <Plus className="h-3.5 w-3.5 mr-1.5" />Add Custom Tool
+                </Button>
+              </div>
+
+              <div className="space-y-3">
+                {customTools.length === 0 && (
+                  <Card className="border-dashed">
+                    <CardContent className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
+                      <Wrench className="h-9 w-9 opacity-25" />
+                      <p className="text-sm font-medium">No custom tools yet</p>
+                      <p className="text-xs text-center max-w-xs">
+                        Add a tool like &quot;Intake Form&quot; for the AI to use when a patient wants to
+                        submit information that isn&apos;t part of booking.
+                      </p>
+                      <Button variant="outline" size="sm" className="mt-2" onClick={addCustomTool}>
+                        <Plus className="h-3.5 w-3.5 mr-1.5" />Add First Tool
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )}
+                {customTools.map((t, i) => (
+                  <Card key={i}>
+                    <CardContent className="pt-4 pb-4 space-y-3">
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 space-y-2">
+                          <Input
+                            placeholder="Tool name — e.g. Intake Form"
+                            value={t.name}
+                            onChange={(e) => updateCustomToolName(i, e.target.value)}
+                            className="font-medium"
+                          />
+                          <Textarea
+                            placeholder="When should the AI use this? — e.g. Use when a new patient wants to submit intake info before their visit."
+                            value={t.trigger_instruction}
+                            onChange={(e) => updateCustomToolTrigger(i, e.target.value)}
+                            rows={2}
+                            className="text-sm resize-none"
+                          />
+                          {t.tool_key && (
+                            <p className="text-[11px] text-muted-foreground font-mono">key: {t.tool_key}</p>
+                          )}
+                        </div>
+                        <div className="flex flex-col items-center gap-2 shrink-0">
+                          <Switch checked={t.enabled} onCheckedChange={(v) => toggleCustomToolEnabled(i, v)} />
+                          <Button variant="ghost" size="icon" onClick={() => removeCustomTool(i)} className="text-muted-foreground hover:text-destructive">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="space-y-2 pl-1">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs text-muted-foreground">Fields this tool collects</Label>
+                          <Button variant="ghost" size="sm" onClick={() => addCustomToolField(i)}>
+                            <Plus className="h-3 w-3 mr-1" />Add Field
+                          </Button>
+                        </div>
+                        {t.fields.map((f, j) => (
+                          <div key={j} className="flex items-start gap-2">
+                            <div className="flex-1 space-y-1.5">
+                              <Input
+                                placeholder="Field label — e.g. Allergies"
+                                value={f.label}
+                                onChange={(e) => updateCustomToolField(i, j, e.target.value)}
+                                className="text-sm"
+                              />
+                              <Textarea
+                                placeholder="What should the AI ask? — e.g. Ask if they have any known allergies."
+                                value={f.instruction}
+                                onChange={(e) => updateCustomToolFieldInstruction(i, j, e.target.value)}
+                                rows={2}
+                                className="text-sm resize-none"
+                              />
+                            </div>
+                            <Button variant="ghost" size="icon" onClick={() => removeCustomToolField(i, j)} className="text-muted-foreground hover:text-destructive shrink-0 mt-0.5">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ))}
                       </div>
                     </CardContent>
                   </Card>

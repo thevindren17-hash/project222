@@ -693,3 +693,53 @@ TOOL_DEFINITIONS = [
         },
     },
 ]
+
+# Names a clinic can't reuse for a custom tool function's key — they'd
+# collide with one of these built-in, hardcoded-behavior tools.
+RESERVED_TOOL_NAMES = {t["function"]["name"] for t in TOOL_DEFINITIONS}
+
+
+async def run_custom_tool(tenant_id: str, contact: Dict[str, Any], tool_def: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Execute a clinic-defined custom tool: no appointment logic, just collect
+    whatever fields the clinic declared and log them. Always persisted to
+    custom_tool_submissions (so nothing is lost even without Sheets
+    connected), then mirrored to Google Sheets the same way bookings are —
+    via the generic header-matching writer, so a clinic's own column layout
+    just works without any code change per tool.
+    """
+    fields = {
+        f["key"]: args[f["key"]]
+        for f in tool_def.get("fields", [])
+        if f.get("key") and args.get(f["key"])
+    }
+    tool_key = tool_def.get("tool_key", "")
+    tool_name = tool_def.get("name") or tool_key
+
+    supabase = get_supabase_client()
+    try:
+        await _db(lambda: supabase.table("custom_tool_submissions").insert({
+            "tenant_id": tenant_id,
+            "contact_id": contact.get("id"),
+            "tool_key": tool_key,
+            "tool_name": tool_name,
+            "fields": fields,
+        }).execute())
+    except Exception as e:
+        logger.warning(f"Failed to save custom tool submission (non-fatal): {e}")
+
+    gsheets = await get_google_sheets(tenant_id)
+    if gsheets:
+        try:
+            await gsheets.log_lead(
+                name=contact.get("name") or "Unknown",
+                phone=contact.get("phone") or "",
+                source="whatsapp",
+                status=tool_key,
+                notes=tool_name,
+                custom_fields=fields,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log custom tool submission to Sheets (non-fatal): {e}")
+
+    return {"success": True}
