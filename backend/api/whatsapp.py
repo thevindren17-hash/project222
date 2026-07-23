@@ -16,6 +16,7 @@ import json
 import hmac
 import hashlib
 import time
+import asyncio
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Optional
@@ -727,15 +728,20 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     # reach it. Catch broadly here too, so the worst case is still a reply.
     contact: dict = {}
     thread = None
+    _save_inbound_task: Optional[asyncio.Task] = None
     try:
-        contact_result = await get_or_create_contact(
-            tenant_id=tenant.tenant_id, phone=formatted_phone, source="whatsapp",
+        # Neither call needs the other's result (thread lookup is keyed on
+        # contact_number, not contact_id) — run them concurrently instead of
+        # paying for two sequential round trips.
+        contact_result, thread_result = await asyncio.gather(
+            get_or_create_contact(
+                tenant_id=tenant.tenant_id, phone=formatted_phone, source="whatsapp",
+            ),
+            _db(lambda: supabase.table("whatsapp_threads").select("*").eq(
+                "tenant_id", tenant.tenant_id
+            ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute()),
         )
         contact = contact_result.get("contact", {})
-
-        thread_result = await _db(lambda: supabase.table("whatsapp_threads").select("*").eq(
-            "tenant_id", tenant.tenant_id
-        ).eq("contact_number", formatted_phone).order("created_at", desc=True).limit(1).execute())
 
         if thread_result.data:
             thread = thread_result.data[0]
@@ -848,7 +854,11 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         ]
         conversation_history.append({"role": "user", "content": message_text})
 
-        await _db(lambda: supabase.table("messages").insert({
+        # This write is pure persistence/audit — conversation_history above
+        # already has the message in memory, so nothing downstream needs to
+        # wait for it. Start it now and let it run alongside the (much
+        # slower) LLM call below instead of paying for it up front.
+        _save_inbound_task = asyncio.create_task(_db(lambda: supabase.table("messages").insert({
             "thread_id": thread["id"],
             "tenant_id": tenant.tenant_id,
             "contact_id": contact.get("id"),
@@ -857,7 +867,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             "body": message_text,
             "language": language,
             "handled_by": "ai",
-        }).execute())
+        }).execute()))
 
         llm_client = load_llm_client(tenant)
         is_new_conversation = len(conversation_history) == 1
@@ -887,6 +897,8 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             f"WA message setup failed | tenant={tenant.tenant_id} | from={from_number} | error={setup_err}",
             exc_info=True,
         )
+        if _save_inbound_task is not None:
+            _save_inbound_task.cancel()
         try:
             await send_whatsapp_message(
                 to=from_number,
@@ -945,36 +957,51 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         except Exception:
             pass
 
-    await _db(lambda: supabase.table("messages").insert({
-        "thread_id": thread["id"],
-        "tenant_id": tenant.tenant_id,
-        "contact_id": contact.get("id"),
-        "role": "assistant",
-        "body": reply_text,
-        "language": language,
-        "handled_by": "ai",
-    }).execute())
+    if _save_inbound_task is not None:
+        try:
+            await _save_inbound_task
+        except Exception as _save_err:
+            logger.warning(f"Failed to persist inbound message (non-fatal): {_save_err}")
 
     thread_update: dict = {"last_message_at": datetime.now().isoformat(), "language": language}
     if contact.get("name"):
         thread_update["contact_name"] = contact["name"]
-    await _db(lambda: supabase.table("whatsapp_threads").update(thread_update).eq(
-        "id", thread["id"]
-    ).execute())
 
-    try:
-        await send_whatsapp_message(
+    # The patient only cares about the reply landing — neither DB write below
+    # is needed to send it, so send it at the same time instead of making
+    # them wait through two more round trips first.
+    send_result, insert_result, update_result = await asyncio.gather(
+        send_whatsapp_message(
             to=from_number,
             text=reply_text,
             phone_number_id=tenant.wa_phone_number_id,
             access_token=tenant.wa_access_token,
-        )
-        logger.info(f"Reply sent OK to={from_number} tenant={tenant.tenant_id}")
-    except Exception as send_err:
+        ),
+        _db(lambda: supabase.table("messages").insert({
+            "thread_id": thread["id"],
+            "tenant_id": tenant.tenant_id,
+            "contact_id": contact.get("id"),
+            "role": "assistant",
+            "body": reply_text,
+            "language": language,
+            "handled_by": "ai",
+        }).execute()),
+        _db(lambda: supabase.table("whatsapp_threads").update(thread_update).eq(
+            "id", thread["id"]
+        ).execute()),
+        return_exceptions=True,
+    )
+    if isinstance(send_result, Exception):
         logger.error(
             f"SEND FAILED | tenant={tenant.tenant_id} | to={from_number} | "
-            f"phone_id={tenant.wa_phone_number_id} | error={send_err}"
+            f"phone_id={tenant.wa_phone_number_id} | error={send_result}"
         )
+    else:
+        logger.info(f"Reply sent OK to={from_number} tenant={tenant.tenant_id}")
+    if isinstance(insert_result, Exception):
+        logger.warning(f"Failed to save assistant message (non-fatal): {insert_result}")
+    if isinstance(update_result, Exception):
+        logger.warning(f"Failed to update thread (non-fatal): {update_result}")
 
 
 async def _handle_voice_message(tenant, message: dict, from_number: str, media_id: str, supabase):
