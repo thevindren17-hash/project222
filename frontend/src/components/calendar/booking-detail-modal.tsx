@@ -109,6 +109,9 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
             {booking.status !== 'cancelled' && (
               <Button size="sm" variant="destructive" onClick={() => updateStatus.mutate('cancelled')}>Cancel</Button>
             )}
+            {(booking.status === 'confirmed' || booking.status === 'completed') && (
+              <Button size="sm" variant="outline" onClick={() => updateStatus.mutate('no_show')}>Mark No-Show</Button>
+            )}
             <Button size="sm" variant="outline" onClick={onClose}>Close</Button>
           </div>
         </div>

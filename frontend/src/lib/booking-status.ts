@@ -30,6 +30,13 @@ export const BOOKING_STATUS = {
     text: '#1e40af',
     badgeClass: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800',
   },
+  no_show: {
+    label: 'No-Show',
+    dot: '#64748b',
+    bg: '#f1f5f9',
+    text: '#334155',
+    badgeClass: 'bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-900/40 dark:text-slate-400 dark:border-slate-700',
+  },
 } as const
 
 export type BookingStatusKey = keyof typeof BOOKING_STATUS

@@ -12,6 +12,7 @@ Flow:
 
 import logging
 import re
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -41,6 +42,11 @@ DEFAULT_REVIEW_MSG = (
 DEFAULT_NEGATIVE_MSG = (
     "We're sorry to hear that, {name}. We take all feedback seriously "
     "and our team will reach out to you shortly to make things right. 🙏"
+)
+
+DEFAULT_REFERRAL_MSG = (
+    "If you know anyone who'd benefit from visiting {clinic}, we'd love a "
+    "referral! Just have them mention your name when they book. 😊"
 )
 
 # ── Rating extractor ──────────────────────────────────────────────────────────
@@ -244,7 +250,8 @@ async def handle_feedback_response(
 
     # Load tenant's feedback settings
     settings_res = await _db_optional(lambda: supabase.table("tenant_settings").select(
-        "google_review_url, review_request_template, negative_feedback_message"
+        "google_review_url, review_request_template, negative_feedback_message, "
+        "referral_enabled, referral_message_template"
     ).eq("tenant_id", tenant_id).maybe_single().execute())
     settings = settings_res.data or {}
 
@@ -293,6 +300,29 @@ async def handle_feedback_response(
             }).execute())
         except Exception as e:
             logger.error(f"Review request send failed: {e}")
+
+        # Ask happy patients for a referral too — a separate try so a
+        # referral-send failure never affects the review message already sent.
+        if settings.get("referral_enabled"):
+            ref_tmpl = settings.get("referral_message_template") or DEFAULT_REFERRAL_MSG
+            ref_msg = ref_tmpl.replace("{name}", name).replace("{clinic}", tenant.name)
+            try:
+                await send_whatsapp_message(
+                    to=from_number,
+                    text=ref_msg,
+                    phone_number_id=tenant.wa_phone_number_id,
+                    access_token=tenant.wa_access_token,
+                )
+                await _db(lambda: supabase.table("messages").insert({
+                    "thread_id":  thread_id,
+                    "tenant_id":  tenant_id,
+                    "contact_id": contact_id,
+                    "role":       "assistant",
+                    "body":       ref_msg,
+                    "handled_by": "ai",
+                }).execute())
+            except Exception as e:
+                logger.error(f"Referral message send failed: {e}")
 
     else:
         # Low rating — apologise + alert staff
@@ -359,11 +389,34 @@ DEFAULT_RECALL_MSG = (
 )
 
 
+def _match_recall_segment(service_type: str, segments: list) -> Optional[dict]:
+    """
+    Match a booking's free-text service_type against a tenant's recall
+    segments (case-insensitive substring, since service_type has no fixed
+    taxonomy — e.g. "Teeth Whitening" vs "whitening consultation" both need
+    to hit a "whitening" segment). Falls back to the default segment, or
+    None if the tenant has no default and nothing matched.
+    """
+    st = (service_type or "").lower()
+    default_segment = None
+    for seg in segments:
+        if seg.get("is_default"):
+            default_segment = seg
+            continue
+        seg_type = (seg.get("service_type") or "").lower().strip()
+        if seg_type and seg_type in st:
+            return seg
+    return default_segment
+
+
 async def send_recall_messages():
     """
-    Daily job: find patients who haven't visited in X months and haven't
-    already been contacted for recall, then send a re-engagement message.
-    Capped at 50 contacts per tenant per run to avoid bulk-send limits.
+    Daily job: find patients who haven't visited in X months — where X is
+    the interval of whichever recall_segments row matches their most recent
+    booking's service_type — and haven't already been recalled within that
+    segment's window, then send a re-engagement message.
+    Capped at 50 contacts per tenant per run (across all segments combined)
+    to avoid bulk-send limits.
     """
     if not await acquire_lock("recall_messages", duration_minutes=60):
         logger.info("Recall: lock held by another instance, skipping this run")
@@ -371,16 +424,16 @@ async def send_recall_messages():
     supabase = get_supabase_client()
     now = datetime.now()
 
-    settings_res = await _db(lambda: supabase.table("tenant_settings").select(
-        "tenant_id, recall_interval_months, recall_message_template"
-    ).eq("recall_enabled", True).execute())
+    segments_res = await _db(lambda: supabase.table("recall_segments").select(
+        "id, tenant_id, service_type, is_default, interval_months, message_template"
+    ).eq("enabled", True).execute())
 
-    for settings in (settings_res.data or []):
-        tenant_id = settings["tenant_id"]
+    segments_by_tenant: dict = defaultdict(list)
+    for seg in (segments_res.data or []):
+        segments_by_tenant[seg["tenant_id"]].append(seg)
+
+    for tenant_id, segments in segments_by_tenant.items():
         try:
-            months = settings.get("recall_interval_months") or 6
-            cutoff = (now - timedelta(days=months * 30)).isoformat()
-
             _tid = tenant_id
             tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
                 "name, wa_phone_number_id, wa_access_token"
@@ -388,48 +441,79 @@ async def send_recall_messages():
             if not tenant_res.data:
                 continue
 
-            clinic_name    = tenant_res.data.get("name", "our clinic")
+            clinic_name     = tenant_res.data.get("name", "our clinic")
             phone_number_id = tenant_res.data.get("wa_phone_number_id")
             access_token    = tenant_res.data.get("wa_access_token")
             if not phone_number_id or not access_token:
                 continue
 
-            # Contacts with ANY booking inside the recall window → still active, skip
+            # Most-recent non-cancelled booking per contact — each dormant
+            # candidate is matched against the segment for their LATEST
+            # treatment type, not just any booking they ever had.
             _tid2 = tenant_id
-            _cut  = cutoff
-            recent_res = await _db(lambda: supabase.table("bookings").select(
-                "contact_id"
+            bookings_res = await _db(lambda: supabase.table("bookings").select(
+                "contact_id, service_type, scheduled_at"
             ).eq("tenant_id", _tid2).not_.in_(
                 "status", ["cancelled"]
-            ).gte("scheduled_at", _cut).execute())
-            recent_ids = {b["contact_id"] for b in (recent_res.data or []) if b.get("contact_id")}
+            ).order("scheduled_at", desc=True).execute())
 
-            # All contacts who ever booked with this tenant
-            _tid3 = tenant_id
-            all_res = await _db(lambda: supabase.table("bookings").select(
-                "contact_id"
-            ).eq("tenant_id", _tid3).not_.in_("status", ["cancelled"]).execute())
-            all_ids = {b["contact_id"] for b in (all_res.data or []) if b.get("contact_id")}
+            latest_by_contact: dict = {}
+            for b in (bookings_res.data or []):
+                cid = b.get("contact_id")
+                if cid and cid not in latest_by_contact:
+                    latest_by_contact[cid] = b  # first hit per contact = most recent (desc order)
 
-            dormant_ids = all_ids - recent_ids
-            if not dormant_ids:
+            # Match each contact to a segment and check dormancy against
+            # THAT segment's own interval (intervals vary per segment now,
+            # so there's no single tenant-wide cutoff anymore).
+            dormant: dict = {}  # contact_id -> matched segment
+            for cid, booking in latest_by_contact.items():
+                segment = _match_recall_segment(booking.get("service_type", ""), segments)
+                if not segment:
+                    continue
+                seg_months = segment.get("interval_months") or 6
+                seg_cutoff = now - timedelta(days=seg_months * 30)
+                scheduled_at = datetime.fromisoformat(booking["scheduled_at"])
+                if scheduled_at < seg_cutoff:
+                    dormant[cid] = segment
+
+            if not dormant:
                 continue
 
-            # Contacts already sent a recall in the window (don't double-up)
-            _tid4 = tenant_id
-            _cut2 = cutoff
+            # Dedup: skip contacts already recalled within their own segment's window
+            _tid3 = tenant_id
+            contact_ids = list(dormant.keys())
             existing_res = await _db(lambda: supabase.table("campaigns").select(
-                "contact_id"
-            ).eq("tenant_id", _tid4).eq("type", "recall").gte("sent_at", _cut2).execute())
-            already_recalled = {c["contact_id"] for c in (existing_res.data or [])}
+                "contact_id, sent_at"
+            ).eq("tenant_id", _tid3).eq("type", "recall").in_(
+                "contact_id", contact_ids
+            ).execute())
+            last_recall_by_contact: dict = {}
+            for c in (existing_res.data or []):
+                cid = c["contact_id"]
+                sent_at = c.get("sent_at")
+                if sent_at and sent_at > last_recall_by_contact.get(cid, ""):
+                    last_recall_by_contact[cid] = sent_at
 
-            to_contact = list(dormant_ids - already_recalled)[:50]
+            to_contact = []
+            for cid, segment in dormant.items():
+                seg_months = segment.get("interval_months") or 6
+                seg_cutoff = (now - timedelta(days=seg_months * 30)).isoformat()
+                last_sent = last_recall_by_contact.get(cid)
+                if last_sent and last_sent >= seg_cutoff:
+                    continue
+                to_contact.append(cid)
+
+            # Cap at 50/tenant/run across ALL segments combined — the cap
+            # protects the tenant's single WhatsApp Business Account from
+            # quota/spam-flagging risk, which is a per-tenant resource
+            # regardless of how many segments the clinic has configured.
+            to_contact = to_contact[:50]
             if not to_contact:
                 continue
 
-            tmpl = settings.get("recall_message_template") or DEFAULT_RECALL_MSG
-
             for contact_id in to_contact:
+                segment = dormant[contact_id]
                 _cid = contact_id
                 contact_res = await _db_optional(lambda: supabase.table("contacts").select(
                     "name, phone"
@@ -442,7 +526,13 @@ async def send_recall_messages():
                     continue
 
                 name    = contact_res.data.get("name") or "there"
-                message = tmpl.replace("{name}", name).replace("{clinic}", clinic_name)
+                service = latest_by_contact[contact_id].get("service_type") or ""
+                tmpl    = segment.get("message_template") or DEFAULT_RECALL_MSG
+                message = (
+                    tmpl.replace("{name}", name)
+                    .replace("{clinic}", clinic_name)
+                    .replace("{service}", service)
+                )
 
                 try:
                     await _send_wa(phone, message, phone_number_id, access_token)
@@ -480,7 +570,7 @@ async def send_recall_messages():
                             "last_message_at": datetime.now().isoformat()
                         }).eq("id", _thid3).execute())
 
-                    logger.info(f"Recall sent | tenant={tenant_id} | contact={contact_id}")
+                    logger.info(f"Recall sent | tenant={tenant_id} | contact={contact_id} | segment={segment.get('id')}")
 
                 except Exception as e:
                     logger.error(f"Recall send failed | tenant={tenant_id} | contact={contact_id} | {e}")

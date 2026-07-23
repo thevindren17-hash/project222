@@ -16,15 +16,18 @@ export default function AnalyticsPage() {
 
       const last30 = subDays(new Date(), 30).toISOString()
 
-      const [bookingsRes, threadsRes] = await Promise.all([
-        supabase.from('bookings').select('created_at,status,service_type')
+      const [bookingsRes, threadsRes, contactsRes] = await Promise.all([
+        supabase.from('bookings').select('created_at,status,service_type,scheduled_at')
           .eq('tenant_id', tenant.id).gte('created_at', last30),
         supabase.from('whatsapp_threads').select('status')
           .eq('tenant_id', tenant.id),
+        supabase.from('contacts').select('created_at')
+          .eq('tenant_id', tenant.id).gte('created_at', last30),
       ])
 
       const bookings = bookingsRes.data || []
       const threads = threadsRes.data || []
+      const contacts = contactsRes.data || []
 
       // Daily bookings chart (last 7 days)
       const dailyBookings = Array.from({ length: 7 }, (_, i) => {
@@ -45,7 +48,25 @@ export default function AnalyticsPage() {
         ? Math.round((threads.filter((t) => t.status === 'ai').length / threads.length) * 100)
         : 0
 
-      return { dailyBookings, serviceData, aiHandleRate, totalBookings: bookings.length }
+      const completedCount = bookings.filter((b) => b.status === 'completed').length
+      const noShowCount = bookings.filter((b) => b.status === 'no_show').length
+      const noShowRate = (completedCount + noShowCount) > 0
+        ? Math.round((noShowCount / (completedCount + noShowCount)) * 100)
+        : 0
+
+      // Lead-capture funnel: inquiry (new contact) → booked → showed
+      // (completed). "Showed" uses booked-in-period bookings only, so the
+      // conversion % lines up with the "Booked" stage directly above it.
+      const inquiries = contacts.length
+      const booked = bookings.length
+      const showed = bookings.filter((b) => b.status === 'completed').length
+      const funnel = [
+        { stage: 'Inquiries', count: inquiries, pct: null as number | null },
+        { stage: 'Booked', count: booked, pct: inquiries > 0 ? Math.round((booked / inquiries) * 100) : 0 },
+        { stage: 'Showed', count: showed, pct: booked > 0 ? Math.round((showed / booked) * 100) : 0 },
+      ]
+
+      return { dailyBookings, serviceData, aiHandleRate, totalBookings: bookings.length, noShowRate, funnel }
     },
   })
 
@@ -58,9 +79,40 @@ export default function AnalyticsPage() {
         <p className="text-muted-foreground">Last 30 days performance</p>
       </div>
 
-      <div className="max-w-xs">
+      <div className="grid gap-6 max-w-md grid-cols-2">
         <StatCard title="Total Bookings" value={stats?.totalBookings ?? '—'} icon="calendar" />
+        <StatCard title="No-Show Rate" value={stats ? `${stats.noShowRate}%` : '—'} icon="alert" />
       </div>
+
+      <Card>
+        <CardHeader><CardTitle>Lead Capture Funnel (Last 30 Days)</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          {stats?.funnel.map((step, i) => {
+            const maxCount = stats.funnel[0]?.count || 1
+            const widthPct = maxCount > 0 ? Math.max((step.count / maxCount) * 100, step.count > 0 ? 4 : 0) : 0
+            return (
+              <div key={step.stage} className="space-y-1.5">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">{step.stage}</span>
+                  <span className="text-muted-foreground">
+                    {step.count}
+                    {step.pct !== null && <span className="ml-2 text-xs">({step.pct}% of {stats.funnel[i - 1]?.stage.toLowerCase()})</span>}
+                  </span>
+                </div>
+                <div className="h-3 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${widthPct}%`, backgroundColor: 'oklch(0.58 0.22 255)' }}
+                  />
+                </div>
+              </div>
+            )
+          })}
+          {stats && stats.funnel[2].count === 0 && stats.funnel[1].count > 0 && (
+            <p className="text-xs text-muted-foreground">No completed visits yet — the &quot;Showed&quot; stage fills in once appointments pass and are marked completed.</p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card>

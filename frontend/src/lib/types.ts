@@ -53,7 +53,7 @@ export interface Booking {
   contact_id: string
   service_type: string
   scheduled_at: string
-  status: 'pending' | 'confirmed' | 'cancelled' | 'completed'
+  status: 'pending' | 'confirmed' | 'cancelled' | 'completed' | 'no_show'
   source: string
   notes?: string
   details?: Record<string, string>

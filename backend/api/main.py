@@ -28,6 +28,7 @@ from api.integrations import router as integrations_router
 from api.agent import router as agent_router
 from api.reminders import scheduler, send_appointment_reminders
 from api.campaigns import send_feedback_requests, send_recall_messages, cleanup_expired_campaigns
+from api.no_show import auto_complete_bookings
 
 
 @asynccontextmanager
@@ -62,6 +63,14 @@ async def lifespan(app: FastAPI):
         hours=6,
         next_run_time=datetime.now(),
         id="campaign_cleanup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        auto_complete_bookings,
+        "interval",
+        hours=1,
+        next_run_time=datetime.now(),
+        id="auto_complete_bookings",
         replace_existing=True,
     )
     scheduler.start()
@@ -107,6 +116,7 @@ _JOBS = {
     "feedback":  send_feedback_requests,
     "recall":    send_recall_messages,
     "cleanup":   cleanup_expired_campaigns,
+    "no_show":   auto_complete_bookings,
 }
 
 _trigger_calls: dict = defaultdict(lambda: deque(maxlen=20))

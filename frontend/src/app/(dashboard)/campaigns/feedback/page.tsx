@@ -27,6 +27,8 @@ export default function FeedbackAndReviewSystemPage() {
   const [googleReviewUrl, setGoogleReviewUrl] = useState('')
   const [reviewRequestTemplate, setReviewRequestTemplate] = useState('')
   const [negativeFeedbackMsg, setNegativeFeedbackMsg] = useState('')
+  const [referralEnabled, setReferralEnabled] = useState(false)
+  const [referralMsgTemplate, setReferralMsgTemplate] = useState('')
   const [testPhone, setTestPhone] = useState('')
   const [testSending, setTestSending] = useState(false)
   const [testResult, setTestResult] = useState<{ message: string; to: string } | null>(null)
@@ -40,7 +42,7 @@ export default function FeedbackAndReviewSystemPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'feedback_enabled,google_review_url,review_request_template,negative_feedback_message'
+        'feedback_enabled,google_review_url,review_request_template,negative_feedback_message,referral_enabled,referral_message_template'
       ).eq('tenant_id', tenant.id).maybeSingle()
       return data
     },
@@ -53,6 +55,8 @@ export default function FeedbackAndReviewSystemPage() {
     setGoogleReviewUrl(settings.google_review_url || '')
     setReviewRequestTemplate(settings.review_request_template || '')
     setNegativeFeedbackMsg(settings.negative_feedback_message || '')
+    setReferralEnabled(!!settings.referral_enabled)
+    setReferralMsgTemplate(settings.referral_message_template || '')
   }, [settings])
 
   const saveMutation = useMutation({
@@ -64,6 +68,8 @@ export default function FeedbackAndReviewSystemPage() {
         google_review_url: googleReviewUrl.trim() || null,
         review_request_template: reviewRequestTemplate.trim() || null,
         negative_feedback_message: negativeFeedbackMsg.trim() || null,
+        referral_enabled: referralEnabled,
+        referral_message_template: referralMsgTemplate.trim() || null,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
     },
@@ -176,6 +182,25 @@ export default function FeedbackAndReviewSystemPage() {
                   className="text-sm resize-none"
                 />
                 <p className="text-[11px] text-muted-foreground">Sent to patients who rated 1–3 stars. An escalation alert is also created for your staff.</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Ask for referrals after positive feedback</p>
+                    <p className="text-xs text-muted-foreground">Sent as a second message right after the Google review invite, only to patients who rated 4–5 stars</p>
+                  </div>
+                  <Switch checked={referralEnabled} onCheckedChange={setReferralEnabled} />
+                </div>
+                {referralEnabled && (
+                  <Textarea
+                    rows={3}
+                    placeholder="If you know anyone who'd benefit from visiting {clinic}, we'd love a referral! Just have them mention your name when they book. 😊"
+                    value={referralMsgTemplate}
+                    onChange={(e) => setReferralMsgTemplate(e.target.value)}
+                    className="text-sm resize-none"
+                  />
+                )}
               </div>
             </div>
           )}

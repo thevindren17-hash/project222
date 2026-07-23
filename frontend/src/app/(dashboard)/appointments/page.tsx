@@ -83,6 +83,7 @@ export default function AppointmentsPage() {
             <SelectItem value="confirmed">Confirmed</SelectItem>
             <SelectItem value="cancelled">Cancelled</SelectItem>
             <SelectItem value="completed">Completed</SelectItem>
+            <SelectItem value="no_show">No-Show</SelectItem>
           </SelectContent>
         </Select>
       </div>
