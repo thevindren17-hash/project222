@@ -19,6 +19,7 @@ from typing import Optional
 from shared.tenant_config import get_supabase_client, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
 from shared.whatsapp_send import send_whatsapp_template
+from shared.utils import now_local, to_db_timestamp, from_db_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,13 @@ async def send_feedback_requests():
         logger.info("Feedback: lock held by another instance, skipping this run")
         return
     supabase = get_supabase_client()
-    now = datetime.now()
-    window_start = (now - timedelta(hours=6)).isoformat()
-    window_end   = (now - timedelta(hours=2)).isoformat()
+    # This window is compared against bookings.scheduled_at, which holds the
+    # clinic's LOCAL wall-clock digits (never UTC) -- using the server's own
+    # clock here silently shifted the "2-6h after visit" window by the
+    # clinic's UTC offset, sending feedback requests 8h later than intended.
+    now = now_local()
+    window_start = to_db_timestamp(now - timedelta(hours=6))
+    window_end   = to_db_timestamp(now - timedelta(hours=2))
 
     # Load all tenants with feedback enabled + WA credentials
     settings_res = await _db(lambda: supabase.table("tenant_settings").select(
@@ -422,7 +427,12 @@ async def send_recall_messages():
         logger.info("Recall: lock held by another instance, skipping this run")
         return
     supabase = get_supabase_client()
-    now = datetime.now()
+    now = datetime.now()  # server clock -- matches how campaigns.sent_at is written/compared below
+    # scheduled_at holds the clinic's LOCAL wall-clock digits (never UTC),
+    # so dormancy must be measured against clinic-local "now", not the
+    # server's own clock -- otherwise this silently drifts by the clinic's
+    # UTC offset (same bug class as the reminder-lateness issue).
+    now_clinic = now_local()
 
     segments_res = await _db(lambda: supabase.table("recall_segments").select(
         "id, tenant_id, service_type, is_default, interval_months, message_template"
@@ -472,8 +482,8 @@ async def send_recall_messages():
                 if not segment:
                     continue
                 seg_months = segment.get("interval_months") or 6
-                seg_cutoff = now - timedelta(days=seg_months * 30)
-                scheduled_at = datetime.fromisoformat(booking["scheduled_at"])
+                seg_cutoff = now_clinic - timedelta(days=seg_months * 30)
+                scheduled_at = from_db_timestamp(booking["scheduled_at"])
                 if scheduled_at < seg_cutoff:
                     dormant[cid] = segment
 

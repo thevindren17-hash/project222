@@ -10,6 +10,7 @@ Text pipeline (WhatsApp):  load_llm_client(tenant) → LLMClient.generate()
 import asyncio
 import json
 import random
+import re
 import logging
 from typing import Any, Awaitable, Callable, Optional, List, Dict
 
@@ -18,6 +19,37 @@ _logger = logging.getLogger(__name__)
 # Errors that are worth retrying — transient, not the caller's fault
 _RETRIABLE = ("rate limit", "ratelimit", "429", "503", "502", "timeout",
               "overloaded", "connection", "server error")
+
+# Splits after ., !, ? (incl. fullwidth Chinese punctuation) regardless of
+# whether whitespace follows -- a degenerate model reply commonly glues
+# consecutive questions together with no space at all ("Nama anda?Nombor
+# telefon?"), and splitting only on "punctuation + space" would leave those
+# glued repeats undetected as duplicates of the same question asked earlier
+# WITH a leading space.
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?。！？])\s*')
+
+
+def _collapse_repeated_sentences(text: str) -> str:
+    """
+    Defensive guard against decoding-repetition loops: a model (observed on
+    Groq's gpt-oss family under tool-heavy conversations) re-asking the same
+    question, or repeating an entire confirmation sentence, verbatim several
+    times within one reply instead of once. This doesn't stop the model from
+    degenerating, but it guarantees the patient never sees the same sentence
+    twice -- at worst they see each distinct (mis)phrasing once instead of a
+    multi-paragraph wall of exact repeats.
+    """
+    if not text:
+        return text
+    seen: set[str] = set()
+    out: List[str] = []
+    for part in _SENTENCE_SPLIT_RE.split(text.strip()):
+        key = part.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(part.strip())
+    return " ".join(out)
 
 
 def _cred(tenant, provider: str, key: str, fallback: Optional[str] = None) -> Optional[str]:
@@ -259,6 +291,14 @@ class LLMClient:
         }
         if llm_config.get("temperature") is not None:
             kwargs["temperature"] = llm_config["temperature"]
+        # Some models (esp. Groq's gpt-oss family) fall into degenerate
+        # repetition loops under tool-heavy conversations -- re-asking the
+        # same question several differently-phrased ways in one reply
+        # instead of the single question the system prompt asks for. A
+        # modest repetition penalty makes the sampler less likely to repeat
+        # tokens it already used, without materially changing normal replies.
+        kwargs["frequency_penalty"] = llm_config.get("frequency_penalty", 0.4)
+        kwargs["presence_penalty"] = llm_config.get("presence_penalty", 0.2)
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -279,7 +319,7 @@ class LLMClient:
                 for tc in choice.tool_calls
             ]
 
-        return {"content": choice.content or "", "tool_calls": tool_calls}
+        return {"content": _collapse_repeated_sentences(choice.content or ""), "tool_calls": tool_calls}
 
     async def _call_anthropic(
         self,
@@ -334,7 +374,7 @@ class LLMClient:
                     "function": {"name": block.name, "arguments": block.input},
                 })
 
-        return {"content": content_text, "tool_calls": tool_calls}
+        return {"content": _collapse_repeated_sentences(content_text), "tool_calls": tool_calls}
 
 
 def load_llm_client(tenant) -> LLMClient:

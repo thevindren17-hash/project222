@@ -13,10 +13,11 @@ dashboard (booking-detail-modal.tsx).
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from shared.tenant_config import get_supabase_client, _db
 from shared.scheduler_lock import acquire_lock
+from shared.utils import now_local, to_db_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,11 @@ async def auto_complete_bookings():
         logger.info("Auto-complete: lock held by another instance, skipping this run")
         return
     supabase = get_supabase_client()
-    cutoff = (datetime.now() - timedelta(hours=2)).isoformat()
+    # scheduled_at holds the clinic's LOCAL wall-clock digits (never UTC) --
+    # comparing it against the server's own (usually UTC) clock silently
+    # shifted this cutoff by the clinic's UTC offset, the same class of bug
+    # that once sent reminders hours late (see shared/utils.py).
+    cutoff = to_db_timestamp(now_local() - timedelta(hours=2))
 
     try:
         claimed = await _db(lambda: supabase.table("bookings").update({
