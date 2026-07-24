@@ -10,27 +10,38 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
-import { format, parseISO } from 'date-fns'
-import { Bell, Star, Loader2, MessageCircleWarning } from 'lucide-react'
+import { format, parseISO, subWeeks, subMonths } from 'date-fns'
+import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore } from 'lucide-react'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { BOOKING_STATUS } from '@/lib/booking-status'
 import type { Booking } from '@/lib/types'
 
+const CLEAR_OLDER_THAN_OPTIONS: { value: string; label: string; cutoff: () => Date }[] = [
+  { value: '2w', label: '2 weeks', cutoff: () => subWeeks(new Date(), 2) },
+  { value: '3w', label: '3 weeks', cutoff: () => subWeeks(new Date(), 3) },
+  { value: '1m', label: '1 month', cutoff: () => subMonths(new Date(), 1) },
+]
+
 export default function AppointmentsPage() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [awaitingReplyOnly, setAwaitingReplyOnly] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
+  const [clearOlderThan, setClearOlderThan] = useState('2w')
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
+  const [archivingId, setArchivingId] = useState<string | null>(null)
+  const [clearing, setClearing] = useState(false)
   const queryClient = useQueryClient()
 
   const { data: bookings } = useQuery({
-    queryKey: ['bookings', statusFilter],
+    queryKey: ['bookings', statusFilter, showArchived],
     queryFn: async () => {
       const tenant = await getCurrentTenant()
       if (!tenant) return []
       let query = supabase.from('bookings').select('*, contact:contacts(name,phone)')
         .eq('tenant_id', tenant.id).order('scheduled_at', { ascending: false })
       if (statusFilter !== 'all') query = query.eq('status', statusFilter)
+      query = showArchived ? query.not('archived_at', 'is', null) : query.is('archived_at', null)
       const { data } = await query
       return (data || []) as Booking[]
     },
@@ -105,6 +116,56 @@ export default function AppointmentsPage() {
     }
   }
 
+  async function toggleArchive(booking: any) {
+    setArchivingId(booking.id)
+    try {
+      const { error } = await supabase.from('bookings')
+        .update({ archived_at: showArchived ? null : new Date().toISOString() })
+        .eq('id', booking.id)
+      if (error) throw error
+      toast.success(showArchived ? 'Appointment restored' : 'Appointment archived')
+      queryClient.invalidateQueries({ queryKey: ['bookings'] })
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Action failed')
+    } finally {
+      setArchivingId(null)
+    }
+  }
+
+  async function clearOldAppointments() {
+    const tenant = await getCurrentTenant()
+    if (!tenant) return
+    const option = CLEAR_OLDER_THAN_OPTIONS.find((o) => o.value === clearOlderThan)
+    if (!option) return
+    const cutoffDate = option.cutoff()
+    // scheduled_at is stored as naive clinic-local wall-clock digits, never
+    // UTC — the cutoff must be built the same way (not .toISOString(),
+    // which would tag it as UTC and silently shift it by the clinic's
+    // offset, same bug class fixed elsewhere in this app already).
+    const cutoffLocal = format(cutoffDate, "yyyy-MM-dd'T'HH:mm:ss")
+    if (!confirm(
+      `Archive all appointments scheduled before ${format(cutoffDate, 'MMM d, yyyy')}? `
+      + 'This only hides them from this list — nothing is deleted, and you can bring them back anytime under "Show archived".'
+    )) return
+
+    setClearing(true)
+    try {
+      const { data, error } = await supabase.from('bookings')
+        .update({ archived_at: new Date().toISOString() })
+        .eq('tenant_id', tenant.id)
+        .is('archived_at', null)
+        .lt('scheduled_at', cutoffLocal)
+        .select('id')
+      if (error) throw error
+      toast.success(`Archived ${data?.length || 0} old appointment${data?.length === 1 ? '' : 's'}`)
+      queryClient.invalidateQueries({ queryKey: ['bookings'] })
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Action failed')
+    } finally {
+      setClearing(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -112,7 +173,27 @@ export default function AppointmentsPage() {
           <h1 className="text-3xl font-bold">Appointments</h1>
           <p className="text-muted-foreground">{visibleBookings?.length || 0} of {bookings?.length || 0} appointments</p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap justify-end">
+          {!showArchived && (
+            <div className="flex items-center gap-1.5">
+              <Select value={clearOlderThan} onValueChange={(v) => v && setClearOlderThan(v)}>
+                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CLEAR_OLDER_THAN_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" className="gap-1.5" disabled={clearing} onClick={clearOldAppointments}>
+                {clearing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Archive className="h-3.5 w-3.5" />}
+                Clear older than
+              </Button>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Switch checked={showArchived} onCheckedChange={setShowArchived} />
+            <span className="text-sm text-muted-foreground whitespace-nowrap">Show archived</span>
+          </div>
           <div className="flex items-center gap-2">
             <Switch checked={awaitingReplyOnly} onCheckedChange={setAwaitingReplyOnly} />
             <span className="text-sm text-muted-foreground whitespace-nowrap">Awaiting reply only</span>
@@ -202,7 +283,23 @@ export default function AppointmentsPage() {
                       </Button>
                     )}
                   </TableCell>
-                  <TableCell><Button variant="ghost" size="sm">View</Button></TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedBooking(b)}>View</Button>
+                    <Button
+                      variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                      disabled={archivingId === b.id}
+                      onClick={() => toggleArchive(b)}
+                      title={showArchived ? 'Restore to active list' : 'Archive (hide from list, data is kept)'}
+                    >
+                      {archivingId === b.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : showArchived ? (
+                        <ArchiveRestore className="h-3.5 w-3.5" />
+                      ) : (
+                        <Archive className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  </TableCell>
                 </TableRow>
                 )
               })}

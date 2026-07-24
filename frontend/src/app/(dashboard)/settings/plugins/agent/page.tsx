@@ -92,6 +92,19 @@ const BASE_FIELD_DEFS: { key: string; defaultLabel: string; placeholder: string 
   { key: 'time', defaultLabel: 'Time', placeholder: 'e.g. Preferred Time' },
 ]
 
+// Mirrors backend/api/whatsapp.py's _RESERVED_FIELD_KEYS exactly -- a custom
+// field using one of these keys collides with a built-in property (already
+// collected automatically) and gets silently skipped server-side. Shown
+// here so the clinic sees a warning where they're editing, instead of only
+// in a server log they never see.
+const RESERVED_FIELD_KEYS = new Set([
+  'contact_name', 'contact_phone', 'service_type', 'date', 'time', 'notes',
+  'new_date', 'new_time', 'booking_id',
+  'name', 'phone', 'phone_number', 'full_name', 'patient_name', 'patient_phone',
+  'services', 'appointment_date', 'appointment_time', 'date_time', 'datetime',
+  'appointment_date_time', 'booking_date', 'booking_time',
+])
+
 // Field keys become tool-call argument names sent to the LLM, so they must be
 // safe identifiers — not raw user text.
 function slugifyFieldKey(label: string): string {
@@ -914,7 +927,12 @@ export default function AgentPluginPage() {
                             rows={2}
                             className="text-sm resize-none"
                           />
-                          {f.key && (
+                          {f.key && RESERVED_FIELD_KEYS.has(f.key) ? (
+                            <p className="text-[11px] text-destructive">
+                              This overlaps with a built-in field and will be ignored — rename it under{' '}
+                              <span className="font-medium">Base Field Labels</span> above instead.
+                            </p>
+                          ) : f.key && (
                             <p className="text-[11px] text-muted-foreground font-mono">key: {f.key}</p>
                           )}
                         </div>

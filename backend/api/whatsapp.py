@@ -595,6 +595,16 @@ _RESERVED_FIELD_KEYS = {
     "contact_name", "contact_phone", "service_type", "date", "time", "notes",
     "new_date", "new_time", "booking_id",
     "name", "phone", "phone_number", "full_name", "patient_name", "patient_phone",
+    # Aliases for service_type/date/time -- without these, a clinic-typed
+    # field like "services" or "appointment_date_time" isn't caught by this
+    # guard at all (unlike name/phone above), so it doesn't get skipped --
+    # it gets added as a confusing DUPLICATE property alongside the real
+    # one, and a model that fills the wrong one leaves book_appointment's
+    # actual required arg empty. Kept in sync with the mirrored client-side
+    # list in frontend/.../settings/plugins/agent/page.tsx (search
+    # RESERVED_FIELD_KEYS there).
+    "services", "appointment_date", "appointment_time", "date_time", "datetime",
+    "appointment_date_time", "booking_date", "booking_time",
 }
 
 # reschedule_appointment's new_date/new_time map onto the same "date"/"time"
