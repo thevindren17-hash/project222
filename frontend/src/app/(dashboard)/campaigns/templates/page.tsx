@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
-import { Loader2, Plus, Trash2, ImagePlus, Send, MessageSquareText, AlertCircle } from 'lucide-react'
+import { Loader2, Plus, Trash2, ImagePlus, Send, MessageSquareText, AlertCircle, Download } from 'lucide-react'
 import CsvCampaignUploader, { ExtraColumn } from '@/components/campaigns/csv-campaign-uploader'
 
 type TemplatePurpose = 'marketing' | 'reminder' | 'feedback'
@@ -35,6 +35,18 @@ interface WhatsappTemplate {
   status: 'draft' | 'pending' | 'approved' | 'rejected' | 'paused' | 'disabled'
   rejected_reason: string | null
   created_at: string
+}
+
+interface MetaAvailableTemplate {
+  meta_template_id: string
+  name: string
+  language: string
+  category: string
+  body_text: string
+  footer_text: string | null
+  header_type: string | null
+  buttons: { text: string; url: string }[] | null
+  variable_count: number
 }
 
 // Reminder/feedback jobs positionally inject values into these exact
@@ -130,7 +142,26 @@ export default function MarketingTemplatesPage() {
     setPurpose('marketing'); setName(''); setBodyText('')
     setFooterText('Reply STOP to unsubscribe'); setVarMeta([]); setShowNewForm(false)
     setAddReviewButton(false); setReviewButtonText('Leave a Review'); setReviewButtonUrl(googleReviewUrl || '')
+    setImageFile(null)
   }
+
+  function validateImageFile(file: File): string | null {
+    if (!['image/jpeg', 'image/png'].includes(file.type)) return 'Only JPEG or PNG images are allowed'
+    if (file.size > 5 * 1024 * 1024) return 'Image is too large — WhatsApp allows up to 5MB for a template header'
+    return null
+  }
+
+  async function uploadTemplateImage(id: string, file: File) {
+    if (!tenant) return
+    const form = new FormData()
+    form.set('tenant_id', tenant.id)
+    form.set('file', file)
+    const res = await fetch(`/api/templates/${id}/media`, { method: 'POST', body: form })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Image upload failed')
+  }
+
+  const [imageFile, setImageFile] = useState<File | null>(null)
 
   const { data: templates } = useQuery({
     queryKey: ['whatsapp-templates', tenant?.id],
@@ -169,10 +200,27 @@ export default function MarketingTemplatesPage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Could not create template')
-      return data
+
+      // Image upload is a separate call after the draft exists -- if it
+      // fails, the draft itself is still saved (don't lose it / don't let
+      // the mutation "fail" in a way that would invite a duplicate retry).
+      // Only note the image error, don't throw.
+      let imageError: string | null = null
+      if (imageFile) {
+        try {
+          await uploadTemplateImage(data.id, imageFile)
+        } catch (e) {
+          imageError = e instanceof Error ? e.message : 'Image upload failed'
+        }
+      }
+      return { ...data, imageError }
     },
-    onSuccess: () => {
-      toast.success('Template saved as draft — attach an image (optional) and submit for approval below')
+    onSuccess: (data) => {
+      if (data.imageError) {
+        toast.warning(`Template saved, but the image didn't upload: ${data.imageError} — attach it from the card below.`)
+      } else {
+        toast.success(imageFile ? 'Template and image saved as draft — submit for approval below' : 'Template saved as draft — attach an image (optional) and submit for approval below')
+      }
       resetNewForm()
       queryClient.invalidateQueries({ queryKey: ['whatsapp-templates', tenant?.id] })
     },
@@ -214,28 +262,61 @@ export default function MarketingTemplatesPage() {
   const [uploadingId, setUploadingId] = useState<string | null>(null)
   async function attachMedia(id: string, file: File) {
     if (!tenant) return
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
-      toast.error('Only JPEG or PNG images are allowed')
-      return
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error('Image is too large — WhatsApp allows up to 5MB for a template header')
-      return
-    }
+    const err = validateImageFile(file)
+    if (err) { toast.error(err); return }
     setUploadingId(id)
     try {
-      const form = new FormData()
-      form.set('tenant_id', tenant.id)
-      form.set('file', file)
-      const res = await fetch(`/api/templates/${id}/media`, { method: 'POST', body: form })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Image upload failed')
+      await uploadTemplateImage(id, file)
       toast.success('Image attached')
       queryClient.invalidateQueries({ queryKey: ['whatsapp-templates', tenant?.id] })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Image upload failed')
     } finally {
       setUploadingId(null)
+    }
+  }
+
+  // Templates that already exist, approved, directly on Meta (e.g. created
+  // by hand in WhatsApp Manager before this page existed) -- fetched lazily,
+  // only once this section is opened, since it's an extra Meta API round trip.
+  const [showImportSection, setShowImportSection] = useState(false)
+  const [importPurposeById, setImportPurposeById] = useState<Record<string, TemplatePurpose>>({})
+  const [importingId, setImportingId] = useState<string | null>(null)
+
+  const { data: metaAvailable, isFetching: metaAvailableLoading, refetch: refetchMetaAvailable } = useQuery({
+    queryKey: ['whatsapp-templates-meta-available', tenant?.id],
+    queryFn: async () => {
+      if (!tenant) return []
+      const res = await fetch(`/api/templates/meta-available?tenant_id=${tenant.id}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Could not reach Meta')
+      return (Array.isArray(data) ? data : []) as MetaAvailableTemplate[]
+    },
+    enabled: false,
+  })
+
+  async function importTemplate(t: MetaAvailableTemplate) {
+    if (!tenant) return
+    setImportingId(t.meta_template_id)
+    try {
+      const res = await fetch('/api/templates/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenant.id,
+          meta_template_id: t.meta_template_id,
+          purpose: importPurposeById[t.meta_template_id] || 'marketing',
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Import failed')
+      toast.success(`Imported "${t.name}" — ready to use immediately`)
+      queryClient.invalidateQueries({ queryKey: ['whatsapp-templates', tenant.id] })
+      refetchMetaAvailable()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Import failed')
+    } finally {
+      setImportingId(null)
     }
   }
 
@@ -254,6 +335,68 @@ export default function MarketingTemplatesPage() {
           <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
           Connect WhatsApp in Settings before creating templates.
         </div>
+      )}
+
+      {isConnected && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle>Already Have Approved Templates?</CardTitle>
+                <CardDescription>
+                  Import templates you already created directly in Meta&apos;s WhatsApp Manager — no need to recreate them here.
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline" size="sm" className="gap-1.5 shrink-0"
+                onClick={() => { setShowImportSection((v) => !v); if (!showImportSection) refetchMetaAvailable() }}
+              >
+                <Download className="h-3.5 w-3.5" />
+                {showImportSection ? 'Hide' : 'Check Meta for Templates'}
+              </Button>
+            </div>
+          </CardHeader>
+          {showImportSection && (
+            <CardContent className="space-y-3">
+              {metaAvailableLoading && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Checking Meta for your existing templates…
+                </div>
+              )}
+              {!metaAvailableLoading && metaAvailable?.length === 0 && (
+                <p className="text-sm text-muted-foreground py-2">
+                  No new approved templates found on Meta — everything&apos;s already imported, or nothing&apos;s approved there yet.
+                </p>
+              )}
+              {(metaAvailable || []).map((t) => (
+                <div key={t.meta_template_id} className="rounded-md border p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-mono text-sm font-medium">{t.name}</p>
+                    <span className="text-[11px] text-muted-foreground">{t.category} · {t.language}{t.header_type ? ' · has image header' : ''}{t.buttons?.length ? ' · has button' : ''}</span>
+                  </div>
+                  <div className="rounded-md bg-muted/40 p-2 text-xs whitespace-pre-wrap">{t.body_text}</div>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={importPurposeById[t.meta_template_id] || 'marketing'}
+                      onValueChange={(v) => v && setImportPurposeById((prev) => ({ ...prev, [t.meta_template_id]: v as TemplatePurpose }))}
+                    >
+                      <SelectTrigger className="w-56 h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="marketing">Marketing / Recall Campaign</SelectItem>
+                        <SelectItem value="reminder">Appointment Reminder ({t.variable_count} var{t.variable_count === 1 ? '' : 's'} found)</SelectItem>
+                        <SelectItem value="feedback">Feedback Request ({t.variable_count} var{t.variable_count === 1 ? '' : 's'} found)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button size="sm" className="h-8 text-xs" disabled={importingId === t.meta_template_id} onClick={() => importTemplate(t)}>
+                      {importingId === t.meta_template_id && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                      Import
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          )}
+        </Card>
       )}
 
       {(templates || []).map((tpl) => (
@@ -377,6 +520,31 @@ export default function MarketingTemplatesPage() {
                   Use exactly <code className="font-mono">{FIXED_VARIABLES[purpose].map((_, i) => `{{${i + 1}}}`).join(', ')}</code> in
                   that order for {FIXED_VARIABLES[purpose].join(', ')} — the system fills these in automatically for every send.
                 </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-sm font-medium">Image header <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <label className="inline-flex">
+                <input
+                  type="file" accept="image/jpeg,image/png" className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) {
+                      const err = validateImageFile(f)
+                      if (err) { toast.error(err); e.target.value = ''; return }
+                      setImageFile(f)
+                    }
+                    e.target.value = ''
+                  }}
+                />
+                <span className="inline-flex items-center gap-1.5 text-xs border rounded-md px-3 py-1.5 cursor-pointer hover:bg-accent">
+                  <ImagePlus className="h-3.5 w-3.5" />
+                  {imageFile ? imageFile.name : 'Choose image (JPEG/PNG, up to 5MB)'}
+                </span>
+              </label>
+              {imageFile && (
+                <Button variant="ghost" size="sm" className="ml-1 text-xs" onClick={() => setImageFile(null)}>Remove</Button>
               )}
             </div>
 

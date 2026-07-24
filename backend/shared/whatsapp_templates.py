@@ -22,9 +22,14 @@ Business Manager with that scope added.
 """
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+# Mirrors detectPlaceholderCount() in frontend templates/page.tsx exactly --
+# both sides must agree on how many {{n}} variables a body contains.
+_PLACEHOLDER_RE = re.compile(r"\{\{(\d+)\}\}")
 
 _GRAPH_VERSION = "v23.0"
 
@@ -191,3 +196,84 @@ async def get_template_status(template_id: str, access_token: str) -> Dict[str, 
         )
         r.raise_for_status()
         return r.json()
+
+
+async def list_meta_templates(waba_id: str, access_token: str) -> List[Dict[str, Any]]:
+    """
+    List every template that already exists on this WABA -- including ones
+    approved directly in Meta's own WhatsApp Manager before this dashboard
+    feature existed, which this codebase has otherwise never had any way to
+    see. Returns Meta's raw template objects (with components); callers
+    parse them with _parse_meta_components.
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            f"https://graph.facebook.com/{_GRAPH_VERSION}/{waba_id}/message_templates",
+            params={"fields": "id,name,language,category,status,components", "limit": 100},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+
+async def get_meta_template(meta_template_id: str, access_token: str) -> Dict[str, Any]:
+    """
+    Re-fetch one template's authoritative definition straight from Meta at
+    import time -- rather than trusting whatever a client passed back from
+    an earlier list_meta_templates() call, matching how submit_template()
+    already treats Meta as the source of truth rather than our own cache.
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            f"https://graph.facebook.com/{_GRAPH_VERSION}/{meta_template_id}",
+            params={"fields": "name,language,category,status,components"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+def _parse_meta_components(components: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Reverse of _build_template_components -- turns Meta's component list
+    (as returned by list/get, not the shape we send at creation) back into
+    the flat fields this dashboard's own whatsapp_templates rows use.
+
+    Meta never stores the "friendly variable name" concept -- that's purely
+    invented by this dashboard for templates created here -- so an imported
+    template's variables come back as generic placeholders (value_1,
+    value_2, ...) sized to however many {{n}} appear in the body. Example
+    values also aren't returned by a read call (only required at submission
+    time), so example_values comes back empty for an imported row -- fine,
+    since an already-approved template is never resubmitted.
+    """
+    body_text = ""
+    footer_text: Optional[str] = None
+    header_type: Optional[str] = None
+    buttons: List[Dict[str, str]] = []
+
+    for c in components:
+        ctype = (c.get("type") or "").upper()
+        if ctype == "BODY":
+            body_text = c.get("text") or ""
+        elif ctype == "FOOTER":
+            footer_text = c.get("text")
+        elif ctype == "HEADER":
+            header_type = (c.get("format") or "").upper() or None
+        elif ctype == "BUTTONS":
+            for b in c.get("buttons", []):
+                if (b.get("type") or "").upper() == "URL" and b.get("text") and b.get("url"):
+                    buttons.append({"text": b["text"], "url": b["url"]})
+
+    placeholder_numbers = [int(n) for n in _PLACEHOLDER_RE.findall(body_text)]
+    variable_count = max(placeholder_numbers) if placeholder_numbers else 0
+    variables = [f"value_{i + 1}" for i in range(variable_count)]
+
+    return {
+        "body_text": body_text,
+        "footer_text": footer_text,
+        "header_type": header_type if header_type == "IMAGE" else None,
+        "buttons": buttons or None,
+        "variables": variables,
+        "example_values": [],
+    }

@@ -30,6 +30,7 @@ from shared.tenant_config import get_supabase_client, get_tenant_by_id, _db, _db
 from shared.scheduler_lock import acquire_lock
 from shared.whatsapp_templates import (
     upload_template_media, upload_send_media, create_message_template, get_template_status,
+    list_meta_templates, get_meta_template, _parse_meta_components,
 )
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,110 @@ async def list_templates(tenant_id: str):
         "tenant_id", tenant_id
     ).order("created_at", desc=True).execute())
     return res.data or []
+
+
+@router.get("/meta-available", dependencies=[Depends(require_internal_secret)])
+async def list_meta_available_templates(tenant_id: str):
+    """
+    Templates that already exist, approved, directly on this clinic's WABA
+    -- e.g. created by hand in Meta's own WhatsApp Manager before this
+    dashboard feature existed -- that haven't been imported into our own
+    table yet. Lets a clinic reuse what they already have instead of only
+    ever being able to create brand-new templates from scratch.
+    """
+    supabase = get_supabase_client()
+    tenant = await get_tenant_by_id(tenant_id)
+    if not tenant or not tenant.wa_access_token or not tenant.wa_business_account_id:
+        raise HTTPException(status_code=400, detail="WhatsApp Business Account is not connected for this clinic yet")
+
+    existing_res = await _db(lambda: supabase.table("whatsapp_templates").select("name").eq(
+        "tenant_id", tenant_id
+    ).execute())
+    existing_names = {t["name"] for t in (existing_res.data or [])}
+
+    try:
+        meta_templates = await list_meta_templates(tenant.wa_business_account_id, tenant.wa_access_token)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Meta: {_meta_error_detail(e)}")
+
+    available = []
+    for t in meta_templates:
+        if t.get("status") != "APPROVED" or t.get("name") in existing_names:
+            continue
+        parsed = _parse_meta_components(t.get("components") or [])
+        available.append({
+            "meta_template_id": t.get("id"),
+            "name": t.get("name"),
+            "language": t.get("language"),
+            "category": t.get("category"),
+            "body_text": parsed["body_text"],
+            "footer_text": parsed["footer_text"],
+            "header_type": parsed["header_type"],
+            "buttons": parsed["buttons"],
+            "variable_count": len(parsed["variables"]),
+        })
+    return available
+
+
+class ImportTemplateRequest(BaseModel):
+    tenant_id: str
+    meta_template_id: str
+    purpose: str = "marketing"
+
+
+@router.post("/import", dependencies=[Depends(require_internal_secret)])
+async def import_meta_template(req: ImportTemplateRequest):
+    if _rate_limited(req.tenant_id):
+        raise HTTPException(status_code=429, detail="Too many template requests -- please wait a few minutes and try again")
+    if req.purpose not in ("marketing", "reminder", "feedback"):
+        raise HTTPException(status_code=400, detail="purpose must be marketing, reminder, or feedback")
+
+    supabase = get_supabase_client()
+    tenant = await get_tenant_by_id(req.tenant_id)
+    if not tenant or not tenant.wa_access_token:
+        raise HTTPException(status_code=400, detail="WhatsApp is not connected for this clinic yet")
+
+    try:
+        meta_tpl = await get_meta_template(req.meta_template_id, tenant.wa_access_token)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Meta: {_meta_error_detail(e)}")
+
+    if meta_tpl.get("status") != "APPROVED":
+        raise HTTPException(status_code=400, detail=f"That template is {meta_tpl.get('status')} on Meta, not approved")
+
+    parsed = _parse_meta_components(meta_tpl.get("components") or [])
+    variables = parsed["variables"]
+
+    if req.purpose in _FIXED_VARIABLES and len(variables) != len(_FIXED_VARIABLES[req.purpose]):
+        expected = _FIXED_VARIABLES[req.purpose]
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This template has {len(variables)} variable(s), but a {req.purpose} template needs exactly "
+                f"{len(expected)} ({', '.join(expected)}) for the automatic send to fill in correctly. "
+                "Import it as Marketing instead, or edit it to match on Meta first."
+            ),
+        )
+    if req.purpose in _FIXED_VARIABLES:
+        variables = _FIXED_VARIABLES[req.purpose]
+
+    row = {
+        "tenant_id": req.tenant_id,
+        "name": meta_tpl["name"],
+        "language": meta_tpl.get("language") or "en",
+        "body_text": parsed["body_text"],
+        "variables": variables,
+        "example_values": parsed["example_values"],
+        "footer_text": parsed["footer_text"],
+        "header_type": parsed["header_type"],
+        "buttons": parsed["buttons"],
+        "meta_template_id": req.meta_template_id,
+        "status": "approved",
+        "purpose": req.purpose,
+        "category": meta_tpl.get("category") or _DEFAULT_CATEGORY.get(req.purpose, "MARKETING"),
+    }
+    res = await _db(lambda: supabase.table("whatsapp_templates").insert(row).execute())
+    return res.data[0]
 
 
 @router.post("/{template_id}/media", dependencies=[Depends(require_internal_secret)])
