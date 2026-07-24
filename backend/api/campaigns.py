@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
-from shared.tenant_config import get_supabase_client, _db, _db_optional
+from shared.tenant_config import get_supabase_client, get_tenant_by_id, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
 from shared.whatsapp_send import send_whatsapp_template
 from shared.utils import now_local, to_db_timestamp, from_db_timestamp
@@ -95,14 +95,14 @@ async def send_feedback_requests():
     for settings in (settings_res.data or []):
         tenant_id = settings["tenant_id"]
         try:
-            tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
-                "wa_phone_number_id, wa_access_token"
-            ).eq("id", tenant_id).eq("is_active", True).maybe_single().execute())
-
-            if not tenant_res.data:
+            # get_tenant_by_id (not a raw table select) so wa_access_token
+            # comes back decrypted -- a raw select would hand this loop
+            # ciphertext instead of a usable Meta token.
+            tenant = await get_tenant_by_id(tenant_id)
+            if not tenant or not tenant.is_active:
                 continue
-            phone_number_id = tenant_res.data.get("wa_phone_number_id")
-            access_token    = tenant_res.data.get("wa_access_token")
+            phone_number_id = tenant.wa_phone_number_id
+            access_token    = tenant.wa_access_token
             if not phone_number_id or not access_token:
                 continue
 
@@ -461,16 +461,16 @@ async def send_recall_messages():
 
     for tenant_id, segments in segments_by_tenant.items():
         try:
-            _tid = tenant_id
-            tenant_res = await _db_optional(lambda: supabase.table("tenants").select(
-                "name, wa_phone_number_id, wa_access_token"
-            ).eq("id", _tid).eq("is_active", True).maybe_single().execute())
-            if not tenant_res.data:
+            # get_tenant_by_id (not a raw table select) so wa_access_token
+            # comes back decrypted -- a raw select would hand this loop
+            # ciphertext instead of a usable Meta token.
+            tenant = await get_tenant_by_id(tenant_id)
+            if not tenant or not tenant.is_active:
                 continue
 
-            clinic_name     = tenant_res.data.get("name", "our clinic")
-            phone_number_id = tenant_res.data.get("wa_phone_number_id")
-            access_token    = tenant_res.data.get("wa_access_token")
+            clinic_name     = tenant.name or "our clinic"
+            phone_number_id = tenant.wa_phone_number_id
+            access_token    = tenant.wa_access_token
             if not phone_number_id or not access_token:
                 continue
 

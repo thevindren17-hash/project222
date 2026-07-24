@@ -17,6 +17,8 @@ internal secret -- see shared/security.py.
 
 import logging
 import re
+import time
+from collections import defaultdict, deque
 from typing import List, Optional
 
 import httpx
@@ -33,6 +35,32 @@ from shared.whatsapp_templates import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Meta's own hard cap is 100 template creations/hour per WABA, but that's
+# Meta's backstop, not ours -- this keeps a bug or a compromised session from
+# hammering create/submit/media in a loop before it ever reaches Meta's limit.
+_MUTATION_WINDOW_SECONDS = 15 * 60
+_MUTATION_MAX_CALLS = 20
+_mutation_calls: dict = defaultdict(lambda: deque(maxlen=_MUTATION_MAX_CALLS))
+
+
+def _rate_limited(tenant_id: str) -> bool:
+    now = time.monotonic()
+    q = _mutation_calls[tenant_id]
+    while q and now - q[0] > _MUTATION_WINDOW_SECONDS:
+        q.popleft()
+    if len(q) >= _MUTATION_MAX_CALLS:
+        return True
+    q.append(now)
+    return False
+
+
+# WhatsApp itself rejects image headers above 5MB -- reject early server-side
+# rather than letting an oversized/wrong-type upload burn a Meta API round
+# trip (the <input accept="image/*"> on the frontend is a UI hint only, not
+# a security boundary).
+_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png"}
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def _slugify_template_name(name: str) -> str:
@@ -70,6 +98,8 @@ class TenantScopedRequest(BaseModel):
 
 @router.post("", dependencies=[Depends(require_internal_secret)])
 async def create_draft_template(req: CreateTemplateRequest):
+    if _rate_limited(req.tenant_id):
+        raise HTTPException(status_code=429, detail="Too many template requests -- please wait a few minutes and try again")
     if not req.body_text.strip():
         raise HTTPException(status_code=400, detail="Template body text is required")
 
@@ -99,6 +129,9 @@ async def list_templates(tenant_id: str):
 
 @router.post("/{template_id}/media", dependencies=[Depends(require_internal_secret)])
 async def attach_template_media(template_id: str, tenant_id: str = Form(...), file: UploadFile = File(...)):
+    if _rate_limited(tenant_id):
+        raise HTTPException(status_code=429, detail="Too many template requests -- please wait a few minutes and try again")
+
     supabase = get_supabase_client()
     tpl_res = await _db_optional(lambda: supabase.table("whatsapp_templates").select("*").eq(
         "id", template_id
@@ -110,8 +143,13 @@ async def attach_template_media(template_id: str, tenant_id: str = Form(...), fi
     if not tenant or not tenant.wa_access_token or not tenant.wa_phone_number_id:
         raise HTTPException(status_code=400, detail="WhatsApp is not connected for this clinic yet")
 
+    mime_type = file.content_type or ""
+    if mime_type not in _ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG or PNG images are allowed for a template header")
+
     file_bytes = await file.read()
-    mime_type = file.content_type or "image/jpeg"
+    if len(file_bytes) > _MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Image is too large -- WhatsApp allows up to 5MB for a template header")
     filename = file.filename or "header.jpg"
 
     try:
@@ -137,6 +175,9 @@ async def attach_template_media(template_id: str, tenant_id: str = Form(...), fi
 
 @router.post("/{template_id}/submit", dependencies=[Depends(require_internal_secret)])
 async def submit_template(template_id: str, req: TenantScopedRequest):
+    if _rate_limited(req.tenant_id):
+        raise HTTPException(status_code=429, detail="Too many template requests -- please wait a few minutes and try again")
+
     supabase = get_supabase_client()
     tpl_res = await _db_optional(lambda: supabase.table("whatsapp_templates").select("*").eq(
         "id", template_id

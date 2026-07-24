@@ -73,15 +73,22 @@ export default function WhatsAppPluginPage() {
       }
       setCredValid({ phone: valData.display_phone_number, name: valData.verified_name })
 
-      const derivedToken = `wa_${tenant.id.replace(/-/g, '').slice(0, 16)}`
-      const { error } = await supabase.from('tenants').update({
-        wa_phone_number: phoneNumber || valData.display_phone_number || null,
-        wa_phone_number_id: phoneNumberId,
-        wa_business_account_id: businessAccountId,
-        wa_access_token: accessToken,
-        wa_verify_token: derivedToken,
-      }).eq('id', tenant.id)
-      if (error) throw error
+      // Saved server-side (not a direct client update) so the access token
+      // gets encrypted before it's written -- the encryption key only
+      // exists on the server, never in the browser.
+      const saveRes = await fetch('/api/whatsapp/save-credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenant.id,
+          phone_number: phoneNumber || valData.display_phone_number || null,
+          phone_number_id: phoneNumberId,
+          business_account_id: businessAccountId,
+          access_token: accessToken,
+        }),
+      })
+      const saveData = await saveRes.json()
+      if (!saveRes.ok) throw new Error(saveData.error || 'Save failed')
     },
     onSuccess: () => {
       toast.success('WhatsApp connected')

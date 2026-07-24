@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from shared.tenant_config import get_supabase_client, _db, _db_optional
+from shared.tenant_config import get_supabase_client, get_tenant_by_id, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
 from shared.whatsapp_send import send_whatsapp_template
 from shared.utils import now_local, to_db_timestamp, from_db_timestamp
@@ -56,14 +56,18 @@ async def send_appointment_reminders():
     now = now_local()
 
     tenants_res = await _db(lambda: supabase.table("tenants").select(
-        "id, wa_phone_number_id, wa_access_token"
+        "id"
     ).eq("is_active", True).not_.is_("wa_phone_number_id", "null").execute())
 
     for tenant_row in (tenants_res.data or []):
         tenant_id = tenant_row["id"]
         try:
-            phone_number_id = tenant_row.get("wa_phone_number_id")
-            access_token = tenant_row.get("wa_access_token")
+            # Goes through get_tenant_by_id (not a raw table select) so
+            # wa_access_token comes back decrypted -- a raw select would
+            # hand this loop ciphertext instead of a usable Meta token.
+            tenant = await get_tenant_by_id(tenant_id)
+            phone_number_id = tenant.wa_phone_number_id if tenant else None
+            access_token = tenant.wa_access_token if tenant else None
             if not phone_number_id or not access_token:
                 continue
 

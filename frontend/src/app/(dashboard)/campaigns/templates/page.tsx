@@ -149,6 +149,14 @@ export default function MarketingTemplatesPage() {
   const [uploadingId, setUploadingId] = useState<string | null>(null)
   async function attachMedia(id: string, file: File) {
     if (!tenant) return
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      toast.error('Only JPEG or PNG images are allowed')
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image is too large — WhatsApp allows up to 5MB for a template header')
+      return
+    }
     setUploadingId(id)
     try {
       const form = new FormData()

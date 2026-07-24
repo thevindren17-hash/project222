@@ -369,6 +369,28 @@ async def _decrypt_provider_credentials(raw: Dict[str, Any]) -> Dict[str, Any]:
     return decrypted
 
 
+async def _decrypt_value(value: Optional[str]) -> Optional[str]:
+    """
+    Single-value counterpart to _decrypt_provider_credentials, for plain
+    columns (not JSONB) storing one 'enc:v1:'-prefixed secret directly --
+    e.g. tenants.wa_access_token. Same backward-compatible behavior: a
+    value with no prefix is legacy plaintext and is returned unchanged.
+    """
+    if not value or not value.startswith(_ENC_PREFIX) or not os.getenv("CREDENTIAL_ENCRYPTION_KEY"):
+        return value
+    enc_key = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
+    ciphertext = value[len(_ENC_PREFIX):]
+    supabase = get_supabase_client()
+    try:
+        result = await _db(lambda: supabase.rpc(
+            "decrypt_credential", {"ciphertext": ciphertext, "key": enc_key}
+        ).execute())
+        return result.data
+    except Exception as exc:
+        _logger.error(f"Failed to decrypt value: {exc}")
+        return None
+
+
 # ── Tenant loaders (async, cached) ────────────────────────────────────────────
 
 async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConfig]:
@@ -388,6 +410,7 @@ async def get_tenant_by_wa_phone_id(phone_number_id: str) -> Optional[TenantConf
         ).maybe_single().execute())
         config = _build_tenant_from_rows(result.data, settings_result.data or {})
         config.provider_credentials = await _decrypt_provider_credentials(config.provider_credentials)
+        config.wa_access_token = await _decrypt_value(config.wa_access_token)
         _cache_set(cache_key, config)
         _cache_set(str(result.data["id"]), config)
         return config
@@ -417,6 +440,7 @@ async def get_tenant_by_id(tenant_id: str) -> Optional[TenantConfig]:
         ).maybe_single().execute())
         config = _build_tenant_from_rows(result.data, settings_result.data or {})
         config.provider_credentials = await _decrypt_provider_credentials(config.provider_credentials)
+        config.wa_access_token = await _decrypt_value(config.wa_access_token)
         _cache_set(tenant_id, config)
         return config
     except Exception as e:
