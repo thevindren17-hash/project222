@@ -1213,33 +1213,65 @@ _CANCEL_KEYWORDS = ("cancel", "batal", "batalkan", "tak jadi", "cancel", "取消
 _RESCHEDULE_KEYWORDS = ("reschedule", "tukar masa", "ubah masa", "move", "change appointment", "改期", "tangguh")
 _ALWAYS_ON = {"get_faq", "escalate_to_human", "lookup_patient"}
 
+# Two independent signals that check_slots has already done its job this
+# conversation and doesn't need to run again -- either alone is somewhat
+# paraphrase-dependent on a model that doesn't phrase things identically
+# every time, so both are checked:
+# (1) slots were explicitly shown at some point earlier in the conversation.
+# (2) the assistant's MOST RECENT reply has already moved on to asking for
+#     booking details (name/phone) -- if it has, availability is clearly
+#     already settled, regardless of the exact wording used to show it.
+_SLOT_MARKERS = (
+    "available times", "available time", "available slot",
+    "slot is available", "slots are available",
+    "time is available", "times are available",
+    "masa yang tersedia", "tersedia pada",
+    "可用时间", "有空",
+    "pilih masa",
+)
+_DETAILS_STAGE_MARKERS = (
+    "full name", "your name", "phone number", "contact number", "whatsapp number",
+    "nama penuh", "nama anda", "nombor telefon", "nombor whatsapp",
+    "姓名", "电话号码", "联系电话",
+)
+
 
 def _select_tools(all_tools: list, history_messages: list, current_text: str, extra_always_on: set = frozenset()) -> list:
     all_text = " ".join(m["body"].lower() for m in history_messages) + " " + current_text.lower()
+    assistant_messages = [m["body"].lower() for m in history_messages if m["role"] == "assistant"]
+    assistant_text = " ".join(assistant_messages)
+    last_assistant_text = assistant_messages[-1] if assistant_messages else ""
 
     wants_cancel = any(kw in all_text for kw in _CANCEL_KEYWORDS)
     wants_reschedule = any(kw in all_text for kw in _RESCHEDULE_KEYWORDS)
+    slots_already_handled = (
+        any(marker in assistant_text for marker in _SLOT_MARKERS)
+        or any(marker in last_assistant_text for marker in _DETAILS_STAGE_MARKERS)
+    )
 
     # extra_always_on carries this tenant's own custom tool keys, which
     # can't be baked into the module-level _ALWAYS_ON set since they're
     # per-tenant and unknown ahead of time.
     allowed: set[str] = set(_ALWAYS_ON) | set(extra_always_on)
 
-    # check_slots and book_appointment are NOT mutually exclusive: a patient
-    # who gives every required detail (name, phone, service, date, time) in
-    # one message can have the model call book_appointment directly, without
-    # ever going through check_slots first -- the system prompt only
-    # requires having all 5 fields, not that check_slots ran. Previously
-    # book_appointment was only offered once a "slots shown" phrase was
-    # detected in the assistant's own prior reply -- a weak, paraphrase-
-    # dependent signal. When it hadn't fired yet but the model tried to book
-    # anyway, the provider hard-rejected the whole request with a 400 (the
-    # tool isn't in the declared tools list) instead of book_appointment's
-    # own graceful "I still need: ..." reply. Both are cheap, small schemas
-    # -- offering them together removes that crash risk for a negligible
-    # token cost.
-    allowed.add("check_slots")
+    # book_appointment is ALWAYS offered, unconditionally -- a patient who
+    # gives every required detail (name, phone, service, date, time) in one
+    # message can have the model book directly without ever going through
+    # check_slots first. This must never be gated behind any heuristic:
+    # when it was previously only offered once "slots shown" was detected,
+    # a model that tried to book before that fired got the whole request
+    # hard-rejected with a 400 (the tool wasn't in the declared tools list)
+    # instead of book_appointment's own graceful "I still need: ..." reply.
     allowed.add("book_appointment")
+    # check_slots, unlike book_appointment, is safe to remove once there's
+    # real evidence it already did its job -- keeping it always-on instead
+    # (as an earlier fix here did, to avoid the crash above) meant a model
+    # that doesn't perfectly follow "don't call check_slots again" kept
+    # re-calling it on every single turn even while just collecting name/
+    # phone, each one a real, slow (30-45s) round trip for information
+    # already shown minutes ago.
+    if not slots_already_handled:
+        allowed.add("check_slots")
 
     if wants_cancel:
         allowed.add("cancel_appointment")
