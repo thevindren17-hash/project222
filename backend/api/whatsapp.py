@@ -1167,18 +1167,6 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
 # ── Tool selection state machine ───────────────────────────────────────────────
 
-# Substring checks against the model's own (paraphrased) reply text — kept
-# as short, literal phrases rather than single words to avoid false
-# positives, but covering both word orders a model commonly uses
-# ("available slot(s)" vs "slot is/are available").
-_SLOT_MARKERS = (
-    "available times", "available time", "available slot",
-    "slot is available", "slots are available",
-    "time is available", "times are available",
-    "masa yang tersedia", "tersedia pada",
-    "可用时间", "有空",
-    "pilih masa",
-)
 _CANCEL_KEYWORDS = ("cancel", "batal", "batalkan", "tak jadi", "cancel", "取消")
 _RESCHEDULE_KEYWORDS = ("reschedule", "tukar masa", "ubah masa", "move", "change appointment", "改期", "tangguh")
 _ALWAYS_ON = {"get_faq", "escalate_to_human", "lookup_patient"}
@@ -1186,9 +1174,7 @@ _ALWAYS_ON = {"get_faq", "escalate_to_human", "lookup_patient"}
 
 def _select_tools(all_tools: list, history_messages: list, current_text: str, extra_always_on: set = frozenset()) -> list:
     all_text = " ".join(m["body"].lower() for m in history_messages) + " " + current_text.lower()
-    assistant_text = " ".join(m["body"].lower() for m in history_messages if m["role"] == "assistant")
 
-    slots_shown = any(marker in assistant_text for marker in _SLOT_MARKERS)
     wants_cancel = any(kw in all_text for kw in _CANCEL_KEYWORDS)
     wants_reschedule = any(kw in all_text for kw in _RESCHEDULE_KEYWORDS)
 
@@ -1197,10 +1183,21 @@ def _select_tools(all_tools: list, history_messages: list, current_text: str, ex
     # per-tenant and unknown ahead of time.
     allowed: set[str] = set(_ALWAYS_ON) | set(extra_always_on)
 
-    if slots_shown:
-        allowed.add("book_appointment")
-    else:
-        allowed.add("check_slots")
+    # check_slots and book_appointment are NOT mutually exclusive: a patient
+    # who gives every required detail (name, phone, service, date, time) in
+    # one message can have the model call book_appointment directly, without
+    # ever going through check_slots first -- the system prompt only
+    # requires having all 5 fields, not that check_slots ran. Previously
+    # book_appointment was only offered once a "slots shown" phrase was
+    # detected in the assistant's own prior reply -- a weak, paraphrase-
+    # dependent signal. When it hadn't fired yet but the model tried to book
+    # anyway, the provider hard-rejected the whole request with a 400 (the
+    # tool isn't in the declared tools list) instead of book_appointment's
+    # own graceful "I still need: ..." reply. Both are cheap, small schemas
+    # -- offering them together removes that crash risk for a negligible
+    # token cost.
+    allowed.add("check_slots")
+    allowed.add("book_appointment")
 
     if wants_cancel:
         allowed.add("cancel_appointment")
