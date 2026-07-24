@@ -1414,6 +1414,7 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
             new_time=args.get("new_time", ""),
             booking_id=args.get("booking_id"),
             custom_fields=reschedule_custom_fields or None,
+            tenant_config=tenant,
         )
         if result["success"]:
             from datetime import datetime as dt

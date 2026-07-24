@@ -246,6 +246,8 @@ class TenantConfig:
     custom_booking_fields: List[Dict[str, str]] = field(default_factory=list)
     base_field_labels: Dict[str, str] = field(default_factory=dict)
     custom_tools: List[Dict[str, Any]] = field(default_factory=list)
+    appointment_duration_minutes: int = 30
+    booking_buffer_minutes: int = 0
 
     def __post_init__(self):
         if not self.system_prompt:
@@ -329,6 +331,8 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         custom_booking_fields=settings.get("custom_booking_fields") or [],
         base_field_labels=settings.get("base_field_labels") or {},
         custom_tools=settings.get("custom_tools") or [],
+        appointment_duration_minutes=settings.get("appointment_duration_minutes") or 30,
+        booking_buffer_minutes=settings.get("booking_buffer_minutes") or 0,
     )
 
 

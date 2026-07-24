@@ -358,6 +358,7 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_hi
             new_date=new_dt.strftime("%Y-%m-%d"),
             new_time=new_dt.strftime("%H:%M"),
             booking_id=args.get("booking_id"),
+            tenant_config=tenant,
         )
         if res.get("success"):
             new_time = res.get("new_time", new_dt.strftime("%A, %d %b %Y at %H:%M"))

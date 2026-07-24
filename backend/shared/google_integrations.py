@@ -138,6 +138,7 @@ class GoogleCalendarIntegration:
         date: datetime,
         duration_minutes: int = 30,
         business_hours: Optional[Dict[str, Any]] = None,
+        buffer_minutes: int = 0,
     ) -> List[Dict[str, datetime]]:
         if not business_hours:
             business_hours = {"open": "09:00", "close": "18:00"}
@@ -188,7 +189,9 @@ class GoogleCalendarIntegration:
             )
             if not overlap:
                 free_slots.append({"start": current, "end": slot_end})
-            current += timedelta(minutes=duration_minutes)
+            # Next slot starts after this one's duration AND the required
+            # gap, not immediately back-to-back.
+            current += timedelta(minutes=duration_minutes + buffer_minutes)
 
         return free_slots
 

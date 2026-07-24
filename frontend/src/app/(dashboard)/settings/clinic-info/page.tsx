@@ -41,10 +41,14 @@ export default function ClinicInfoPage() {
     sun: { open: '09:00', close: '18:00', closed: true },
   })
   const [faq, setFaq] = useState<Array<{ q: string; a: string }>>([])
+  const [appointmentDuration, setAppointmentDuration] = useState(30)
+  const [bookingBuffer, setBookingBuffer] = useState(0)
 
   useEffect(() => {
     if (settings?.business_hours) setHours(settings.business_hours)
     if (settings?.faq) setFaq(settings.faq)
+    if (settings?.appointment_duration_minutes) setAppointmentDuration(settings.appointment_duration_minutes)
+    if (settings?.booking_buffer_minutes != null) setBookingBuffer(settings.booking_buffer_minutes)
   }, [settings])
 
   const saveMutation = useMutation({
@@ -54,6 +58,8 @@ export default function ClinicInfoPage() {
         tenant_id: tenant.id,
         business_hours: hours,
         faq,
+        appointment_duration_minutes: appointmentDuration,
+        booking_buffer_minutes: bookingBuffer,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
     },
@@ -103,6 +109,34 @@ export default function ClinicInfoPage() {
               )}
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Appointment Booking</CardTitle>
+          <CardDescription>How long each appointment takes, and the gap required between back-to-back bookings</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Label className="w-48 text-sm">Appointment duration</Label>
+            <div className="flex items-center gap-2">
+              <Input type="number" min={5} step={5} value={appointmentDuration} className="w-24"
+                onChange={(e) => setAppointmentDuration(Math.max(5, parseInt(e.target.value) || 30))} />
+              <span className="text-sm text-muted-foreground">minutes</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <Label className="w-48 text-sm">Buffer between bookings</Label>
+            <div className="flex items-center gap-2">
+              <Input type="number" min={0} step={5} value={bookingBuffer} className="w-24"
+                onChange={(e) => setBookingBuffer(Math.max(0, parseInt(e.target.value) || 0))} />
+              <span className="text-sm text-muted-foreground">minutes</span>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            E.g. a 30-minute appointment with a 10-minute buffer means the next slot the AI offers starts 40 minutes after the last one — leaving room to absorb a slightly-over-running visit.
+          </p>
         </CardContent>
       </Card>
 

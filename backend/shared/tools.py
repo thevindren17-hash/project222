@@ -80,6 +80,8 @@ async def book_appointment(
     custom_fields: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     supabase = get_supabase_client()
+    duration = getattr(tenant_config, "appointment_duration_minutes", None) or 30
+    buffer_min = getattr(tenant_config, "booking_buffer_minutes", None) or 0
 
     if tenant_config:
         validation = validate_booking_time(
@@ -96,8 +98,11 @@ async def book_appointment(
             "message": "You've reached the maximum bookings for today. Please call us for additional appointments.",
         }
 
-    time_start = to_db_timestamp(scheduled_at - timedelta(minutes=15))
-    time_end = to_db_timestamp(scheduled_at + timedelta(minutes=45))
+    # Pre-flight conflict window: does any existing booking's start time fall
+    # within [this booking's start - buffer, this booking's end + buffer]?
+    # Not atomic with the insert below -- see the exclusion-constraint note.
+    time_start = to_db_timestamp(scheduled_at - timedelta(minutes=buffer_min))
+    time_end = to_db_timestamp(scheduled_at + timedelta(minutes=duration + buffer_min))
     existing = await _db(lambda: supabase.table("bookings").select("id, scheduled_at").eq(
         "tenant_id", tenant_id
     ).in_("status", ["pending", "confirmed"]).gte(
@@ -157,7 +162,7 @@ async def book_appointment(
             cal_result = await gcal.create_appointment(
                 summary=f"{service_type} - {contact_name}",
                 start_time=scheduled_at,
-                end_time=scheduled_at + timedelta(minutes=30),
+                end_time=scheduled_at + timedelta(minutes=duration),
                 patient_name=contact_name,
                 patient_phone=contact_phone,
                 service_type=service_type,
@@ -202,6 +207,9 @@ async def check_slots(
     date: datetime,
     tenant_config: TenantConfig,
 ) -> Dict[str, Any]:
+    duration = tenant_config.appointment_duration_minutes or 30
+    buffer_min = tenant_config.booking_buffer_minutes or 0
+
     gcal = await get_google_calendar(tenant_id)
     if gcal:
         day_name = date.strftime("%a").lower()
@@ -209,7 +217,8 @@ async def check_slots(
             day_name, {"open": "09:00", "close": "18:00"}
         )
         free_slots = await gcal.find_free_slots(
-            date=date, duration_minutes=30, business_hours=business_hours
+            date=date, duration_minutes=duration, business_hours=business_hours,
+            buffer_minutes=buffer_min,
         )
         return {
             "success": True,
@@ -243,12 +252,12 @@ async def check_slots(
     available = []
     current = datetime.strptime(hours["open"], "%H:%M")
     end = datetime.strptime(hours["close"], "%H:%M")
-    while current < end:
+    while current + timedelta(minutes=duration) <= end:
         time_str = current.strftime("%H:%M")
         if time_str not in booked_times:
             slot_dt = date.replace(hour=current.hour, minute=current.minute)
             available.append({"time": time_str, "datetime": slot_dt.isoformat()})
-        current += timedelta(minutes=30)
+        current += timedelta(minutes=duration + buffer_min)
 
     return {
         "success": True,
@@ -336,12 +345,14 @@ async def reschedule_appointment(
     new_time: str,
     booking_id: Optional[str] = None,
     custom_fields: Optional[Dict[str, str]] = None,
+    tenant_config: Optional[TenantConfig] = None,
 ) -> Dict[str, Any]:
     # See the same note in cancel_appointment — contact_id is always the
     # server-resolved current contact, never LLM-supplied, and booking_id
     # (if given) is scoped by it too.
     from shared.utils import parse_datetime
     supabase = get_supabase_client()
+    duration = getattr(tenant_config, "appointment_duration_minutes", None) or 30
     new_scheduled_at = parse_datetime(new_date, new_time)
     if not new_scheduled_at:
         return {"success": False, "error": "Invalid date or time format"}
@@ -372,7 +383,7 @@ async def reschedule_appointment(
     if calendar_event_id:
         gcal = await get_google_calendar(tenant_id)
         if gcal:
-            end_time = new_scheduled_at + timedelta(minutes=30)
+            end_time = new_scheduled_at + timedelta(minutes=duration)
             await gcal.update_appointment(
                 event_id=calendar_event_id,
                 updates={
