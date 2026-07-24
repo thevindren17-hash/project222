@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,15 +8,17 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
 import { format, parseISO } from 'date-fns'
-import { Bell, Star, Loader2 } from 'lucide-react'
+import { Bell, Star, Loader2, MessageCircleWarning } from 'lucide-react'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { BOOKING_STATUS } from '@/lib/booking-status'
 import type { Booking } from '@/lib/types'
 
 export default function AppointmentsPage() {
   const [statusFilter, setStatusFilter] = useState('all')
+  const [awaitingReplyOnly, setAwaitingReplyOnly] = useState(false)
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
   const queryClient = useQueryClient()
@@ -33,6 +35,41 @@ export default function AppointmentsPage() {
       return (data || []) as Booking[]
     },
   })
+
+  // "Did the patient reply since we last messaged them?" — derived from the
+  // most recent message per contact (any kind: reminder, AI reply, etc.),
+  // not just reminder-specific tracking. If the last message in their thread
+  // was from us (role='assistant'), they haven't followed up yet.
+  const contactIds = useMemo(
+    () => [...new Set((bookings || []).map((b) => b.contact_id).filter(Boolean))],
+    [bookings]
+  )
+  const { data: lastMessageByContact } = useQuery({
+    queryKey: ['appointments-last-message', contactIds],
+    queryFn: async () => {
+      const tenant = await getCurrentTenant()
+      if (!tenant || contactIds.length === 0) return {}
+      const { data } = await supabase.from('messages')
+        .select('contact_id, role, created_at')
+        .eq('tenant_id', tenant.id)
+        .in('contact_id', contactIds)
+        .order('created_at', { ascending: false })
+        .limit(1000)
+      const map: Record<string, { role: string; created_at: string }> = {}
+      for (const m of data || []) {
+        if (!map[m.contact_id]) map[m.contact_id] = { role: m.role, created_at: m.created_at }
+      }
+      return map
+    },
+    enabled: contactIds.length > 0,
+  })
+
+  function isAwaitingReply(b: Booking): boolean {
+    const last = lastMessageByContact?.[b.contact_id]
+    return !!last && last.role === 'assistant'
+  }
+
+  const visibleBookings = awaitingReplyOnly ? (bookings || []).filter(isAwaitingReply) : bookings
 
   async function sendOneOff(booking: any, type: 'reminder' | 'feedback') {
     const tenant = await getCurrentTenant()
@@ -73,19 +110,25 @@ export default function AppointmentsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Appointments</h1>
-          <p className="text-muted-foreground">{bookings?.length || 0} total appointments</p>
+          <p className="text-muted-foreground">{visibleBookings?.length || 0} of {bookings?.length || 0} appointments</p>
         </div>
-        <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
-          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="confirmed">Confirmed</SelectItem>
-            <SelectItem value="cancelled">Cancelled</SelectItem>
-            <SelectItem value="completed">Completed</SelectItem>
-            <SelectItem value="no_show">No-Show</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch checked={awaitingReplyOnly} onCheckedChange={setAwaitingReplyOnly} />
+            <span className="text-sm text-muted-foreground whitespace-nowrap">Awaiting reply only</span>
+          </div>
+          <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
+            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="confirmed">Confirmed</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="no_show">No-Show</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <Card>
@@ -103,20 +146,30 @@ export default function AppointmentsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {bookings?.length === 0 && (
+              {visibleBookings?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">No appointments found</TableCell>
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                    {awaitingReplyOnly ? 'No patients awaiting reply' : 'No appointments found'}
+                  </TableCell>
                 </TableRow>
               )}
-              {bookings?.map((b: any) => {
+              {visibleBookings?.map((b: any) => {
                 const isCancelled = b.status === 'cancelled'
                 const isPast = new Date(b.scheduled_at) < new Date()
                 const reminderKey = `${b.id}:reminder`
                 const feedbackKey = `${b.id}:feedback`
+                const awaitingReply = isAwaitingReply(b)
                 return (
                 <TableRow key={b.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedBooking(b)}>
                   <TableCell>
-                    <p className="font-medium">{b.contact?.name || 'Unknown'}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-medium">{b.contact?.name || 'Unknown'}</p>
+                      {awaitingReply && (
+                        <span title="Patient hasn't replied since our last message">
+                          <MessageCircleWarning className="h-3.5 w-3.5 text-amber-500" />
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground">{b.contact?.phone}</p>
                   </TableCell>
                   <TableCell>{b.service_type}</TableCell>
