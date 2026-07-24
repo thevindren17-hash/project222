@@ -3,6 +3,11 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-dotenv==1.0.0
 httpx>=0.26.0
+# Required by FastAPI's Form(...)/File(...)/UploadFile parsing (used by the
+# template-image-upload endpoint in api/templates.py) -- FastAPI raises at
+# request time, not at import time, if this is missing, so it's easy to miss
+# in local testing and only surface once a real upload hits production.
+python-multipart>=0.0.9
 
 # ── Database ───────────────────────────────────────────────────────────────────
 supabase==2.15.3

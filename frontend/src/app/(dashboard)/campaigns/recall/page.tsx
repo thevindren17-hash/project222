@@ -22,7 +22,10 @@ interface RecallSegment {
   interval_months: number
   message_template: string | null
   enabled: boolean
+  whatsapp_template_id: string | null
 }
+
+interface ApprovedTemplate { id: string; name: string }
 
 const DEFAULT_RECALL_PREVIEW =
   "Hi {name}! 👋 It's been a while since your last visit at {clinic}. We'd love to see you again! Just reply to book your next appointment. 😊"
@@ -50,6 +53,21 @@ export default function PatientRecallSystemPage() {
     enabled: !!tenant,
   })
 
+  // Recall messages must use a Meta-approved template (recipients are, by
+  // definition, dormant patients outside the 24h window) -- see Marketing
+  // Templates page. Only approved ones are selectable here.
+  const { data: approvedTemplates } = useQuery({
+    queryKey: ['whatsapp-templates', tenant?.id, 'approved'],
+    queryFn: async () => {
+      if (!tenant) return []
+      const res = await fetch(`/api/templates?tenant_id=${tenant.id}`)
+      const data = await res.json()
+      const list = (Array.isArray(data) ? data : []) as { id: string; name: string; status: string }[]
+      return list.filter((t) => t.status === 'approved') as ApprovedTemplate[]
+    },
+    enabled: !!tenant,
+  })
+
   useEffect(() => {
     if (!fetchedSegments) return
     // Pin the default (catch-all) segment first so it's always visible.
@@ -72,6 +90,7 @@ export default function PatientRecallSystemPage() {
         interval_months: segment.interval_months,
         message_template: segment.message_template?.trim() || null,
         enabled: segment.enabled,
+        whatsapp_template_id: segment.whatsapp_template_id || null,
       }, { onConflict: 'id' })
       if (error) throw error
     },
@@ -103,6 +122,7 @@ export default function PatientRecallSystemPage() {
       interval_months: 6,
       message_template: '',
       enabled: false,
+      whatsapp_template_id: null,
     }
     setSegments((prev) => [...prev, draft])
   }
@@ -116,6 +136,7 @@ export default function PatientRecallSystemPage() {
       interval_months: 6,
       message_template: '',
       enabled: false,
+      whatsapp_template_id: null,
     }
     setSegments([draft])
   }
@@ -226,12 +247,32 @@ export default function PatientRecallSystemPage() {
               </div>
             </div>
 
+            <div className="space-y-1.5">
+              <Label className="text-sm font-medium">Approved marketing template to send</Label>
+              <Select
+                value={segment.whatsapp_template_id || ''}
+                onValueChange={(v) => updateSegment(segment.id, { whatsapp_template_id: v || null })}
+              >
+                <SelectTrigger className="w-full"><SelectValue placeholder="— select an approved template —" /></SelectTrigger>
+                <SelectContent>
+                  {(approvedTemplates || []).map((t) => (
+                    <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Recall messages go to patients who haven&apos;t visited in months — WhatsApp requires a Meta-approved template for that.
+                Create and get one approved on the <a href="/campaigns/templates" className="underline">Marketing Templates</a> page first.
+                {!approvedTemplates?.length && ' You have no approved templates yet — recall sends will be skipped until one is linked.'}
+              </p>
+            </div>
+
             <div className="text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
-              Available placeholders: <code className="font-mono">{'{name}'}</code> <code className="font-mono">{'{clinic}'}</code> <code className="font-mono">{'{service}'}</code>
+              Preview placeholders (for the log only, not what&apos;s actually sent): <code className="font-mono">{'{name}'}</code> <code className="font-mono">{'{clinic}'}</code> <code className="font-mono">{'{service}'}</code>
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">Re-engagement message</Label>
+              <Label className="text-xs">Re-engagement message (preview / internal log text)</Label>
               <Textarea
                 rows={4}
                 placeholder={DEFAULT_RECALL_PREVIEW}
@@ -239,7 +280,7 @@ export default function PatientRecallSystemPage() {
                 onChange={(e) => updateSegment(segment.id, { message_template: e.target.value })}
                 className="text-sm resize-none"
               />
-              <p className="text-[11px] text-muted-foreground">Leave blank to use the default message. The AI will handle any replies and book appointments normally.</p>
+              <p className="text-[11px] text-muted-foreground">This text is only shown in your message history for readability — the actual WhatsApp message always uses the approved template selected above.</p>
             </div>
 
             <Button

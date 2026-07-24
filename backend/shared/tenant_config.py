@@ -229,6 +229,7 @@ class TenantConfig:
     wa_phone_number_id: Optional[str] = None
     wa_access_token: Optional[str] = None
     wa_verify_token: Optional[str] = None
+    wa_business_account_id: Optional[str] = None
     google_calendar_id: Optional[str] = None
     google_sheets_id: Optional[str] = None
     google_sheets_tab: Optional[str] = None
@@ -314,6 +315,7 @@ def _build_tenant_from_rows(tenant_row: dict, settings_row: dict) -> TenantConfi
         wa_phone_number_id=tenant_row.get("wa_phone_number_id"),
         wa_access_token=tenant_row.get("wa_access_token"),
         wa_verify_token=tenant_row.get("wa_verify_token"),
+        wa_business_account_id=tenant_row.get("wa_business_account_id"),
         google_calendar_id=settings.get("google_calendar_id"),
         google_sheets_id=settings.get("google_sheets_id"),
         google_sheets_tab=settings.get("google_sheets_tab"),

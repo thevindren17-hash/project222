@@ -26,6 +26,7 @@ if os.getenv("SENTRY_DSN"):
 from api.whatsapp import router as whatsapp_router
 from api.integrations import router as integrations_router
 from api.agent import router as agent_router
+from api.templates import router as templates_router, poll_pending_template_statuses
 from api.reminders import scheduler, send_appointment_reminders
 from api.campaigns import send_feedback_requests, send_recall_messages, cleanup_expired_campaigns
 from api.no_show import auto_complete_bookings
@@ -73,6 +74,14 @@ async def lifespan(app: FastAPI):
         id="auto_complete_bookings",
         replace_existing=True,
     )
+    scheduler.add_job(
+        poll_pending_template_statuses,
+        "interval",
+        minutes=30,
+        next_run_time=datetime.now(),
+        id="poll_template_statuses",
+        replace_existing=True,
+    )
     scheduler.start()
     yield
     scheduler.shutdown(wait=True)
@@ -96,6 +105,7 @@ app.add_middleware(
 app.include_router(whatsapp_router, prefix="/webhook", tags=["WhatsApp"])
 app.include_router(integrations_router, prefix="/api/integrations", tags=["Integrations"])
 app.include_router(agent_router, prefix="/api/agent", tags=["Agent"])
+app.include_router(templates_router, prefix="/api/templates", tags=["Templates"])
 
 
 @app.get("/")
@@ -117,6 +127,7 @@ _JOBS = {
     "recall":    send_recall_messages,
     "cleanup":   cleanup_expired_campaigns,
     "no_show":   auto_complete_bookings,
+    "templates": poll_pending_template_statuses,
 }
 
 _trigger_calls: dict = defaultdict(lambda: deque(maxlen=20))

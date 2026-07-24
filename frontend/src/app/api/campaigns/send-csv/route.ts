@@ -8,14 +8,17 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-type CampaignType = 'reminder' | 'feedback' | 'recall'
+type CampaignType = 'reminder' | 'feedback' | 'recall' | 'marketing'
 
 // How far back to look for an existing campaign before treating a contact as
 // "already contacted" and skipping them. Recall uses the clinic's own
-// configured interval_months instead of a fixed window.
+// configured interval_months instead of a fixed window. Marketing shares
+// feedback's window -- just enough to stop an accidental double-upload of
+// the same spreadsheet, not to block a genuinely new campaign days later.
 const DEDUP_HOURS: Record<Exclude<CampaignType, 'recall'>, number> = {
   reminder: 6,
   feedback: 24,
+  marketing: 24,
 }
 
 // Bulk sends can each dispatch hundreds of real WhatsApp messages, so this
@@ -80,12 +83,29 @@ function buildMessage(template: string, fields: Record<string, string>): string 
   return message
 }
 
+// Marketing templates use Meta's own {{1}}, {{2}}... positional syntax
+// (not the {key} syntax the other campaign types use for their internal
+// log-only wording) -- variables[] gives the friendly-name-to-position
+// mapping stored on the whatsapp_templates row at creation time.
+function buildMarketingMessage(bodyText: string, variables: string[], contact: Record<string, string>): string {
+  let message = bodyText
+  variables.forEach((v, i) => {
+    message = message.replaceAll(`{{${i + 1}}}`, contact[v] || '')
+  })
+  return message
+}
+
 type SendOutcome = { status: 'sent' | 'skipped' | 'failed'; reason?: string }
+
+interface MarketingTemplateInfo {
+  variables: string[]
+  header_media_id: string | null
+}
 
 async function sendOneCampaignMessage(params: {
   tenant_id: string
   type: CampaignType
-  contact: { name: string; phone: string; service?: string; date?: string; time?: string }
+  contact: Record<string, string> & { name: string; phone: string; service?: string; date?: string; time?: string }
   phone_number_id: string
   access_token: string
   clinic_name: string
@@ -93,23 +113,27 @@ async function sendOneCampaignMessage(params: {
   interval_months: number
   templateName?: string | null
   templateLanguage?: string
+  marketingTemplate?: MarketingTemplateInfo | null
 }): Promise<SendOutcome> {
   const {
     tenant_id, type, contact, phone_number_id, access_token, clinic_name,
-    message_template, interval_months, templateName, templateLanguage,
+    message_template, interval_months, templateName, templateLanguage, marketingTemplate,
   } = params
 
   const phone = normalizePhone(contact.phone)
   if (!phone) return { status: 'failed', reason: `Invalid phone number: "${contact.phone}"` }
 
   const name = (contact.name || '').trim() || 'there'
-  const message = buildMessage(message_template, {
-    name,
-    clinic: clinic_name,
-    service: contact.service || '',
-    date: contact.date || '',
-    time: contact.time || '',
-  })
+  const message =
+    type === 'marketing' && marketingTemplate
+      ? buildMarketingMessage(message_template, marketingTemplate.variables, contact)
+      : buildMessage(message_template, {
+          name,
+          clinic: clinic_name,
+          service: contact.service || '',
+          date: contact.date || '',
+          time: contact.time || '',
+        })
 
   try {
     // Upsert contact — unique on (tenant_id, phone)
@@ -142,14 +166,16 @@ async function sendOneCampaignMessage(params: {
 
     if (existing) return { status: 'skipped', reason: 'Already sent to this contact recently' }
 
-    // Send via Meta API — reminder/feedback are always outside the 24h
-    // customer service window, so they must use an approved template.
-    // Recall stays on free-text until its template is approved (templateName
-    // is null in that case).
+    // Send via Meta API — reminder/feedback/marketing are always outside
+    // the 24h customer service window, so they must use an approved
+    // template. Recall stays on free-text until its template is approved
+    // (templateName is null in that case).
     const templateParams =
-      type === 'reminder'
-        ? [name, contact.service || '', contact.date || '', contact.time || '']
-        : [name, contact.service || '']
+      type === 'marketing' && marketingTemplate
+        ? marketingTemplate.variables.map((v) => contact[v] || '')
+        : type === 'reminder'
+          ? [name, contact.service || '', contact.date || '', contact.time || '']
+          : [name, contact.service || '']
 
     const waBody = templateName
       ? {
@@ -160,6 +186,9 @@ async function sendOneCampaignMessage(params: {
             name: templateName,
             language: { code: templateLanguage || 'en' },
             components: [
+              ...(type === 'marketing' && marketingTemplate?.header_media_id
+                ? [{ type: 'header', parameters: [{ type: 'image', image: { id: marketingTemplate.header_media_id } }] }]
+                : []),
               {
                 type: 'body',
                 parameters: templateParams.map((p) => ({ type: 'text', text: String(p) })),
@@ -244,7 +273,9 @@ async function sendOneCampaignMessage(params: {
 // `templateName` above. These mirror that approved wording exactly so the
 // log never shows text the patient didn't actually receive. Recall is the
 // one type still genuinely sent as free text, so its wording here is real.
-const DEFAULT_TEMPLATES: Record<CampaignType, string> = {
+// Marketing has no static default -- its body always comes from the chosen
+// whatsapp_templates row, passed in as message_template by the caller.
+const DEFAULT_TEMPLATES: Record<Exclude<CampaignType, 'marketing'>, string> = {
   reminder:
     'Hi {name},\n\nThis is a reminder that you have a {service} appointment on {date} at {time}.\n\nReply CANCEL if you need to reschedule.',
   feedback:
@@ -255,19 +286,23 @@ const DEFAULT_TEMPLATES: Record<CampaignType, string> = {
 
 export async function POST(req: NextRequest) {
   try {
-    const { tenant_id, type, contacts, message_template, interval_months } = await req.json() as {
+    const { tenant_id, type, contacts, message_template, interval_months, template_id } = await req.json() as {
       tenant_id: string
       type: CampaignType
-      contacts: { name: string; phone: string; service?: string; date?: string; time?: string }[]
+      contacts: (Record<string, string> & { name: string; phone: string; service?: string; date?: string; time?: string })[]
       message_template?: string
       interval_months?: number
+      template_id?: string
     }
 
     if (!tenant_id || !type || !Array.isArray(contacts) || contacts.length === 0) {
       return NextResponse.json({ error: 'tenant_id, type, and contacts are required' }, { status: 400 })
     }
-    if (!['reminder', 'feedback', 'recall'].includes(type)) {
+    if (!['reminder', 'feedback', 'recall', 'marketing'].includes(type)) {
       return NextResponse.json({ error: 'Invalid campaign type' }, { status: 400 })
+    }
+    if (type === 'marketing' && !template_id) {
+      return NextResponse.json({ error: 'template_id is required for marketing campaigns' }, { status: 400 })
     }
 
     if (!await verifyTenantAccess(tenant_id)) {
@@ -303,12 +338,37 @@ export async function POST(req: NextRequest) {
       .eq('tenant_id', tenant_id)
       .maybeSingle()
 
+    // Marketing's template name/language/variables come from the specific
+    // whatsapp_templates row the clinic picked, not a fixed tenant setting —
+    // must be Meta-approved before it can actually be used to send.
+    let marketingTemplate: MarketingTemplateInfo | null = null
+    let marketingTemplateName: string | null = null
+    let marketingTemplateLanguage: string | null = null
+    if (type === 'marketing') {
+      const { data: tpl } = await supabaseAdmin
+        .from('whatsapp_templates')
+        .select('name, language, status, variables, header_media_id')
+        .eq('id', template_id)
+        .eq('tenant_id', tenant_id)
+        .maybeSingle()
+      if (!tpl) {
+        return NextResponse.json({ error: 'Template not found' }, { status: 404 })
+      }
+      if (tpl.status !== 'approved') {
+        return NextResponse.json({ error: `This template is "${tpl.status}", not approved yet — Meta must approve it before you can send a campaign` }, { status: 400 })
+      }
+      marketingTemplate = { variables: tpl.variables || [], header_media_id: tpl.header_media_id }
+      marketingTemplateName = tpl.name
+      marketingTemplateLanguage = tpl.language
+    }
+
     const templateNameByType: Record<CampaignType, string | null> = {
       reminder: tenantSettings?.reminder_template_name || 'appointment_reminder',
       feedback: tenantSettings?.feedback_template_name || 'feedback_request',
       recall: tenantSettings?.recall_template_name || null,
+      marketing: marketingTemplateName,
     }
-    const templateLanguage = tenantSettings?.whatsapp_template_language || 'en'
+    const templateLanguage = type === 'marketing' ? (marketingTemplateLanguage || 'en') : (tenantSettings?.whatsapp_template_language || 'en')
 
     const results = { sent: 0, skipped: 0, failed: 0 }
     // Per-contact detail for skipped/failed rows — a bare aggregate count
@@ -330,10 +390,11 @@ export async function POST(req: NextRequest) {
             phone_number_id: tenant.wa_phone_number_id!,
             access_token: tenant.wa_access_token!,
             clinic_name: tenant.name,
-            message_template: message_template || DEFAULT_TEMPLATES[type],
+            message_template: message_template || (type === 'marketing' ? '' : DEFAULT_TEMPLATES[type]),
             interval_months: interval_months || 6,
             templateName: templateNameByType[type],
             templateLanguage,
+            marketingTemplate,
           })
         )
       )

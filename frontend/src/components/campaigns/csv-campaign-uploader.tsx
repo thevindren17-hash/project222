@@ -9,7 +9,7 @@ import { Loader2, Send } from 'lucide-react'
 const NAME_CANDIDATES  = ['name', 'nama', 'patient', 'full name', 'patient name', 'pesakit']
 const PHONE_CANDIDATES = ['phone', 'mobile', 'tel', 'contact', 'number', 'no', 'telefon', 'hp', 'handphone']
 
-export type CampaignType = 'reminder' | 'feedback' | 'recall'
+export type CampaignType = 'reminder' | 'feedback' | 'recall' | 'marketing'
 
 export interface ExtraColumn {
   key: string
@@ -36,6 +36,7 @@ export default function CsvCampaignUploader({
   messageTemplate,
   extraColumns = [],
   intervalMonths,
+  templateId,
 }: {
   type: CampaignType
   tenantId: string
@@ -43,6 +44,8 @@ export default function CsvCampaignUploader({
   messageTemplate: string
   extraColumns?: ExtraColumn[]
   intervalMonths?: number
+  /** Required when type === 'marketing' -- identifies which approved whatsapp_templates row to send. */
+  templateId?: string
 }) {
   const [csvHeaders, setCsvHeaders] = useState<string[]>([])
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([])
@@ -137,6 +140,7 @@ export default function CsvCampaignUploader({
           contacts,
           message_template: messageTemplate.trim() || undefined,
           interval_months: intervalMonths,
+          template_id: templateId,
         }),
       })
       const data = await res.json()

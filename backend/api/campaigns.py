@@ -435,12 +435,29 @@ async def send_recall_messages():
     now_clinic = now_local()
 
     segments_res = await _db(lambda: supabase.table("recall_segments").select(
-        "id, tenant_id, service_type, is_default, interval_months, message_template"
+        "id, tenant_id, service_type, is_default, interval_months, message_template, whatsapp_template_id"
     ).eq("enabled", True).execute())
 
     segments_by_tenant: dict = defaultdict(list)
     for seg in (segments_res.data or []):
         segments_by_tenant[seg["tenant_id"]].append(seg)
+
+    # Every recall recipient is by definition a dormant patient outside
+    # WhatsApp's 24h customer-service window -- Meta requires a pre-approved
+    # template for that, and rejects plain text sends outright. Batch-load
+    # every segment's linked template (only approved ones are usable) once,
+    # up front, instead of a per-contact lookup.
+    _template_ids = list({
+        seg["whatsapp_template_id"]
+        for segs in segments_by_tenant.values() for seg in segs
+        if seg.get("whatsapp_template_id")
+    })
+    templates_by_id: dict = {}
+    if _template_ids:
+        templates_res = await _db(lambda: supabase.table("whatsapp_templates").select(
+            "id, name, language, status, variables, header_media_id"
+        ).in_("id", _template_ids).eq("status", "approved").execute())
+        templates_by_id = {t["id"]: t for t in (templates_res.data or [])}
 
     for tenant_id, segments in segments_by_tenant.items():
         try:
@@ -537,15 +554,33 @@ async def send_recall_messages():
 
                 name    = contact_res.data.get("name") or "there"
                 service = latest_by_contact[contact_id].get("service_type") or ""
-                tmpl    = segment.get("message_template") or DEFAULT_RECALL_MSG
-                message = (
-                    tmpl.replace("{name}", name)
-                    .replace("{clinic}", clinic_name)
-                    .replace("{service}", service)
-                )
+
+                wa_tmpl = templates_by_id.get(segment.get("whatsapp_template_id") or "")
+                if not wa_tmpl:
+                    # No approved marketing template linked to this segment
+                    # yet -- skip rather than attempt a freeform send Meta
+                    # will reject anyway. The clinic sets this up once in
+                    # the dashboard's Marketing Templates page.
+                    logger.info(
+                        f"Recall skipped, no approved template linked | tenant={tenant_id} | "
+                        f"contact={contact_id} | segment={segment.get('id')}"
+                    )
+                    continue
+
+                available_values = {"name": name, "clinic": clinic_name, "service": service}
+                variables = wa_tmpl.get("variables") or []
+                params = [available_values.get(v, "") for v in variables]
+                # Readable thread-history log only -- the real send always
+                # uses the fixed, Meta-approved template text.
+                body_preview = segment.get("message_template") or DEFAULT_RECALL_MSG
+                message = body_preview.replace("{name}", name).replace("{clinic}", clinic_name).replace("{service}", service)
 
                 try:
-                    await _send_wa(phone, message, phone_number_id, access_token)
+                    await send_whatsapp_template(
+                        phone, wa_tmpl["name"], wa_tmpl.get("language") or "en", params,
+                        phone_number_id, access_token,
+                        header_image_id=wa_tmpl.get("header_media_id"),
+                    )
 
                     _p = phone
                     thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(
@@ -617,20 +652,3 @@ async def cleanup_expired_campaigns():
         logger.info("Campaign cleanup done")
     except Exception as e:
         logger.error(f"Campaign cleanup error: {e}")
-
-
-# ── Internal WA sender ────────────────────────────────────────────────────────
-
-async def _send_wa(to: str, text: str, phone_number_id: str, access_token: str):
-    import httpx
-    to_digits = to.lstrip("+")
-    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(
-            url,
-            json={"messaging_product": "whatsapp", "to": to_digits,
-                  "type": "text", "text": {"body": text}},
-            headers={"Authorization": f"Bearer {access_token}",
-                     "Content-Type": "application/json"},
-        )
-        r.raise_for_status()
