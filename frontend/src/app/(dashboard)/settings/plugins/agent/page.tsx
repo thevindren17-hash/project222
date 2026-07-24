@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS, VOICE_LANGUAGES } from '@/lib/providers'
 import {
   Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check, Languages,
-  Volume2, Play, ExternalLink, CheckCircle2, Database, Wrench,
+  Volume2, Play, ExternalLink, CheckCircle2, Database, Wrench, Upload,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -166,6 +166,7 @@ export default function AgentPluginPage() {
   })
 
   const [faq, setFaq] = useState<FaqItem[]>([])
+  const [uploadingFaq, setUploadingFaq] = useState(false)
   const [customFields, setCustomFields] = useState<CustomFieldItem[]>([])
   const [customTools, setCustomTools] = useState<CustomTool[]>([])
 
@@ -365,6 +366,36 @@ export default function AgentPluginPage() {
     const next = [...faq]; next[i] = { ...next[i], [field]: value }; setFaq(next)
   }
   function removeFaq(i: number) { setFaq(faq.filter((_, idx) => idx !== i)) }
+
+  async function uploadFaqDocument(file: File) {
+    if (!tenant) return
+    if (!/\.(pdf|md|txt|json)$/i.test(file.name)) {
+      toast.error('Only PDF, Markdown (.md), text (.txt), or JSON files are supported')
+      return
+    }
+    if (file.size > 7 * 1024 * 1024) {
+      toast.error('File is too large — please keep uploads under 7MB')
+      return
+    }
+    setUploadingFaq(true)
+    try {
+      const form = new FormData()
+      form.set('tenant_id', tenant.id)
+      form.set('file', file)
+      const res = await fetch('/api/agent/extract-faq', { method: 'POST', body: form })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Could not extract Q&A from that document')
+      setFaq([...faq, ...(data.faq || [])])
+      toast.success(
+        `Added ${data.faq?.length || 0} entries from "${file.name}" — review them below, then Save Changes`
+        + (data.truncated ? ' (only the first part of the document was used)' : '')
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Upload failed')
+    } finally {
+      setUploadingFaq(false)
+    }
+  }
   function addCustomField() { setCustomFields([...customFields, { key: '', label: '', instruction: '', action: 'book_appointment' }]) }
   function updateCustomFieldLabel(i: number, label: string) {
     const next = [...customFields]
@@ -1009,10 +1040,29 @@ export default function AgentPluginPage() {
                   <h2 className="text-lg font-semibold">Knowledge Base</h2>
                   <p className="text-sm text-muted-foreground">Q&amp;A pairs the AI uses to answer customer questions</p>
                 </div>
-                <Button variant="outline" size="sm" onClick={addFaq}>
-                  <Plus className="h-3.5 w-3.5 mr-1.5" />Add Entry
-                </Button>
+                <div className="flex items-center gap-2">
+                  <label className="inline-flex">
+                    <input
+                      type="file" accept=".pdf,.md,.txt,.json" className="hidden" disabled={uploadingFaq}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFaqDocument(f); e.target.value = '' }}
+                    />
+                    <span className={cn(
+                      'inline-flex items-center gap-1.5 text-sm border rounded-md px-3 py-1.5 cursor-pointer hover:bg-accent',
+                      uploadingFaq && 'opacity-60 pointer-events-none'
+                    )}>
+                      {uploadingFaq ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      {uploadingFaq ? 'Extracting…' : 'Upload Document'}
+                    </span>
+                  </label>
+                  <Button variant="outline" size="sm" onClick={addFaq}>
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />Add Entry
+                  </Button>
+                </div>
               </div>
+              <p className="text-xs text-muted-foreground -mt-2">
+                Upload a PDF, Markdown, text, or JSON file (up to 7MB) and AI will pull out Q&amp;A pairs automatically —
+                review and edit them below before saving.
+              </p>
 
               <div className="space-y-3">
                 {faq.length === 0 && (

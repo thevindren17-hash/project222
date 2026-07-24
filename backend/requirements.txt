@@ -21,6 +21,9 @@ groq>=0.11.0
 python-dateutil==2.8.2
 pydantic>=2.6.0
 APScheduler>=3.10.0
+# PDF text extraction for the Knowledge Base "upload a document" feature
+# (api/agent.py extract-faq endpoint) -- pure-Python, no system dependency.
+pypdf>=4.0.0
 # python:3.11-slim (our Docker base image) ships no IANA tz database and the
 # Dockerfile doesn't apt-get install tzdata either, so zoneinfo.ZoneInfo(...)
 # has nothing to read on the deployed container -- it works in local dev only

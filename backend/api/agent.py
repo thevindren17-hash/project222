@@ -4,11 +4,12 @@ Lets the dashboard owner chat with the AI agent using their live config.
 All tools run for real in test mode so the full flow can be verified.
 """
 
+import json
 import re
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from shared.tenant_config import get_tenant_by_id
@@ -22,6 +23,7 @@ router = APIRouter()
 # Only our own Next.js server may call this (it verifies the user's session
 # and tenant ownership first) — never callable directly from the internet.
 _test_rate_limiter = RateLimiter(max_calls=20, window_seconds=60)
+_extract_faq_rate_limiter = RateLimiter(max_calls=10, window_seconds=300)
 
 
 class TestMessage(BaseModel):
@@ -474,3 +476,143 @@ async def test_agent(req: TestMessage):
         "provider": tenant.llm_config.get("provider", "unknown"),
         "model": tenant.llm_config.get("model", ""),
     }
+
+
+# ── Knowledge Base document upload ──────────────────────────────────────────────
+# Lets a clinic upload a PDF/Markdown/text/JSON document and have the AI
+# extract FAQ-style Q&A pairs instead of typing every entry by hand. FAQ
+# entries are never bulk-injected into the system prompt -- get_faq()
+# (shared/tools.py) only ever pulls the single best keyword match per
+# question -- so there's no token-cost risk from a large extracted list.
+
+_MAX_DOC_BYTES = 7 * 1024 * 1024
+_MAX_EXTRACT_CHARS = 50_000
+_ALLOWED_DOC_EXTENSIONS = {".pdf", ".md", ".txt", ".json"}
+
+
+def _extract_pdf_text(file_bytes: bytes) -> str:
+    import io
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(file_bytes))
+    pages = [page.extract_text() or "" for page in reader.pages]
+    return "\n\n".join(p for p in pages if p.strip())
+
+
+def _try_parse_structured_faq(raw_text: str) -> Optional[list]:
+    """
+    If the uploaded JSON is already an array of question/answer-shaped
+    objects, import it directly -- no LLM call, cheaper, deterministic, and
+    avoids the model mangling data that's already correctly structured.
+    Returns None (not an error) if the JSON doesn't match that shape, so
+    the caller falls through to the generic text-extraction path instead.
+    """
+    try:
+        data = json.loads(raw_text)
+    except Exception:
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            return None
+        q = item.get("q") or item.get("question")
+        a = item.get("a") or item.get("answer")
+        if not q or not a:
+            return None
+        result.append({"q": str(q), "a": str(a)})
+    return result
+
+
+def _strip_json_fences(text: str) -> str:
+    """Models often wrap JSON in ```json ... ``` fences despite being told not to."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\n?", "", t)
+        t = re.sub(r"```\s*$", "", t)
+    return t.strip()
+
+
+@router.post("/extract-faq", dependencies=[Depends(require_internal_secret)])
+async def extract_faq_from_document(tenant_id: str = Form(...), file: UploadFile = File(...)):
+    if _extract_faq_rate_limiter.hit(tenant_id):
+        raise HTTPException(status_code=429, detail="Too many uploads -- please wait a few minutes and try again")
+
+    filename = file.filename or ""
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if ext not in _ALLOWED_DOC_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Only PDF, Markdown (.md), text (.txt), or JSON files are supported")
+
+    file_bytes = await file.read()
+    if len(file_bytes) > _MAX_DOC_BYTES:
+        raise HTTPException(status_code=400, detail="File is too large -- please keep uploads under 7MB")
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="That file appears to be empty")
+
+    tenant = await get_tenant_by_id(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    if ext == ".json":
+        try:
+            raw_text = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Could not read that file as UTF-8 text")
+        structured = _try_parse_structured_faq(raw_text)
+        if structured is not None:
+            return {"faq": structured, "truncated": False}
+        text = raw_text
+    elif ext == ".pdf":
+        try:
+            text = _extract_pdf_text(file_bytes)
+        except Exception as e:
+            logger.error(f"PDF extraction failed | tenant={tenant_id} | {e}")
+            raise HTTPException(status_code=400, detail="Could not read that PDF -- it may be corrupted or password-protected")
+        if not text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Couldn't find any text in that PDF -- if it's a scanned document (just images), try a text file instead",
+            )
+    else:  # .md / .txt
+        try:
+            text = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Could not read that file as UTF-8 text")
+
+    truncated = len(text) > _MAX_EXTRACT_CHARS
+    text = text[:_MAX_EXTRACT_CHARS]
+
+    llm_client = load_llm_client(tenant)
+    prompt = (
+        "You are helping a clinic build a WhatsApp AI receptionist's FAQ knowledge base. "
+        "Read the document below and extract clear, self-contained question-and-answer pairs a patient "
+        "might realistically ask (hours, services, pricing policy, location, parking, insurance, etc). "
+        "Skip anything irrelevant to patients. Write natural questions, not document headings. "
+        'Respond with ONLY a JSON array like [{"q": "...", "a": "..."}], no other text, no markdown fences.'
+    )
+    try:
+        result = await llm_client.generate(messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ])
+    except Exception as e:
+        logger.error(f"FAQ extraction LLM call failed | tenant={tenant_id} | {e}")
+        raise HTTPException(status_code=502, detail=f"AI extraction failed: {e}")
+
+    content = _strip_json_fences(result.get("content") or "")
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        logger.error(f"FAQ extraction returned unparseable JSON | tenant={tenant_id} | content={content[:300]}")
+        raise HTTPException(status_code=502, detail="The AI didn't return a usable list -- try again or a shorter document")
+
+    faq = [
+        {"q": str(item["q"]), "a": str(item["a"])}
+        for item in (parsed if isinstance(parsed, list) else [])
+        if isinstance(item, dict) and item.get("q") and item.get("a")
+    ]
+    if not faq:
+        raise HTTPException(status_code=400, detail="Couldn't extract any Q&A pairs from that document")
+
+    return {"faq": faq, "truncated": truncated}
