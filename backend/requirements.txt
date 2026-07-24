@@ -16,6 +16,14 @@ groq>=0.11.0
 python-dateutil==2.8.2
 pydantic>=2.6.0
 APScheduler>=3.10.0
+# python:3.11-slim (our Docker base image) ships no IANA tz database and the
+# Dockerfile doesn't apt-get install tzdata either, so zoneinfo.ZoneInfo(...)
+# has nothing to read on the deployed container -- it works in local dev only
+# because some other package happens to pull this in transitively. Without
+# it, every ZoneInfo("Asia/Kuala_Lumpur") call in the codebase silently fails
+# and falls back to naive UTC "now", which is what caused reminders/date
+# resolution to be off by Malaysia's UTC+8 offset in production.
+tzdata>=2024.1
 
 # ── Observability ──────────────────────────────────────────────────────────────
 sentry-sdk[fastapi]>=2.0.0

@@ -16,6 +16,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from shared.tenant_config import get_supabase_client, _db, _db_optional
 from shared.scheduler_lock import acquire_lock
 from shared.whatsapp_send import send_whatsapp_template
+from shared.utils import now_local, to_db_timestamp, from_db_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,11 @@ async def send_appointment_reminders():
         logger.info("Reminders: lock held by another instance, skipping this run")
         return
     supabase = get_supabase_client()
-    now = datetime.now()
+    # This is the exact bug that sent a 10:00 AM reminder at 2:45 PM the same
+    # day: datetime.now() here was the server's own (UTC) clock, compared
+    # against scheduled_at values meant to represent Malaysia wall-clock time
+    # -- an 8-hour mismatch in both directions at once.
+    now = now_local()
 
     tenants_res = await _db(lambda: supabase.table("tenants").select(
         "id, wa_phone_number_id, wa_access_token"
@@ -88,8 +93,8 @@ async def send_appointment_reminders():
                 ))
 
             for window_min, window_max, template, sent_flag in tasks:
-                window_start = (now + window_min).isoformat()
-                window_end = (now + window_max).isoformat()
+                window_start = to_db_timestamp(now + window_min)
+                window_end = to_db_timestamp(now + window_max)
 
                 # Atomic claim: UPDATE WHERE sent_flag = false → only one instance wins per row.
                 # The RETURNING gives us exactly the rows we claimed.
@@ -120,7 +125,7 @@ async def send_appointment_reminders():
                         service = booking.get("service_type", "appointment")
                         # A malformed/legacy scheduled_at must only skip THIS booking,
                         # not abort the whole tenant/window — keep it inside the try.
-                        scheduled_at = datetime.fromisoformat(booking["scheduled_at"])
+                        scheduled_at = from_db_timestamp(booking["scheduled_at"])
                         # message is only used for the readable thread-history log below —
                         # the actual WhatsApp send uses the fixed, Meta-approved template text.
                         message = _format_message(template, name, service, scheduled_at)

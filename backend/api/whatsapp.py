@@ -398,7 +398,12 @@ def _build_date_context(
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(tz=ZoneInfo(timezone))
-    except Exception:
+    except Exception as e:
+        # This "now"/"tomorrow" pair is what the AI resolves "today"/"tomorrow"
+        # against -- falling back to naive UTC silently shifts the resolved
+        # calendar date by a day during part of the clinic's local day (the
+        # historical cause was a missing tzdata install). Log loudly.
+        logger.error(f"ZoneInfo({timezone!r}) failed, falling back to naive server time: {e}")
         now = datetime.now()
     tomorrow = now + timedelta(days=1)
 

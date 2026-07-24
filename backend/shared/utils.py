@@ -118,6 +118,74 @@ def parse_datetime(date_str: str, time_str: str) -> Optional[datetime]:
         return None
 
 
+# ── Timezone helpers ─────────────────────────────────────────────────────────
+#
+# Convention used throughout this codebase: a `scheduled_at`-shaped datetime
+# in Python is a NAIVE datetime whose digits ARE the clinic's local
+# wall-clock time (never UTC) — this is what parse_datetime/_resolve_datetime
+# produce, what Google Calendar calls pair with an explicit
+# timeZone="Asia/Kuala_Lumpur", and what every .strftime() display call
+# already assumes. The three helpers below exist so every "now" reference
+# and every Supabase TIMESTAMPTZ read/write follows that same convention
+# instead of silently defaulting to the server's own (usually UTC) clock —
+# that mismatch is what caused reminders/date-resolution to be hours off in
+# production.
+
+DEFAULT_TIMEZONE = "Asia/Kuala_Lumpur"
+
+
+def now_local(timezone: str = DEFAULT_TIMEZONE) -> datetime:
+    """
+    The clinic's current wall-clock time as a NAIVE datetime — use this
+    anywhere code previously called datetime.now() to mean "right now, at
+    the clinic". Falls back to the server's own local time (logged loudly,
+    never silently) only if ZoneInfo itself is unavailable, e.g. missing
+    tzdata on a minimal Docker image.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(tz=ZoneInfo(timezone)).replace(tzinfo=None)
+    except Exception as e:
+        logger.error(f"ZoneInfo({timezone!r}) failed, falling back to naive server time: {e}")
+        return datetime.now()
+
+
+def to_db_timestamp(dt: datetime, timezone: str = DEFAULT_TIMEZONE) -> str:
+    """
+    Convert a naive, clinic-local-wall-clock datetime into an unambiguous
+    ISO string before sending it to a TIMESTAMPTZ column. Without an
+    explicit offset, Postgres interprets the string using the database
+    session's own timezone default (not necessarily the clinic's), which
+    can silently store the wrong absolute instant.
+    """
+    if dt.tzinfo is not None:
+        return dt.isoformat()
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.replace(tzinfo=ZoneInfo(timezone)).isoformat()
+    except Exception as e:
+        logger.error(f"ZoneInfo({timezone!r}) failed, sending naive timestamp to DB: {e}")
+        return dt.isoformat()
+
+
+def from_db_timestamp(value: str, timezone: str = DEFAULT_TIMEZONE) -> datetime:
+    """
+    Parse a TIMESTAMPTZ value read back from Supabase into a NAIVE datetime
+    whose digits are the clinic's local wall-clock time — the same
+    convention scheduled_at is built in on the way in — regardless of what
+    offset PostgREST attaches to it on the way out.
+    """
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        return dt
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.astimezone(ZoneInfo(timezone)).replace(tzinfo=None)
+    except Exception as e:
+        logger.error(f"ZoneInfo({timezone!r}) failed while parsing DB datetime: {e}")
+        return dt.replace(tzinfo=None)
+
+
 def format_phone_number(phone: str) -> str:
     """Normalise phone to E.164.  Defaults to Malaysian (+60) format."""
     digits = re.sub(r"\D", "", phone)

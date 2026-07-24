@@ -13,6 +13,7 @@ import httpx
 
 from shared.tenant_config import get_supabase_client, TenantConfig, _db, _db_optional
 from shared.google_integrations import get_google_calendar, get_google_sheets
+from shared.utils import now_local, to_db_timestamp, from_db_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,11 @@ def validate_booking_time(
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(tz=ZoneInfo(timezone)).replace(tzinfo=None)
-    except Exception:
+    except Exception as e:
+        # Falling back to naive UTC "now" here silently miscomputes every
+        # past/future check by the clinic's real UTC offset — log loudly so
+        # a missing tzdata install (the historical cause) is never silent.
+        logger.error(f"ZoneInfo({timezone!r}) failed, falling back to naive server time: {e}")
         now = datetime.now()
     if scheduled_at < now:
         return {"valid": False, "error": "Cannot book appointments in the past."}
@@ -51,11 +56,11 @@ def validate_booking_time(
 async def check_booking_rate_limit(tenant_id: str, contact_id: str) -> bool:
     """Allow max 5 bookings per contact per day."""
     supabase = get_supabase_client()
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
     result = await _db(lambda: supabase.table("bookings").select("id").eq(
         "tenant_id", tenant_id
     ).eq("contact_id", contact_id).gte(
-        "created_at", today_start.isoformat()
+        "created_at", to_db_timestamp(today_start)
     ).execute())
     return len(result.data) < 5
 
@@ -91,8 +96,8 @@ async def book_appointment(
             "message": "You've reached the maximum bookings for today. Please call us for additional appointments.",
         }
 
-    time_start = (scheduled_at - timedelta(minutes=15)).isoformat()
-    time_end = (scheduled_at + timedelta(minutes=45)).isoformat()
+    time_start = to_db_timestamp(scheduled_at - timedelta(minutes=15))
+    time_end = to_db_timestamp(scheduled_at + timedelta(minutes=45))
     existing = await _db(lambda: supabase.table("bookings").select("id, scheduled_at").eq(
         "tenant_id", tenant_id
     ).in_("status", ["pending", "confirmed"]).gte(
@@ -100,7 +105,7 @@ async def book_appointment(
     ).lte("scheduled_at", time_end).execute())
 
     if existing.data:
-        conflict_time = datetime.fromisoformat(existing.data[0]["scheduled_at"]).strftime("%I:%M %p")
+        conflict_time = from_db_timestamp(existing.data[0]["scheduled_at"]).strftime("%I:%M %p")
         return {
             "success": False,
             "error": "double_booking",
@@ -124,7 +129,7 @@ async def book_appointment(
         result = await _db(lambda: supabase.table("bookings").insert({
             "tenant_id": tenant_id,
             "contact_id": contact_id,
-            "scheduled_at": scheduled_at.isoformat(),
+            "scheduled_at": to_db_timestamp(scheduled_at),
             "service_type": service_type,
             "details": details,
             "notes": notes,
@@ -222,12 +227,12 @@ async def check_slots(
 
     bookings = await _db(lambda: supabase.table("bookings").select("scheduled_at").eq(
         "tenant_id", tenant_id
-    ).gte("scheduled_at", date_start.isoformat()).lte(
-        "scheduled_at", date_end.isoformat()
+    ).gte("scheduled_at", to_db_timestamp(date_start)).lte(
+        "scheduled_at", to_db_timestamp(date_end)
     ).execute())
 
     booked_times = {
-        datetime.fromisoformat(b["scheduled_at"]).strftime("%H:%M") for b in bookings.data
+        from_db_timestamp(b["scheduled_at"]).strftime("%H:%M") for b in bookings.data
     }
 
     day_name = date.strftime("%a").lower()
@@ -282,8 +287,8 @@ async def cancel_appointment(
     if not booking.data:
         return {"success": False, "error": "Booking not found"}
 
-    scheduled = datetime.fromisoformat(booking.data["scheduled_at"])
-    if scheduled - datetime.now() < timedelta(hours=2):
+    scheduled = from_db_timestamp(booking.data["scheduled_at"])
+    if scheduled - now_local() < timedelta(hours=2):
         return {
             "success": False,
             "error": "too_close",
@@ -321,7 +326,7 @@ async def cancel_appointment(
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
-    return {"success": True, "booking_id": _bid, "scheduled_at": booking.data["scheduled_at"]}
+    return {"success": True, "booking_id": _bid, "scheduled_at": scheduled.isoformat()}
 
 
 async def reschedule_appointment(
@@ -358,7 +363,7 @@ async def reschedule_appointment(
 
     old_scheduled_at = booking.data["scheduled_at"]
     _bid = booking.data["id"]
-    update_data: Dict[str, Any] = {"scheduled_at": new_scheduled_at.isoformat()}
+    update_data: Dict[str, Any] = {"scheduled_at": to_db_timestamp(new_scheduled_at)}
     if custom_fields:
         update_data["details"] = {**(booking.data.get("details") or {}), **custom_fields}
     await _db(lambda: supabase.table("bookings").update(update_data).eq("id", _bid).execute())

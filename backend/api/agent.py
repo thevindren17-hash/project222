@@ -15,7 +15,7 @@ from shared.tenant_config import get_tenant_by_id
 from shared.providers import load_llm_client
 from shared.security import require_internal_secret, RateLimiter
 from shared.tools import get_faq
-from shared.utils import logger
+from shared.utils import logger, now_local
 
 router = APIRouter()
 
@@ -79,7 +79,7 @@ def _resolve_date(date_str: str) -> Optional[datetime]:
     Returns a datetime at midnight, or None on failure.
     """
     s = date_str.lower().strip()
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
 
     # ── Hard-coded placeholder guard ──────────────────────────────────────────
     if s in ("yyyy-mm-dd", "date", "[date]", "dd/mm/yyyy", "mm/dd/yyyy", ""):
