@@ -50,15 +50,6 @@ async function verifyTenantAccess(tenantId: string): Promise<boolean> {
   return !!staff
 }
 
-// Mirrors the actual approved Meta template wording — this is what's
-// really sent for reminder/feedback, so the display text should match it
-// exactly rather than a made-up "TEST" message.
-const DEFAULT_REMINDER =
-  'Hi {name},\n\nThis is a reminder that you have a {service} appointment on {date} at {time}.\n\nReply CANCEL if you need to reschedule.'
-
-const DEFAULT_FEEDBACK =
-  "Hi {name},\n\nThank you for visiting us for your {service}!\n\nWe'd love to hear your feedback — please reply with a number from 1 to 5, where 5 means excellent.\n\nReply STOP to opt out"
-
 const DEFAULT_RECALL =
   'Hi {name}! 👋 This is a TEST recall message from {clinic}.\n\n' +
   "We'd love to see you again! Just reply to book your next appointment. 😊\n\n" +
@@ -117,16 +108,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'WhatsApp credentials not configured on this tenant' }, { status: 400 })
     }
 
-    // Load message templates from settings. reminder/feedback intentionally
-    // don't read a custom column here — the real send always uses the fixed,
-    // Meta-approved template text (DEFAULT_REMINDER/DEFAULT_FEEDBACK below),
-    // so the preview must match that exactly rather than a stale unused
-    // column. recall is still genuinely free text, so its column is real.
+    // reminder/feedback resolve to a specific clinic-created, Meta-approved
+    // whatsapp_templates row (same one the real scheduled job uses) rather
+    // than a fixed hardcoded string — so this test button behaves exactly
+    // like production instead of silently drifting from it.
     const { data: settings } = await supabaseAdmin
       .from('tenant_settings')
-      .select('recall_message_template, reminder_template_name, feedback_template_name, whatsapp_template_language')
+      .select('recall_message_template, reminder_whatsapp_template_id, feedback_whatsapp_template_id')
       .eq('tenant_id', tenant_id)
       .maybeSingle()
+
+    let approvedTemplate: { name: string; language: string; variables: string[]; header_media_id: string | null } | null = null
+    if (type === 'reminder' || type === 'feedback') {
+      const templateId = type === 'reminder' ? settings?.reminder_whatsapp_template_id : settings?.feedback_whatsapp_template_id
+      if (templateId) {
+        const { data: tpl } = await supabaseAdmin
+          .from('whatsapp_templates')
+          .select('name, language, variables, header_media_id, status')
+          .eq('id', templateId)
+          .maybeSingle()
+        if (tpl && tpl.status === 'approved') approvedTemplate = tpl
+      }
+      if (!approvedTemplate) {
+        return NextResponse.json(
+          { error: `No approved ${type} template linked yet — set one up on the Message Templates page first.` },
+          { status: 400 }
+        )
+      }
+    }
 
     // Upsert test contact
     const { data: contact } = await supabaseAdmin
@@ -141,25 +150,21 @@ export async function POST(req: NextRequest) {
     // Build the message
     let message = ''
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    const availableValues: Record<string, string> = {
+      name, service: 'Test Appointment', date: formatDate(tomorrow), time: formatTime(tomorrow), clinic: tenant.name,
+    }
 
-    if (type === 'reminder') {
-      message = DEFAULT_REMINDER
-        .replace('{name}', name)
-        .replace('{service}', 'Test Appointment')
-        .replace('{date}', formatDate(tomorrow))
-        .replace('{time}', formatTime(tomorrow))
-    } else if (type === 'feedback') {
-      message = DEFAULT_FEEDBACK.replace('{name}', name).replace('{service}', 'Test Appointment')
-    } else if (type === 'recall') {
+    if (type === 'recall') {
       const tmpl = settings?.recall_message_template || DEFAULT_RECALL
       message = tmpl.replace('{name}', name).replace('{clinic}', tenant.name)
+    } else if (approvedTemplate) {
+      message = approvedTemplate.variables.map((v) => availableValues[v] || `{${v}}`).join(' / ')
     }
 
     // Reminder + feedback are always outside the 24h customer service window,
     // so the test send must use the real approved template too — otherwise
     // this button would "succeed" in a way production sends never can.
     // Recall stays on free text until its template is approved.
-    const languageCode = settings?.whatsapp_template_language || 'en'
     let waBody: Record<string, unknown> = {
       messaging_product: 'whatsapp',
       to: phone.replace(/^\+/, ''),
@@ -167,24 +172,19 @@ export async function POST(req: NextRequest) {
       text: { body: message },
     }
 
-    if (type === 'reminder' || type === 'feedback') {
-      const templateName =
-        type === 'reminder'
-          ? settings?.reminder_template_name || 'appointment_reminder'
-          : settings?.feedback_template_name || 'feedback_request'
-      const templateParams =
-        type === 'reminder'
-          ? [name, 'Test Appointment', formatDate(tomorrow), formatTime(tomorrow)]
-          : [name, 'Test Appointment']
-
+    if (approvedTemplate) {
+      const templateParams = approvedTemplate.variables.map((v) => availableValues[v] || '')
       waBody = {
         messaging_product: 'whatsapp',
         to: phone.replace(/^\+/, ''),
         type: 'template',
         template: {
-          name: templateName,
-          language: { code: languageCode },
+          name: approvedTemplate.name,
+          language: { code: approvedTemplate.language || 'en' },
           components: [
+            ...(approvedTemplate.header_media_id
+              ? [{ type: 'header', parameters: [{ type: 'image', image: { id: approvedTemplate.header_media_id } }] }]
+              : []),
             {
               type: 'body',
               parameters: templateParams.map((p) => ({ type: 'text', text: String(p) })),

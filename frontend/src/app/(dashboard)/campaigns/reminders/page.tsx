@@ -8,21 +8,19 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { Loader2, Bell, FlaskConical, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react'
 import CsvCampaignUploader from '@/components/campaigns/csv-campaign-uploader'
 
-// Both the 1-day and 3-hour reminders send the SAME approved Meta template —
-// this mirrors its actual approved wording exactly.
-const REMINDER_TEMPLATE_PREVIEW =
-  'Hi {name},\n\nThis is a reminder that you have a {service} appointment on {date} at {time}.\n\nReply CANCEL if you need to reschedule.'
+interface ApprovedTemplate { id: string; name: string; body_text: string }
 
 function fillPreview(tmpl: string) {
   return tmpl
-    .replace('{name}', 'Sarah')
-    .replace('{service}', 'Dental Scaling')
-    .replace('{date}', 'July 25, 2026')
-    .replace('{time}', '11:00 AM')
+    .replace('{{1}}', 'Sarah')
+    .replace('{{2}}', 'Dental Scaling')
+    .replace('{{3}}', 'July 25, 2026')
+    .replace('{{4}}', '11:00 AM')
 }
 
 export default function AppointmentReminderSystemPage() {
@@ -42,17 +40,33 @@ export default function AppointmentReminderSystemPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'reminder_1d_enabled,reminder_3h_enabled'
+        'reminder_1d_enabled,reminder_3h_enabled,reminder_whatsapp_template_id'
       ).eq('tenant_id', tenant.id).maybeSingle()
       return data
     },
     enabled: !!tenant,
   })
 
+  const { data: approvedTemplates } = useQuery({
+    queryKey: ['whatsapp-templates', tenant?.id, 'approved', 'reminder'],
+    queryFn: async () => {
+      if (!tenant) return []
+      const res = await fetch(`/api/templates?tenant_id=${tenant.id}`)
+      const data = await res.json()
+      const list = (Array.isArray(data) ? data : []) as { id: string; name: string; body_text: string; status: string; purpose: string }[]
+      return list.filter((t) => t.status === 'approved' && t.purpose === 'reminder') as ApprovedTemplate[]
+    },
+    enabled: !!tenant,
+  })
+
+  const [templateId, setTemplateId] = useState('')
+  const selectedTemplate = approvedTemplates?.find((t) => t.id === templateId)
+
   useEffect(() => {
     if (!settings) return
     setReminder1dEnabled(!!settings.reminder_1d_enabled)
     setReminder3hEnabled(!!settings.reminder_3h_enabled)
+    setTemplateId(settings.reminder_whatsapp_template_id || '')
   }, [settings])
 
   const saveMutation = useMutation({
@@ -62,6 +76,7 @@ export default function AppointmentReminderSystemPage() {
         tenant_id: tenant.id,
         reminder_1d_enabled: reminder1dEnabled,
         reminder_3h_enabled: reminder3hEnabled,
+        reminder_whatsapp_template_id: templateId || null,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
     },
@@ -118,48 +133,50 @@ export default function AppointmentReminderSystemPage() {
             <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
             <span>
               Reminders are sent as a Meta-approved WhatsApp message template (required outside the 24-hour
-              customer service window). The wording below is fixed once approved and can&apos;t be edited here —
-              only the name, service, date, and time change per patient. Both timings below send this same
-              approved template.
+              customer service window). Write and approve one on the{' '}
+              <a href="/campaigns/templates" className="underline">Message Templates</a> page, then pick it below —
+              both timings send this same approved template.
             </span>
           </div>
 
-          {/* 1-day reminder */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">1-day reminder</p>
-                <p className="text-xs text-muted-foreground">Sent ~24 hours before the appointment</p>
-              </div>
-              <Switch checked={reminder1dEnabled} onCheckedChange={setReminder1dEnabled} />
-            </div>
-            {reminder1dEnabled && (
-              <div className="space-y-1.5">
-                <Label className="text-xs">Approved template preview</Label>
-                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
-                  {fillPreview(REMINDER_TEMPLATE_PREVIEW)}
-                </div>
+          <div className="space-y-1.5">
+            <Label className="text-sm font-medium">Approved reminder template</Label>
+            <Select value={templateId} onValueChange={(v) => v && setTemplateId(v)}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="— select an approved template —" /></SelectTrigger>
+              <SelectContent>
+                {(approvedTemplates || []).map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!approvedTemplates?.length && (
+              <p className="text-[11px] text-muted-foreground">
+                No approved reminder templates yet — create one on the Message Templates page first.
+              </p>
+            )}
+            {selectedTemplate && (
+              <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
+                {fillPreview(selectedTemplate.body_text)}
               </div>
             )}
           </div>
 
-          {/* 3-hour reminder */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">3-hour reminder</p>
-                <p className="text-xs text-muted-foreground">Sent ~3 hours before the appointment</p>
-              </div>
-              <Switch checked={reminder3hEnabled} onCheckedChange={setReminder3hEnabled} />
+          {/* 1-day reminder */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">1-day reminder</p>
+              <p className="text-xs text-muted-foreground">Sent ~24 hours before the appointment</p>
             </div>
-            {reminder3hEnabled && (
-              <div className="space-y-1.5">
-                <Label className="text-xs">Approved template preview</Label>
-                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
-                  {fillPreview(REMINDER_TEMPLATE_PREVIEW)}
-                </div>
-              </div>
-            )}
+            <Switch checked={reminder1dEnabled} onCheckedChange={setReminder1dEnabled} />
+          </div>
+
+          {/* 3-hour reminder */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">3-hour reminder</p>
+              <p className="text-xs text-muted-foreground">Sent ~3 hours before the appointment</p>
+            </div>
+            <Switch checked={reminder3hEnabled} onCheckedChange={setReminder3hEnabled} />
           </div>
 
           <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} size="sm">
@@ -183,7 +200,7 @@ export default function AppointmentReminderSystemPage() {
             type="reminder"
             tenantId={tenant?.id || ''}
             isConnected={isConnected}
-            messageTemplate={REMINDER_TEMPLATE_PREVIEW}
+            messageTemplate={selectedTemplate?.body_text || 'Hi {name}, reminder for your {service} appointment on {date} at {time}.'}
             extraColumns={[
               { key: 'service', label: 'Service', candidates: ['service', 'treatment'] },
               { key: 'date', label: 'Date', candidates: ['date', 'appointment date'] },

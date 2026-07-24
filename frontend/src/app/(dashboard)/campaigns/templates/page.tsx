@@ -1,17 +1,21 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getCurrentTenant } from '@/lib/supabase'
+import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { Loader2, Plus, Trash2, ImagePlus, Send, MessageSquareText, AlertCircle } from 'lucide-react'
 import CsvCampaignUploader, { ExtraColumn } from '@/components/campaigns/csv-campaign-uploader'
+
+type TemplatePurpose = 'marketing' | 'reminder' | 'feedback'
 
 interface WhatsappTemplate {
   id: string
@@ -19,16 +23,37 @@ interface WhatsappTemplate {
   name: string
   language: string
   category: string
+  purpose: TemplatePurpose
   header_type: string | null
   header_media_id: string | null
   body_text: string
   variables: string[]
   example_values: string[]
   footer_text: string | null
+  buttons: { text: string; url: string }[] | null
   meta_template_id: string | null
   status: 'draft' | 'pending' | 'approved' | 'rejected' | 'paused' | 'disabled'
   rejected_reason: string | null
   created_at: string
+}
+
+// Reminder/feedback jobs positionally inject values into these exact
+// variables, in this exact order (backend/api/reminders.py,
+// backend/api/campaigns.py) -- a clinic can't rename or reorder them the
+// way they can for a marketing template, so these are shown read-only.
+const FIXED_VARIABLES: Record<Exclude<TemplatePurpose, 'marketing'>, string[]> = {
+  reminder: ['name', 'service', 'date', 'time'],
+  feedback: ['name', 'service'],
+}
+
+const PURPOSE_LABEL: Record<TemplatePurpose, string> = {
+  marketing: 'Marketing', reminder: 'Appointment Reminder', feedback: 'Feedback Request',
+}
+
+const BODY_PLACEHOLDER: Record<TemplatePurpose, string> = {
+  marketing: 'Hi {{1}}! Enjoy 20% off {{2}} until end of month.',
+  reminder: 'Hi {{1}}, this is a reminder that you have a {{2}} appointment on {{3}} at {{4}}.',
+  feedback: 'Hi {{1}}, thank you for visiting us for your {{2}}! We\'d love to hear your feedback.',
 }
 
 const STATUS_STYLE: Record<string, string> = {
@@ -55,20 +80,56 @@ export default function MarketingTemplatesPage() {
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
   const isConnected = !!tenant?.wa_phone_number_id
 
+  const { data: googleReviewUrl } = useQuery({
+    queryKey: ['tenant-settings', 'google-review-url', tenant?.id],
+    queryFn: async () => {
+      if (!tenant) return ''
+      const { data } = await supabase.from('tenant_settings').select('google_review_url')
+        .eq('tenant_id', tenant.id).maybeSingle()
+      return data?.google_review_url || ''
+    },
+    enabled: !!tenant,
+  })
+
   // New-template draft form
+  const [purpose, setPurpose] = useState<TemplatePurpose>('marketing')
   const [name, setName] = useState('')
   const [bodyText, setBodyText] = useState('')
   const [footerText, setFooterText] = useState('Reply STOP to unsubscribe')
   const [varMeta, setVarMeta] = useState<{ label: string; example: string }[]>([])
   const [showNewForm, setShowNewForm] = useState(false)
+  const [addReviewButton, setAddReviewButton] = useState(false)
+  const [reviewButtonText, setReviewButtonText] = useState('Leave a Review')
+  const [reviewButtonUrl, setReviewButtonUrl] = useState('')
+
+  useEffect(() => {
+    if (googleReviewUrl && !reviewButtonUrl) setReviewButtonUrl(googleReviewUrl)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [googleReviewUrl])
 
   const placeholderCount = detectPlaceholderCount(bodyText)
-  // Keep varMeta rows in sync with however many {{n}} placeholders are
-  // currently typed in the body -- variables/example_values submitted to
-  // Meta are positional, so this is the single source of truth for order.
-  if (varMeta.length !== placeholderCount) {
-    const next = Array.from({ length: placeholderCount }, (_, i) => varMeta[i] || { label: '', example: '' })
-    if (JSON.stringify(next) !== JSON.stringify(varMeta)) setVarMeta(next)
+  if (purpose === 'marketing') {
+    // Keep varMeta rows in sync with however many {{n}} placeholders are
+    // currently typed in the body -- variables/example_values submitted to
+    // Meta are positional, so this is the single source of truth for order.
+    if (varMeta.length !== placeholderCount) {
+      const next = Array.from({ length: placeholderCount }, (_, i) => varMeta[i] || { label: '', example: '' })
+      if (JSON.stringify(next) !== JSON.stringify(varMeta)) setVarMeta(next)
+    }
+  } else {
+    // Reminder/feedback: variables are fixed (see FIXED_VARIABLES) -- only
+    // the example value per row is ever editable, label stays locked.
+    const fixed = FIXED_VARIABLES[purpose]
+    if (varMeta.length !== fixed.length || varMeta.some((v, i) => v.label !== fixed[i])) {
+      const next = fixed.map((label, i) => ({ label, example: varMeta[i]?.label === label ? varMeta[i].example : '' }))
+      setVarMeta(next)
+    }
+  }
+
+  function resetNewForm() {
+    setPurpose('marketing'); setName(''); setBodyText('')
+    setFooterText('Reply STOP to unsubscribe'); setVarMeta([]); setShowNewForm(false)
+    setAddReviewButton(false); setReviewButtonText('Leave a Review'); setReviewButtonUrl(googleReviewUrl || '')
   }
 
   const { data: templates } = useQuery({
@@ -96,10 +157,14 @@ export default function MarketingTemplatesPage() {
           tenant_id: tenant.id,
           name,
           body_text: bodyText,
+          purpose,
           variables: varMeta.map((v) => v.label.trim() || 'value'),
           example_values: varMeta.map((v) => v.example.trim() || 'Example'),
-          footer_text: footerText,
+          footer_text: purpose === 'marketing' ? footerText : null,
           language: 'en',
+          buttons: purpose === 'feedback' && addReviewButton && reviewButtonUrl.trim()
+            ? [{ text: reviewButtonText.trim() || 'Leave a Review', url: reviewButtonUrl.trim() }]
+            : [],
         }),
       })
       const data = await res.json()
@@ -108,7 +173,7 @@ export default function MarketingTemplatesPage() {
     },
     onSuccess: () => {
       toast.success('Template saved as draft — attach an image (optional) and submit for approval below')
-      setName(''); setBodyText(''); setFooterText('Reply STOP to unsubscribe'); setVarMeta([]); setShowNewForm(false)
+      resetNewForm()
       queryClient.invalidateQueries({ queryKey: ['whatsapp-templates', tenant?.id] })
     },
     onError: (e: Error) => toast.error(e.message),
@@ -177,10 +242,10 @@ export default function MarketingTemplatesPage() {
   return (
     <div className="max-w-4xl space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Marketing Templates</h1>
+        <h1 className="text-3xl font-bold">Message Templates</h1>
         <p className="text-muted-foreground">
-          Write your own WhatsApp marketing messages and submit them for Meta&apos;s approval — once approved, upload a
-          spreadsheet of patients to send a personalized campaign.
+          Write your own marketing, reminder, and feedback-request messages and submit them for Meta&apos;s approval —
+          no more waiting on the WhatsApp team to set these up for you.
         </p>
       </div>
 
@@ -199,7 +264,10 @@ export default function MarketingTemplatesPage() {
                 <MessageSquareText className="h-5 w-5 text-primary" />
                 <div>
                   <CardTitle className="font-mono text-base">{tpl.name}</CardTitle>
-                  <CardDescription>{tpl.variables.length} variable{tpl.variables.length === 1 ? '' : 's'} · {tpl.language}{tpl.header_type ? ' · has image header' : ''}</CardDescription>
+                  <CardDescription>
+                    {PURPOSE_LABEL[tpl.purpose] || 'Marketing'} · {tpl.variables.length} variable{tpl.variables.length === 1 ? '' : 's'} · {tpl.language}
+                    {tpl.header_type ? ' · has image header' : ''}{tpl.buttons?.length ? ' · has button' : ''}
+                  </CardDescription>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -268,11 +336,30 @@ export default function MarketingTemplatesPage() {
           <CardHeader>
             <CardTitle>New Template</CardTitle>
             <CardDescription>
-              Type <code className="font-mono">{'{{1}}'}</code>, <code className="font-mono">{'{{2}}'}</code>... anywhere you want a
-              personalized value (patient name, offer, service) — a row appears below for each one you use.
+              {purpose === 'marketing'
+                ? <>Type <code className="font-mono">{'{{1}}'}</code>, <code className="font-mono">{'{{2}}'}</code>... anywhere you want a
+                    personalized value (patient name, offer, service) — a row appears below for each one you use.</>
+                : `This wording is what patients see for every ${PURPOSE_LABEL[purpose].toLowerCase()} sent automatically.`}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-sm font-medium">What is this template for?</Label>
+              <Select value={purpose} onValueChange={(v) => v && setPurpose(v as TemplatePurpose)}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="marketing">Marketing / Recall Campaign</SelectItem>
+                  <SelectItem value="reminder">Appointment Reminder</SelectItem>
+                  <SelectItem value="feedback">Feedback Request</SelectItem>
+                </SelectContent>
+              </Select>
+              {purpose !== 'marketing' && (
+                <p className="text-[11px] text-muted-foreground">
+                  Reviewed as a transactional message, not a promotion — usually approved faster than marketing templates.
+                </p>
+              )}
+            </div>
+
             <div className="space-y-1.5">
               <Label className="text-sm font-medium">Template name (internal, not shown to patients)</Label>
               <Input placeholder="e.g. End of Month Scaling Promo" value={name} onChange={(e) => setName(e.target.value)} />
@@ -282,9 +369,15 @@ export default function MarketingTemplatesPage() {
               <Label className="text-sm font-medium">Message</Label>
               <Textarea
                 rows={4} className="text-sm"
-                placeholder="Hi {{1}}! Enjoy 20% off {{2}} until end of month."
+                placeholder={BODY_PLACEHOLDER[purpose]}
                 value={bodyText} onChange={(e) => setBodyText(e.target.value)}
               />
+              {purpose !== 'marketing' && (
+                <p className="text-[11px] text-muted-foreground">
+                  Use exactly <code className="font-mono">{FIXED_VARIABLES[purpose].map((_, i) => `{{${i + 1}}}`).join(', ')}</code> in
+                  that order for {FIXED_VARIABLES[purpose].join(', ')} — the system fills these in automatically for every send.
+                </p>
+              )}
             </div>
 
             {varMeta.length > 0 && (
@@ -292,11 +385,15 @@ export default function MarketingTemplatesPage() {
                 <p className="text-xs font-medium text-muted-foreground">Variables (in order)</p>
                 {varMeta.map((v, i) => (
                   <div key={i} className="grid grid-cols-2 gap-2">
-                    <Input
-                      placeholder={`{{${i + 1}}} friendly name, e.g. name`} value={v.label}
-                      onChange={(e) => setVarMeta((prev) => prev.map((p, j) => (j === i ? { ...p, label: e.target.value } : p)))}
-                      className="text-xs"
-                    />
+                    {purpose === 'marketing' ? (
+                      <Input
+                        placeholder={`{{${i + 1}}} friendly name, e.g. name`} value={v.label}
+                        onChange={(e) => setVarMeta((prev) => prev.map((p, j) => (j === i ? { ...p, label: e.target.value } : p)))}
+                        className="text-xs"
+                      />
+                    ) : (
+                      <div className="flex items-center px-3 text-xs font-mono text-muted-foreground">{`{{${i + 1}}} = ${v.label}`}</div>
+                    )}
                     <Input
                       placeholder="Example value, e.g. Jack" value={v.example}
                       onChange={(e) => setVarMeta((prev) => prev.map((p, j) => (j === i ? { ...p, example: e.target.value } : p)))}
@@ -308,10 +405,32 @@ export default function MarketingTemplatesPage() {
               </div>
             )}
 
-            <div className="space-y-1.5">
-              <Label className="text-xs">Footer (opt-out line — recommended for marketing messages)</Label>
-              <Input value={footerText} onChange={(e) => setFooterText(e.target.value)} className="text-sm" />
-            </div>
+            {purpose === 'marketing' && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">Footer (opt-out line — recommended for marketing messages)</Label>
+                <Input value={footerText} onChange={(e) => setFooterText(e.target.value)} className="text-sm" />
+              </div>
+            )}
+
+            {purpose === 'feedback' && (
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Add a &quot;Leave a Review&quot; button</Label>
+                  <Switch checked={addReviewButton} onCheckedChange={setAddReviewButton} />
+                </div>
+                {addReviewButton && (
+                  <div className="space-y-2 pt-1">
+                    <Input placeholder="Button text, e.g. Leave a Review" value={reviewButtonText}
+                      onChange={(e) => setReviewButtonText(e.target.value)} className="text-sm" />
+                    <Input placeholder="Your Google review link" value={reviewButtonUrl}
+                      onChange={(e) => setReviewButtonUrl(e.target.value)} className="text-sm" />
+                    <p className="text-[11px] text-muted-foreground">
+                      A real clickable button on the message, not a pasted link — opens straight to your Google review page.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex gap-2">
               <Button
@@ -322,7 +441,7 @@ export default function MarketingTemplatesPage() {
                 {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Save Draft
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => setShowNewForm(false)}>Cancel</Button>
+              <Button size="sm" variant="ghost" onClick={resetNewForm}>Cancel</Button>
             </div>
           </CardContent>
         </Card>

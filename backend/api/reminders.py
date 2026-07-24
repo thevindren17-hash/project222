@@ -72,15 +72,29 @@ async def send_appointment_reminders():
                 continue
 
             settings_res = await _db_optional(lambda: supabase.table("tenant_settings").select(
-                "reminder_1d_enabled, reminder_3h_enabled, reminder_template_name, whatsapp_template_language"
+                "reminder_1d_enabled, reminder_3h_enabled, reminder_whatsapp_template_id"
             ).eq("tenant_id", tenant_id).maybe_single().execute())
             settings = settings_res.data or {}
 
-            # The message body is now a Meta-approved template — its wording
-            # is fixed once approved, so there's no per-tenant custom text
-            # here anymore, only which approved template name/language to use.
-            template_name = settings.get("reminder_template_name") or "appointment_reminder"
-            language_code = settings.get("whatsapp_template_language") or "en"
+            # The message body is a Meta-approved template the clinic wrote
+            # and got approved themselves (Message Templates page) -- no
+            # hardcoded fallback name here anymore, since that name is very
+            # unlikely to actually exist/be approved on this clinic's own
+            # WABA. Skip (not crash) if nothing's linked yet.
+            wa_tmpl = None
+            _reminder_tpl_id = settings.get("reminder_whatsapp_template_id")
+            if _reminder_tpl_id:
+                _tpl_res = await _db_optional(lambda: supabase.table("whatsapp_templates").select(
+                    "name, language, header_media_id, status"
+                ).eq("id", _reminder_tpl_id).eq("status", "approved").maybe_single().execute())
+                wa_tmpl = _tpl_res.data
+            if not wa_tmpl:
+                if settings.get("reminder_1d_enabled") or settings.get("reminder_3h_enabled"):
+                    logger.info(f"Reminders skipped, no approved template linked | tenant={tenant_id}")
+                continue
+            template_name = wa_tmpl["name"]
+            language_code = wa_tmpl.get("language") or "en"
+            header_image_id = wa_tmpl.get("header_media_id")
 
             tasks = []
             if settings.get("reminder_1d_enabled"):
@@ -145,6 +159,7 @@ async def send_appointment_reminders():
                             ],
                             phone_number_id=phone_number_id,
                             access_token=access_token,
+                            header_image_id=header_image_id,
                         )
 
                         # Save reminder into the WhatsApp thread if one exists

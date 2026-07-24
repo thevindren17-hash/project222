@@ -82,6 +82,24 @@ def _meta_error_detail(exc: Exception) -> str:
     return str(exc)
 
 
+class TemplateButton(BaseModel):
+    text: str
+    url: str
+
+
+# Reminder/feedback jobs (reminders.py, campaigns.py) positionally inject
+# values into these EXACT variables, in this EXACT order -- see
+# send_appointment_reminders()/send_feedback_requests(). A clinic can't
+# freely choose variable names/order for these two purposes the way they can
+# for marketing, so these are enforced server-side (not just hidden/locked
+# in the UI) regardless of what a client sends.
+_FIXED_VARIABLES = {
+    "reminder": ["name", "service", "date", "time"],
+    "feedback": ["name", "service"],
+}
+_DEFAULT_CATEGORY = {"marketing": "MARKETING", "reminder": "UTILITY", "feedback": "UTILITY"}
+
+
 class CreateTemplateRequest(BaseModel):
     tenant_id: str
     name: str
@@ -90,6 +108,9 @@ class CreateTemplateRequest(BaseModel):
     example_values: List[str] = []
     footer_text: Optional[str] = "Reply STOP to unsubscribe"
     language: str = "en"
+    purpose: str = "marketing"
+    category: Optional[str] = None
+    buttons: List[TemplateButton] = []
 
 
 class TenantScopedRequest(BaseModel):
@@ -102,17 +123,26 @@ async def create_draft_template(req: CreateTemplateRequest):
         raise HTTPException(status_code=429, detail="Too many template requests -- please wait a few minutes and try again")
     if not req.body_text.strip():
         raise HTTPException(status_code=400, detail="Template body text is required")
+    if req.purpose not in ("marketing", "reminder", "feedback"):
+        raise HTTPException(status_code=400, detail="purpose must be marketing, reminder, or feedback")
 
     supabase = get_supabase_client()
+    variables = _FIXED_VARIABLES.get(req.purpose, req.variables)
+    example_values = req.example_values if req.purpose == "marketing" else (
+        req.example_values if len(req.example_values) == len(variables) else []
+    )
     row = {
         "tenant_id": req.tenant_id,
         "name": _slugify_template_name(req.name),
         "language": req.language,
         "body_text": req.body_text,
-        "variables": req.variables,
-        "example_values": req.example_values,
+        "variables": variables,
+        "example_values": example_values,
         "footer_text": (req.footer_text or "").strip() or None,
         "status": "draft",
+        "purpose": req.purpose,
+        "category": req.category or _DEFAULT_CATEGORY.get(req.purpose, "MARKETING"),
+        "buttons": [b.model_dump() for b in req.buttons] or None,
     }
     res = await _db(lambda: supabase.table("whatsapp_templates").insert(row).execute())
     return res.data[0]
@@ -198,9 +228,11 @@ async def submit_template(template_id: str, req: TenantScopedRequest):
             name=tpl["name"],
             body_text=tpl["body_text"],
             example_values=tpl.get("example_values") or [],
+            category=tpl.get("category") or "MARKETING",
             language=tpl.get("language") or "en",
             footer_text=tpl.get("footer_text"),
             header_handle=tpl.get("header_handle"),
+            buttons=tpl.get("buttons"),
         )
     except Exception as e:
         err_detail = _meta_error_detail(e)

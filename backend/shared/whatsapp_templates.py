@@ -110,6 +110,7 @@ def _build_template_components(
     example_values: List[str],
     footer_text: Optional[str],
     header_handle: Optional[str],
+    buttons: Optional[List[Dict[str, str]]] = None,
 ) -> List[Dict[str, Any]]:
     components: List[Dict[str, Any]] = []
     if header_handle:
@@ -130,6 +131,18 @@ def _build_template_components(
     if footer_text:
         components.append({"type": "FOOTER", "text": footer_text})
 
+    if buttons:
+        # Static URL buttons only (e.g. "Leave a Review" -> the clinic's
+        # Google review link) -- no per-message variable suffix, so nothing
+        # extra is needed at send time, the button is baked into the
+        # template once it's approved.
+        valid_buttons = [
+            {"type": "URL", "text": b["text"], "url": b["url"]}
+            for b in buttons if b.get("text") and b.get("url")
+        ]
+        if valid_buttons:
+            components.append({"type": "BUTTONS", "buttons": valid_buttons})
+
     return components
 
 
@@ -144,6 +157,7 @@ async def create_message_template(
     language: str = "en",
     footer_text: Optional[str] = None,
     header_handle: Optional[str] = None,
+    buttons: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
     Submits a template for Meta review. Returns {"id": ..., "status": "PENDING"}
@@ -155,7 +169,7 @@ async def create_message_template(
         "name": name,
         "category": category,
         "language": language,
-        "components": _build_template_components(body_text, example_values, footer_text, header_handle),
+        "components": _build_template_components(body_text, example_values, footer_text, header_handle, buttons),
     }
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(

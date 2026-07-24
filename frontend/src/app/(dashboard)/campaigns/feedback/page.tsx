@@ -9,16 +9,15 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { Loader2, Star, FlaskConical, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react'
 import CsvCampaignUploader from '@/components/campaigns/csv-campaign-uploader'
 
-// Mirrors the actual approved Meta template's wording exactly.
-const FEEDBACK_REQUEST_PREVIEW =
-  "Hi {name},\n\nThank you for visiting us for your {service}!\n\nWe'd love to hear your feedback — please reply with a number from 1 to 5, where 5 means excellent.\n\nReply STOP to opt out"
+interface ApprovedTemplate { id: string; name: string; body_text: string }
 
 function fillPreview(tmpl: string) {
-  return tmpl.replace('{name}', 'Sarah').replace('{service}', 'Dental Scaling')
+  return tmpl.replace('{{1}}', 'Sarah').replace('{{2}}', 'Dental Scaling')
 }
 
 export default function FeedbackAndReviewSystemPage() {
@@ -42,12 +41,27 @@ export default function FeedbackAndReviewSystemPage() {
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'feedback_enabled,google_review_url,review_request_template,negative_feedback_message,referral_enabled,referral_message_template'
+        'feedback_enabled,google_review_url,review_request_template,negative_feedback_message,referral_enabled,referral_message_template,feedback_whatsapp_template_id'
       ).eq('tenant_id', tenant.id).maybeSingle()
       return data
     },
     enabled: !!tenant,
   })
+
+  const { data: approvedTemplates } = useQuery({
+    queryKey: ['whatsapp-templates', tenant?.id, 'approved', 'feedback'],
+    queryFn: async () => {
+      if (!tenant) return []
+      const res = await fetch(`/api/templates?tenant_id=${tenant.id}`)
+      const data = await res.json()
+      const list = (Array.isArray(data) ? data : []) as { id: string; name: string; body_text: string; status: string; purpose: string }[]
+      return list.filter((t) => t.status === 'approved' && t.purpose === 'feedback') as ApprovedTemplate[]
+    },
+    enabled: !!tenant,
+  })
+
+  const [templateId, setTemplateId] = useState('')
+  const selectedTemplate = approvedTemplates?.find((t) => t.id === templateId)
 
   useEffect(() => {
     if (!settings) return
@@ -57,6 +71,7 @@ export default function FeedbackAndReviewSystemPage() {
     setNegativeFeedbackMsg(settings.negative_feedback_message || '')
     setReferralEnabled(!!settings.referral_enabled)
     setReferralMsgTemplate(settings.referral_message_template || '')
+    setTemplateId(settings.feedback_whatsapp_template_id || '')
   }, [settings])
 
   const saveMutation = useMutation({
@@ -70,6 +85,7 @@ export default function FeedbackAndReviewSystemPage() {
         negative_feedback_message: negativeFeedbackMsg.trim() || null,
         referral_enabled: referralEnabled,
         referral_message_template: referralMsgTemplate.trim() || null,
+        feedback_whatsapp_template_id: templateId || null,
       }, { onConflict: 'tenant_id' })
       if (error) throw error
     },
@@ -136,9 +152,11 @@ export default function FeedbackAndReviewSystemPage() {
                 <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
                 <span>
                   The initial feedback request is sent as a Meta-approved WhatsApp message template (required
-                  outside the 24-hour customer service window) — its wording is fixed and can&apos;t be edited here.
-                  The Google review invite and low-rating response below are sent as direct replies within that
-                  window, so those stay fully customizable.
+                  outside the 24-hour customer service window). Write and approve one on the{' '}
+                  <a href="/campaigns/templates" className="underline">Message Templates</a> page, then pick it below —
+                  it can even include a real &quot;Leave a Review&quot; button. The Google review invite and
+                  low-rating response below are sent as direct replies within that window, so those stay fully
+                  customizable text.
                 </span>
               </div>
 
@@ -154,10 +172,25 @@ export default function FeedbackAndReviewSystemPage() {
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs">Approved template preview</Label>
-                <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
-                  {fillPreview(FEEDBACK_REQUEST_PREVIEW)}
-                </div>
+                <Label className="text-sm font-medium">Approved feedback-request template</Label>
+                <Select value={templateId} onValueChange={(v) => v && setTemplateId(v)}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="— select an approved template —" /></SelectTrigger>
+                  <SelectContent>
+                    {(approvedTemplates || []).map((t) => (
+                      <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {!approvedTemplates?.length && (
+                  <p className="text-[11px] text-muted-foreground">
+                    No approved feedback templates yet — create one on the Message Templates page first.
+                  </p>
+                )}
+                {selectedTemplate && (
+                  <div className="rounded-md bg-muted/50 border p-3 text-sm leading-relaxed whitespace-pre-line">
+                    {fillPreview(selectedTemplate.body_text)}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -226,7 +259,7 @@ export default function FeedbackAndReviewSystemPage() {
             type="feedback"
             tenantId={tenant?.id || ''}
             isConnected={isConnected}
-            messageTemplate={FEEDBACK_REQUEST_PREVIEW}
+            messageTemplate={selectedTemplate?.body_text || "Hi {name}, thank you for visiting us for your {service}! We'd love to hear your feedback."}
             extraColumns={[
               { key: 'service', label: 'Service', candidates: ['service', 'treatment'] },
             ]}

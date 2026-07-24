@@ -228,13 +228,17 @@ async function sendOneCampaignMessage(params: {
 
     // Record campaign — feedback campaigns created here also feed the
     // existing reply-handling flow in backend/api/campaigns.py, which keys
-    // off (tenant_id, contact_id, type='feedback', status='sent').
+    // off (tenant_id, contact_id, type='feedback', status='sent'). recall/
+    // marketing sends also store the exact personalized text in `context`
+    // so a later reply can be recognized as "responding to this campaign"
+    // (backend/api/campaigns.py get_pending_campaign_context()).
     await supabaseAdmin.from('campaigns').insert({
       tenant_id,
       contact_id,
       type,
       status: 'sent',
       sent_at: new Date().toISOString(),
+      ...(type === 'recall' || type === 'marketing' ? { context: { message } } : {}),
     })
 
     // Save to thread if one exists

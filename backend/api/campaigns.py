@@ -89,8 +89,23 @@ async def send_feedback_requests():
     settings_res = await _db(lambda: supabase.table("tenant_settings").select(
         "tenant_id, feedback_enabled, google_review_url, "
         "feedback_message_template, review_request_template, negative_feedback_message, "
-        "feedback_template_name, whatsapp_template_language"
+        "feedback_whatsapp_template_id"
     ).eq("feedback_enabled", True).execute())
+
+    # Batch-load every linked template once, up front -- clinic writes and
+    # approves this themselves on the Message Templates page now, no more
+    # hardcoded fallback name that's very unlikely to actually exist/be
+    # approved on that clinic's own WABA.
+    _feedback_tpl_ids = list({
+        s["feedback_whatsapp_template_id"] for s in (settings_res.data or [])
+        if s.get("feedback_whatsapp_template_id")
+    })
+    feedback_templates_by_id: dict = {}
+    if _feedback_tpl_ids:
+        _tpls_res = await _db(lambda: supabase.table("whatsapp_templates").select(
+            "id, name, language, header_media_id"
+        ).in_("id", _feedback_tpl_ids).eq("status", "approved").execute())
+        feedback_templates_by_id = {t["id"]: t for t in (_tpls_res.data or [])}
 
     for settings in (settings_res.data or []):
         tenant_id = settings["tenant_id"]
@@ -104,6 +119,11 @@ async def send_feedback_requests():
             phone_number_id = tenant.wa_phone_number_id
             access_token    = tenant.wa_access_token
             if not phone_number_id or not access_token:
+                continue
+
+            wa_tmpl = feedback_templates_by_id.get(settings.get("feedback_whatsapp_template_id") or "")
+            if not wa_tmpl:
+                logger.info(f"Feedback requests skipped, no approved template linked | tenant={tenant_id}")
                 continue
 
             # Bookings in the 2–6 h window (not cancelled)
@@ -152,8 +172,8 @@ async def send_feedback_requests():
                 # the actual send uses the fixed, Meta-approved template text.
                 tmpl    = DEFAULT_FEEDBACK_MSG
                 message = tmpl.replace("{name}", name).replace("{service}", service)
-                template_name = settings.get("feedback_template_name") or "feedback_request"
-                language_code = settings.get("whatsapp_template_language") or "en"
+                template_name = wa_tmpl["name"]
+                language_code = wa_tmpl.get("language") or "en"
 
                 try:
                     await send_whatsapp_template(
@@ -163,6 +183,7 @@ async def send_feedback_requests():
                         parameters=[name, service],
                         phone_number_id=phone_number_id,
                         access_token=access_token,
+                        header_image_id=wa_tmpl.get("header_media_id"),
                     )
 
                     # Find existing thread (for saving message history)
@@ -228,6 +249,42 @@ async def get_pending_feedback_campaign(
     ).gte("sent_at", cutoff).order("sent_at", desc=True).limit(1).maybe_single().execute())
 
     return res.data or None
+
+
+# ── Campaign-reply context (called from whatsapp.py) ──────────────────────────
+
+async def get_pending_campaign_context(tenant_id: str, contact_id: str) -> Optional[dict]:
+    """
+    If this contact's most recent recall/marketing send hasn't been replied
+    to yet (within the last 7 days), return its stored context (the exact
+    personalized text sent) and mark it responded -- so the AI gets primed
+    with "this patient is replying to a specific offer" exactly once, on
+    their first reply, not on every subsequent turn of the conversation.
+    Unlike get_pending_feedback_campaign(), this never short-circuits the
+    LLM -- the caller still runs the normal booking conversation, just with
+    extra context injected into the system prompt.
+    """
+    supabase = get_supabase_client()
+    cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+
+    res = await _db_optional(lambda: supabase.table("campaigns").select("*").eq(
+        "tenant_id", tenant_id
+    ).eq("contact_id", contact_id).in_("type", ["recall", "marketing"]).eq(
+        "status", "sent"
+    ).is_("responded_at", "null").gte("sent_at", cutoff).order(
+        "sent_at", desc=True
+    ).limit(1).maybe_single().execute())
+
+    campaign = res.data or None
+    if not campaign or not campaign.get("context"):
+        return None
+
+    _cid = campaign["id"]
+    await _db(lambda: supabase.table("campaigns").update({
+        "responded_at": datetime.now().isoformat(),
+    }).eq("id", _cid).execute())
+
+    return campaign["context"]
 
 
 async def handle_feedback_response(
@@ -590,6 +647,7 @@ async def send_recall_messages():
 
                     _cid2 = contact_id
                     _thid = thread_id
+                    _ctx  = {"message": message}
                     await _db(lambda: supabase.table("campaigns").insert({
                         "tenant_id":  tenant_id,
                         "contact_id": _cid2,
@@ -597,6 +655,7 @@ async def send_recall_messages():
                         "type":       "recall",
                         "status":     "sent",
                         "sent_at":    datetime.now().isoformat(),
+                        "context":    _ctx,
                     }).execute())
 
                     if thread_id:

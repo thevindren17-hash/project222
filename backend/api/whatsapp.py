@@ -394,6 +394,7 @@ def _build_date_context(
     custom_booking_fields: Optional[list] = None,
     base_field_labels: Optional[dict] = None,
     custom_tools: Optional[list] = None,
+    campaign_context: Optional[dict] = None,
 ) -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -528,10 +529,25 @@ def _build_date_context(
     if custom_tools_block:
         custom_tools_block = "CLINIC-DEFINED CUSTOM TOOLS:\n" + custom_tools_block
 
+    # This patient's FIRST reply after a recall/marketing send (see
+    # get_pending_campaign_context in api/campaigns.py) -- make the AI treat
+    # a warm lead efficiently instead of like a cold, context-free inquiry.
+    # Injected once per campaign send, not on every subsequent turn.
+    campaign_context_block = ""
+    if campaign_context and campaign_context.get("message"):
+        campaign_context_block = (
+            "CAMPAIGN CONTEXT — READ THIS FIRST: This patient is replying to a promotional/recall "
+            f"message you just sent them: \"{campaign_context['message']}\". They already showed interest "
+            "by responding — prioritize helping them book efficiently. Don't make them repeat information "
+            "the message above already tells you (e.g. the service or offer). If they say yes or ask to "
+            "book, honor whatever offer/service was mentioned and move straight into checking availability.\n"
+        )
+
     return (
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
         f"{lang_rule}\n"
+        f"{campaign_context_block}"
         "AVAILABLE TOOL: lookup_patient(contact_phone, contact_name?) — read-only, checks if someone is "
         "already a patient on file by phone number. Use it whenever the clinic's own instructions above "
         "ask you to tell new patients from returning ones, or whenever it's otherwise useful to check.\n"
@@ -842,6 +858,16 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
                     )
                     return
 
+        # ── Recall/marketing campaign context ───────────────────────────────────
+        # If this is the patient's first reply after a recall/marketing send,
+        # prime the AI with exactly what was sent so it treats a warm lead
+        # efficiently instead of like a cold, context-free inquiry. Unlike the
+        # feedback intercept above, this never skips the LLM.
+        campaign_context = None
+        if contact.get("id"):
+            from api.campaigns import get_pending_campaign_context
+            campaign_context = await get_pending_campaign_context(tenant.tenant_id, contact["id"])
+
         history_result = await _db(lambda: supabase.table("messages").select("role, body").eq(
             "thread_id", thread["id"]
         ).order("created_at", desc=False).limit(20).execute())
@@ -884,6 +910,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
             base_field_labels=getattr(tenant, "base_field_labels", None),
             custom_tools=getattr(tenant, "custom_tools", None),
+            campaign_context=campaign_context,
         )
 
         messages_payload = [
@@ -1073,6 +1100,10 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
 
     llm_client = load_llm_client(tenant)
     is_new_conversation = len(conversation_history) == 1
+    campaign_context = None
+    if contact.get("id"):
+        from api.campaigns import get_pending_campaign_context
+        campaign_context = await get_pending_campaign_context(tenant.tenant_id, contact["id"])
     date_context = _build_date_context(
         reply_language=getattr(tenant, "reply_language", "ask"),
         is_new_conversation=is_new_conversation,
@@ -1081,6 +1112,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
         base_field_labels=getattr(tenant, "base_field_labels", None),
         custom_tools=getattr(tenant, "custom_tools", None),
+        campaign_context=campaign_context,
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
