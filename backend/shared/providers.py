@@ -246,7 +246,19 @@ class LLMClient:
             raise ValueError("Tenant has no OpenAI API key configured")
 
         client = AsyncOpenAI(api_key=key, base_url=base_url)
-        kwargs: Dict[str, Any] = {"model": self.model, "messages": messages}
+        # Both settings are configurable per-tenant in the dashboard (Model
+        # Settings tab) but were never actually read here — every call ran
+        # completely unbounded, so a model that failed to stop generating
+        # (e.g. a repetition loop) kept going until the *provider's* own
+        # ceiling kicked in instead of the tenant's configured limit.
+        llm_config = getattr(self._tenant, "llm_config", None) or {}
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": llm_config.get("max_tokens") or 1024,
+        }
+        if llm_config.get("temperature") is not None:
+            kwargs["temperature"] = llm_config["temperature"]
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -287,11 +299,14 @@ class LLMClient:
             if m["role"] == "system":
                 system = m["content"]
 
+        llm_config = getattr(self._tenant, "llm_config", None) or {}
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 1024,
+            "max_tokens": llm_config.get("max_tokens") or 1024,
             "messages": _to_anthropic_messages(messages),
         }
+        if llm_config.get("temperature") is not None:
+            kwargs["temperature"] = llm_config["temperature"]
         if system:
             kwargs["system"] = system
         if tools:
