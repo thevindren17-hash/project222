@@ -234,15 +234,17 @@ async def check_slots(
     date_start = date.replace(hour=0, minute=0, second=0)
     date_end = date.replace(hour=23, minute=59, second=59)
 
+    # Only pending/confirmed bookings actually hold a slot -- a cancelled
+    # one shouldn't block it. This filter was previously missing entirely
+    # here (though book_appointment's own conflict check already had it),
+    # which could make a cancelled booking incorrectly appear "taken."
     bookings = await _db(lambda: supabase.table("bookings").select("scheduled_at").eq(
         "tenant_id", tenant_id
-    ).gte("scheduled_at", to_db_timestamp(date_start)).lte(
-        "scheduled_at", to_db_timestamp(date_end)
-    ).execute())
+    ).in_("status", ["pending", "confirmed"]).gte(
+        "scheduled_at", to_db_timestamp(date_start)
+    ).lte("scheduled_at", to_db_timestamp(date_end)).execute())
 
-    booked_times = {
-        from_db_timestamp(b["scheduled_at"]).strftime("%H:%M") for b in bookings.data
-    }
+    booked_times = [from_db_timestamp(b["scheduled_at"]) for b in bookings.data]
 
     day_name = date.strftime("%a").lower()
     hours = tenant_config.business_hours.get(day_name, {"open": "09:00", "close": "18:00"})
@@ -253,10 +255,20 @@ async def check_slots(
     current = datetime.strptime(hours["open"], "%H:%M")
     end = datetime.strptime(hours["close"], "%H:%M")
     while current + timedelta(minutes=duration) <= end:
-        time_str = current.strftime("%H:%M")
-        if time_str not in booked_times:
-            slot_dt = date.replace(hour=current.hour, minute=current.minute)
-            available.append({"time": time_str, "datetime": slot_dt.isoformat()})
+        slot_dt = date.replace(hour=current.hour, minute=current.minute)
+        # Same window formula book_appointment's own conflict check uses
+        # (does an existing booking's start time fall within
+        # [candidate - buffer, candidate + duration + buffer]?) -- this
+        # guarantees check_slots and book_appointment always agree on the
+        # same candidate time. The previous version matched on an exact
+        # HH:MM string instead, which missed buffer-caused near-conflicts
+        # and could tell a patient a time was free when booking it a moment
+        # later would immediately fail as taken.
+        window_start = slot_dt - timedelta(minutes=buffer_min)
+        window_end = slot_dt + timedelta(minutes=duration + buffer_min)
+        conflict = any(window_start <= bt <= window_end for bt in booked_times)
+        if not conflict:
+            available.append({"time": current.strftime("%H:%M"), "datetime": slot_dt.isoformat()})
         current += timedelta(minutes=duration + buffer_min)
 
     return {
