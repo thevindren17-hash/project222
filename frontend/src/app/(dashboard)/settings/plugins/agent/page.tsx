@@ -80,18 +80,6 @@ interface CustomTool {
   fields: CustomToolField[]
 }
 
-// The 5 fields every booking always needs — only the wording is editable
-// per clinic (e.g. a legal office renaming "Service" to "Case Type"). The
-// underlying contact_name/contact_phone/service_type/date/time keys the AI
-// passes to the tool never change, since booking storage depends on them.
-const BASE_FIELD_DEFS: { key: string; defaultLabel: string; placeholder: string }[] = [
-  { key: 'contact_name', defaultLabel: 'Full Name', placeholder: 'e.g. Patient Name, Client Name' },
-  { key: 'contact_phone', defaultLabel: 'Phone Number', placeholder: 'e.g. Contact Number, WhatsApp Number' },
-  { key: 'service_type', defaultLabel: 'Service', placeholder: 'e.g. Case Type, Treatment, Package' },
-  { key: 'date', defaultLabel: 'Date', placeholder: 'e.g. Preferred Date' },
-  { key: 'time', defaultLabel: 'Time', placeholder: 'e.g. Preferred Time' },
-]
-
 // Mirrors backend/api/whatsapp.py's _RESERVED_FIELD_KEYS exactly -- a custom
 // field using one of these keys collides with a built-in property (already
 // collected automatically) and gets silently skipped server-side. Shown
@@ -461,9 +449,6 @@ export default function AgentPluginPage() {
     const next = [...customTools]
     next[i] = { ...next[i], fields: next[i].fields.filter((_, idx) => idx !== j) }
     setCustomTools(next)
-  }
-  function updateBaseFieldLabel(key: string, value: string) {
-    setBaseFieldLabels((prev) => ({ ...prev, [key]: value }))
   }
   function addKeyword() {
     const kw = keywordsInput.trim().toLowerCase()
@@ -842,31 +827,6 @@ export default function AgentPluginPage() {
           {/* Data Fields */}
           {section === 'fields' && (
             <>
-              <div>
-                <h2 className="text-lg font-semibold">Base Field Labels</h2>
-                <p className="text-sm text-muted-foreground">
-                  Every booking always collects these 5 — only the wording is yours to change. Leave blank
-                  to use the default. This is what the AI calls the field when asking, and what shows up in
-                  the booking record — it doesn't affect anything technical underneath.
-                </p>
-              </div>
-              <Card>
-                <CardContent className="pt-4 pb-4 space-y-3">
-                  {BASE_FIELD_DEFS.map((f) => (
-                    <div key={f.key} className="grid grid-cols-[140px_1fr] items-center gap-3">
-                      <Label className="text-sm text-muted-foreground">{f.defaultLabel}</Label>
-                      <Input
-                        placeholder={f.placeholder}
-                        value={baseFieldLabels[f.key] || ''}
-                        onChange={(e) => updateBaseFieldLabel(f.key, e.target.value)}
-                      />
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-
-              <Separator />
-
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold">Data Fields</h2>
@@ -929,8 +889,7 @@ export default function AgentPluginPage() {
                           />
                           {f.key && RESERVED_FIELD_KEYS.has(f.key) ? (
                             <p className="text-[11px] text-destructive">
-                              This overlaps with a built-in field and will be ignored — rename it under{' '}
-                              <span className="font-medium">Base Field Labels</span> above instead.
+                              This overlaps with a built-in field (name, phone, service, date, or time) and will be ignored — choose a different label.
                             </p>
                           ) : f.key && (
                             <p className="text-[11px] text-muted-foreground font-mono">key: {f.key}</p>
