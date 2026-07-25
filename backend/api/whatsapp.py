@@ -1476,7 +1476,11 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
             tenant_config=tenant,
         )
         if result["success"] and result["available_slots"]:
-            slots = ", ".join(s["time"] for s in result["available_slots"][:5])
+            # check_slots already returns an evenly-spread, capped set (see
+            # its own comment) -- re-truncating here to the first 5 would
+            # throw away the spread and go right back to only ever showing
+            # the earliest morning slots.
+            slots = ", ".join(s["time"] for s in result["available_slots"])
             if language == "ms":
                 return f"Masa yang tersedia pada {args['date']}: {slots}\nPilih masa yang sesuai untuk anda."
             elif language == "zh":

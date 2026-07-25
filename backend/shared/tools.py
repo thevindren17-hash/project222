@@ -271,10 +271,23 @@ async def check_slots(
             available.append({"time": current.strftime("%H:%M"), "datetime": slot_dt.isoformat()})
         current += timedelta(minutes=duration + buffer_min)
 
+    # Reported live: a clinic open 9am-6pm could never actually offer an
+    # afternoon or evening slot to a patient, no matter how many were free --
+    # `available` is built in chronological order starting from opening
+    # time, so a flat available[:N] truncation always keeps only the
+    # earliest slots of the day. Evenly sample across the FULL available
+    # range instead, so whatever gets shown/booked from spans the whole day
+    # (morning through near-closing) rather than only ever the first couple
+    # of hours after opening.
+    _MAX_SHOWN_SLOTS = 8
+    if len(available) > _MAX_SHOWN_SLOTS:
+        _step = len(available) / _MAX_SHOWN_SLOTS
+        available = [available[int(i * _step)] for i in range(_MAX_SHOWN_SLOTS)]
+
     return {
         "success": True,
         "date": date.date().isoformat(),
-        "available_slots": available[:10],
+        "available_slots": available,
         "source": "supabase",
     }
 

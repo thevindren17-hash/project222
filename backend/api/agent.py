@@ -281,7 +281,8 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_hi
             tenant_config=tenant,
         )
         if res.get("success") and res.get("available_slots"):
-            slots = ", ".join(s["time"] for s in res["available_slots"][:8])
+            # check_slots already returns an evenly-spread, capped set.
+            slots = ", ".join(s["time"] for s in res["available_slots"])
             return f"Available slots on {res['date']}: {slots}"
         return f"No available slots on {date.strftime('%Y-%m-%d')}."
 
