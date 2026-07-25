@@ -395,6 +395,7 @@ def _build_date_context(
     base_field_labels: Optional[dict] = None,
     custom_tools: Optional[list] = None,
     campaign_context: Optional[dict] = None,
+    known_phone: Optional[str] = None,
 ) -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -481,6 +482,27 @@ def _build_date_context(
     name_label = labels.get("contact_name") or "NAME"
     phone_label = labels.get("contact_phone") or "PHONE NUMBER"
 
+    # WhatsApp already tells us the sender's real phone number before the
+    # conversation even starts -- asking the patient to type it in again is
+    # redundant, and previously created a genuine contradiction: this flow's
+    # hard rule said contact_phone was REQUIRED before calling book_appointment,
+    # while a common clinic privacy guardrail says to only ever confirm the
+    # last 4 digits back to the patient. A model trying to satisfy both ended
+    # up asking for "the last 4 digits" (satisfying privacy), then re-asking
+    # for the "full phone number" moments later once it realized 4 digits
+    # wasn't enough to fill the tool argument -- a confusing loop the patient
+    # had no way to make sense of, since they'd already answered.
+    if known_phone:
+        phone_step = (
+            f"  Step 7: Their {phone_label} is already known from WhatsApp ({known_phone}) -- do NOT ask "
+            f"them to type it in. When you confirm the booking back to them, mention only the last 4 digits "
+            f"(e.g. \"ending in {known_phone[-4:]}\") for their reassurance -- never read back the full number. "
+            f"Use the full value \"{known_phone}\" as the contact_phone tool argument. Only ask for a different "
+            "number if the patient explicitly says this booking is for someone else / a different number.\n"
+        )
+    else:
+        phone_step = f"  Step 7: Ask for their {phone_label} (if not already given) — this is the tool argument contact_phone.\n"
+
     # Same anti-hallucination reinforcement as book_appointment above — a
     # weaker model will otherwise invent its own key names here too (e.g.
     # "date"/"time" instead of "new_date"/"new_time") since those words are
@@ -560,7 +582,7 @@ def _build_date_context(
         "  Step 4: Present the available times clearly. Ask which time they prefer.\n"
         "  Step 5: If user replies with a number like '10' or '10am', treat it as the time (e.g. 10:00) — this is the tool argument time. Do NOT call check_slots again.\n"
         f"  Step 6: Ask for their {name_label} (if not already given in this conversation) — this is the tool argument contact_name. Once given, briefly acknowledge it (e.g. \"Thanks, {{name}}!\") before your next question — natural, not repeated every message after.\n"
-        f"  Step 7: Ask for their {phone_label} (if not already given) — this is the tool argument contact_phone.\n"
+        f"{phone_step}"
         "  Step 8: Ask if they have any NOTES or special requests for this visit (optional — one short question, accept 'no' as an answer) — this is the tool argument notes.\n"
         f"{custom_fields_step}"
         "  Step 9: Confirm all details back to the patient in plain language, then call book_appointment.\n"
@@ -921,6 +943,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             base_field_labels=getattr(tenant, "base_field_labels", None),
             custom_tools=getattr(tenant, "custom_tools", None),
             campaign_context=campaign_context,
+            known_phone=contact.get("phone"),
         )
 
         messages_payload = [
@@ -1123,6 +1146,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         base_field_labels=getattr(tenant, "base_field_labels", None),
         custom_tools=getattr(tenant, "custom_tools", None),
         campaign_context=campaign_context,
+        known_phone=contact.get("phone"),
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},
