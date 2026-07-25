@@ -346,16 +346,23 @@ class LLMClient:
         # from. A receptionist's turns (confirm a name, ask for a date) don't
         # need deep reasoning, so default to "low" for latency; still
         # per-tenant overridable via llm_config for a clinic that wants more
-        # deliberate FAQ answers. include_reasoning=False additionally
-        # ensures the model's internal reasoning trace never ends up
-        # concatenated into the visible reply content (a leakage bug Groq
-        # itself has open reports of for this model family).
+        # deliberate FAQ answers.
+        #
+        # Deliberately NOT setting include_reasoning=False here anymore.
+        # That was originally added to keep the model's internal reasoning
+        # trace out of the visible reply -- but Groq's own community forum
+        # documents the opposite effect for this exact setting: gibberish/
+        # leaked-reasoning content appearing IN the visible reply, worse in
+        # longer, tool-heavy conversations (community.groq.com/t/670) --
+        # exactly the pattern reported live here (a multi-question rambling
+        # reply containing unfilled "[date]"/"[time]" placeholders, mid-turn,
+        # after several check_slots-involving turns). By default (this field
+        # simply unset) gpt-oss already returns reasoning in its own
+        # separate `reasoning` field rather than mixed into `content` -- the
+        # explicit override was solving a smaller problem by causing a
+        # bigger one.
         if self.provider == "groq" and "gpt-oss" in self.model:
             kwargs["reasoning_effort"] = llm_config.get("reasoning_effort", "low")
-            # include_reasoning is a Groq-specific field, not part of the
-            # OpenAI SDK's typed create() signature -- must go through
-            # extra_body or the SDK raises TypeError on an unknown kwarg.
-            kwargs["extra_body"] = {"include_reasoning": False}
         elif self.provider in ("gemini", "google") and "flash" in self.model and "lite" not in self.model:
             # Same latency trap, different provider: Gemini's non-Lite Flash
             # tier (2.5/3.x) defaults to a dynamic "thinking" budget that's
