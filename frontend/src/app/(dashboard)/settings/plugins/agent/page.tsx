@@ -362,11 +362,48 @@ export default function AgentPluginPage() {
       prev.includes(service) ? prev.filter((s) => s !== service) : [...prev, service]
     )
   }
-  function addFaq() { setFaq([...faq, { q: '', a: '' }]) }
-  function updateFaq(i: number, field: 'q' | 'a', value: string) {
-    const next = [...faq]; next[i] = { ...next[i], [field]: value }; setFaq(next)
+  // Knowledge Base saves itself the moment it changes (upload, delete, clear)
+  // instead of waiting for the page's global Save Changes button -- a doc
+  // upload should take effect immediately, not depend on the clinic
+  // remembering to click Save while possibly mid-edit somewhere else on the
+  // page. Only the faq column is touched (upsert with a single-key payload
+  // updates just that column on conflict, or creates the row with sane
+  // defaults elsewhere if this is a brand new tenant) -- never overwrites
+  // any other in-progress, unsaved edit on this page.
+  async function persistFaq(next: FaqItem[]) {
+    if (!tenant) return
+    const { error } = await supabase.from('tenant_settings').upsert(
+      { tenant_id: tenant.id, faq: next },
+      { onConflict: 'tenant_id' }
+    )
+    if (error) throw error
+    queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'full'] })
   }
-  function removeFaq(i: number) { setFaq(faq.filter((_, idx) => idx !== i)) }
+
+  async function removeFaq(i: number) {
+    const next = faq.filter((_, idx) => idx !== i)
+    setFaq(next)
+    try {
+      await persistFaq(next)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not remove that entry')
+      setFaq(faq)
+    }
+  }
+
+  async function clearAllFaq() {
+    if (faq.length === 0) return
+    if (!confirm(`Remove all ${faq.length} knowledge base entries? This can't be undone.`)) return
+    const prev = faq
+    setFaq([])
+    try {
+      await persistFaq([])
+      toast.success('Knowledge base cleared')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not clear the knowledge base')
+      setFaq(prev)
+    }
+  }
 
   async function uploadFaqDocument(file: File) {
     if (!tenant) return
@@ -386,9 +423,11 @@ export default function AgentPluginPage() {
       const res = await fetch('/api/agent/extract-faq', { method: 'POST', body: form })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || data.error || 'Could not extract Q&A from that document')
-      setFaq([...faq, ...(data.faq || [])])
+      const merged = [...faq, ...(data.faq || [])]
+      setFaq(merged)
+      await persistFaq(merged)
       toast.success(
-        `Added ${data.faq?.length || 0} entries from "${file.name}" — review them below, then Save Changes`
+        `Learned ${data.faq?.length || 0} things from "${file.name}" — the AI can use them right away`
         + (data.truncated ? ' (only the first part of the document was used)' : '')
       )
     } catch (e) {
@@ -1015,9 +1054,14 @@ export default function AgentPluginPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold">Knowledge Base</h2>
-                  <p className="text-sm text-muted-foreground">Q&amp;A pairs the AI uses to answer customer questions</p>
+                  <p className="text-sm text-muted-foreground">Documents the AI uses to answer customer questions</p>
                 </div>
                 <div className="flex items-center gap-2">
+                  {faq.length > 0 && (
+                    <Button variant="ghost" size="sm" onClick={clearAllFaq} className="text-muted-foreground hover:text-destructive">
+                      <Trash2 className="h-3.5 w-3.5 mr-1.5" />Clear All
+                    </Button>
+                  )}
                   <label className="inline-flex">
                     <input
                       type="file" accept=".pdf,.md,.txt,.json" className="hidden" disabled={uploadingFaq}
@@ -1031,14 +1075,11 @@ export default function AgentPluginPage() {
                       {uploadingFaq ? 'Extracting…' : 'Upload Document'}
                     </span>
                   </label>
-                  <Button variant="outline" size="sm" onClick={addFaq}>
-                    <Plus className="h-3.5 w-3.5 mr-1.5" />Add Entry
-                  </Button>
                 </div>
               </div>
               <p className="text-xs text-muted-foreground -mt-2">
-                Upload a PDF, Markdown, text, or JSON file (up to 7MB) and AI will pull out Q&amp;A pairs automatically —
-                review and edit them below before saving.
+                Upload a PDF, Markdown, text, or JSON file (up to 7MB) — the AI reads it and starts using it right away,
+                no extra step needed.
               </p>
 
               <div className="space-y-3">
@@ -1046,40 +1087,28 @@ export default function AgentPluginPage() {
                   <Card className="border-dashed">
                     <CardContent className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
                       <BookOpen className="h-9 w-9 opacity-25" />
-                      <p className="text-sm font-medium">No entries yet</p>
-                      <p className="text-xs text-center max-w-xs">Add common questions your customers ask, like clinic hours, pricing, parking, or location.</p>
-                      <Button variant="outline" size="sm" className="mt-2" onClick={addFaq}>
-                        <Plus className="h-3.5 w-3.5 mr-1.5" />Add First Entry
-                      </Button>
+                      <p className="text-sm font-medium">Nothing uploaded yet</p>
+                      <p className="text-xs text-center max-w-xs">Upload a document — clinic hours, pricing, services, policies — and the AI will learn from it automatically.</p>
                     </CardContent>
                   </Card>
                 )}
-                {faq.map((item, i) => (
-                  <Card key={i}>
-                    <CardContent className="pt-4 pb-4">
-                      <div className="flex items-start gap-3">
-                        <div className="flex-1 space-y-2">
-                          <Input
-                            placeholder="Question — e.g. What are your opening hours?"
-                            value={item.q}
-                            onChange={(e) => updateFaq(i, 'q', e.target.value)}
-                            className="font-medium"
-                          />
-                          <Textarea
-                            placeholder="Answer — e.g. We are open Mon–Fri 9am–6pm, Sat 9am–1pm, closed Sunday."
-                            value={item.a}
-                            onChange={(e) => updateFaq(i, 'a', e.target.value)}
-                            rows={2}
-                            className="text-sm resize-none"
-                          />
+                {faq.length > 0 && (
+                  <Card>
+                    <CardContent className="pt-4 pb-4 divide-y">
+                      {faq.map((item, i) => (
+                        <div key={i} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{item.q}</p>
+                            <p className="text-xs text-muted-foreground line-clamp-2">{item.a}</p>
+                          </div>
+                          <Button variant="ghost" size="icon" onClick={() => removeFaq(i)} className="text-muted-foreground hover:text-destructive shrink-0 h-7 w-7">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
-                        <Button variant="ghost" size="icon" onClick={() => removeFaq(i)} className="text-muted-foreground hover:text-destructive shrink-0 mt-0.5">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+                      ))}
                     </CardContent>
                   </Card>
-                ))}
+                )}
               </div>
             </>
           )}
