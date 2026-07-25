@@ -388,7 +388,6 @@ def _parse_embedded_tool_calls(text: str):
 
 def _build_date_context(
     reply_language: str = "ask",
-    is_new_conversation: bool = False,
     conversation_language: str = "en",
     timezone: str = "Asia/Kuala_Lumpur",
     custom_booking_fields: Optional[list] = None,
@@ -416,13 +415,16 @@ def _build_date_context(
     elif reply_language == "zh":
         lang_rule = "⚠️ 严重警告 — 中文：只能用中文回复。每一个字都必须是中文，不允许任何英文或马来文。没有例外。"
     else:
-        if is_new_conversation:
-            lang_rule = (
-                "⚠️ LANGUAGE FIRST: This is the very first message. Before anything else, ask: "
-                "'Hello! Would you prefer to chat in English, Bahasa Melayu, or Chinese?' "
-                "Do NOT answer any other question until the user confirms their language."
-            )
-        elif conversation_language == "ms":
+        # No explicit per-clinic reply_language override -- auto-detect from
+        # what the patient actually typed, on every message including the
+        # very first one. This used to ask "English, Bahasa Melayu, or
+        # Chinese?" on a brand new conversation instead of just detecting it,
+        # which directly contradicted clinics whose own custom instructions
+        # already say "never ask, just detect" (a real, reported case) --
+        # conversation_language is already the detected language of the
+        # current message by the time this runs, first message or not, so
+        # there's nothing this branch needs that the ones below don't cover.
+        if conversation_language == "ms":
             lang_rule = (
                 "⚠️ KRITIKAL — BAHASA MELAYU: Pengguna telah memilih Bahasa Melayu. "
                 "SETIAP patah perkataan dalam balasan anda MESTI dalam Bahasa Melayu. "
@@ -933,10 +935,8 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         }).execute()))
 
         llm_client = load_llm_client(tenant)
-        is_new_conversation = len(conversation_history) == 1
         date_context = _build_date_context(
             reply_language=getattr(tenant, "reply_language", "ask"),
-            is_new_conversation=is_new_conversation,
             conversation_language=language,
             timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
             custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
@@ -1132,14 +1132,12 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
     }).execute())
 
     llm_client = load_llm_client(tenant)
-    is_new_conversation = len(conversation_history) == 1
     campaign_context = None
     if contact.get("id"):
         from api.campaigns import get_pending_campaign_context
         campaign_context = await get_pending_campaign_context(tenant.tenant_id, contact["id"])
     date_context = _build_date_context(
         reply_language=getattr(tenant, "reply_language", "ask"),
-        is_new_conversation=is_new_conversation,
         conversation_language=language,
         timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),

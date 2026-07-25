@@ -413,11 +413,9 @@ async def test_agent(req: TestMessage):
     from api.whatsapp import _build_date_context, _tool_definitions_for_tenant, _select_tools
     from shared.utils import detect_language
 
-    is_new_conversation = len(req.history) == 0
     detected_lang = detect_language(req.message)
     date_context = _build_date_context(
         reply_language=getattr(tenant, "reply_language", "ask"),
-        is_new_conversation=is_new_conversation,
         conversation_language=detected_lang,
         timezone=getattr(tenant, "timezone", "Asia/Kuala_Lumpur"),
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
