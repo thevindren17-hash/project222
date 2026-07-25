@@ -7,9 +7,10 @@ import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
+import { format } from 'date-fns'
 import { Calendar } from '@/components/ui/calendar'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { cn, parseClinicLocal } from '@/lib/utils'
 import AddBookingModal from '@/components/calendar/add-booking-modal'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { fetchGoogleCalendarEvents } from '@/lib/api'
@@ -67,12 +68,17 @@ export default function CalendarPage() {
   })
 
   const bookingEvents = bookings?.map((b) => {
-    // Strip timezone suffix so FullCalendar treats the stored time as local (no UTC conversion).
-    // Stored times are naive local-time values; without this, UTC+8 browsers shift 10am → 6pm.
-    const startLocal = b.scheduled_at.slice(0, 19)
-    const endBase = new Date(startLocal + 'Z')
-    endBase.setUTCMinutes(endBase.getUTCMinutes() + 30)
-    const endLocal = endBase.toISOString().slice(0, 19)
+    // scheduled_at is a real TIMESTAMPTZ (confirmed live against the
+    // database -- see parseClinicLocal in lib/utils.ts). FullCalendar wants
+    // a plain local-time string with no timezone suffix so it renders the
+    // clinic's own wall-clock time regardless of the viewer's browser
+    // timezone -- parseClinicLocal already converts to the correct Malaysia
+    // wall-clock Date, so format() (which reads local Date fields) here
+    // produces the right naive string instead of the raw, un-converted one.
+    const clinicStart = parseClinicLocal(b.scheduled_at)
+    const startLocal = format(clinicStart, "yyyy-MM-dd'T'HH:mm:ss")
+    const clinicEnd = new Date(clinicStart.getTime() + 30 * 60 * 1000)
+    const endLocal = format(clinicEnd, "yyyy-MM-dd'T'HH:mm:ss")
     const style = STATUS[b.status as keyof typeof STATUS] ?? STATUS.completed
     return ({
     id: b.id,

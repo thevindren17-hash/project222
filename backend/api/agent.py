@@ -423,7 +423,26 @@ async def test_agent(req: TestMessage):
         custom_tools=getattr(tenant, "custom_tools", None),
     ) + "\n\n[TEST MODE — all tools run for real and save to the database.]"
 
-    conversation = list(req.history) + [{"role": "user", "content": req.message}]
+    # The real WhatsApp handler caps conversation history at 20 messages / 50KB
+    # before sending it to the LLM (api/whatsapp.py) -- Test Agent never had an
+    # equivalent cap, since the frontend just keeps appending to `history` for
+    # as long as the browser tab stays open. A long testing session (which is
+    # exactly what heavy manual testing looks like) resends that entire,
+    # ever-growing history in full on every single message, with no trimming
+    # -- confirmed live: an 8.6K-input-token single request, well beyond what
+    # this system prompt + a handful of turns should ever cost. Apply the same
+    # cap here so a long test session can't runaway in cost/latency the same
+    # way a long real conversation already can't.
+    history_messages = list(req.history)
+    _MAX_HISTORY_BYTES = 50_000
+    if len(history_messages) > 20:
+        history_messages = history_messages[-20:]
+    total_bytes = sum(len((m.get("content") or "").encode()) for m in history_messages)
+    while history_messages and total_bytes > _MAX_HISTORY_BYTES:
+        removed = history_messages.pop(0)
+        total_bytes -= len((removed.get("content") or "").encode())
+
+    conversation = history_messages + [{"role": "user", "content": req.message}]
 
     messages_payload = [
         {
@@ -446,7 +465,7 @@ async def test_agent(req: TestMessage):
         ct["tool_key"] for ct in (getattr(tenant, "custom_tools", None) or [])
         if ct.get("enabled", True) and ct.get("tool_key")
     }
-    _history_for_select = [{"role": m.get("role"), "body": m.get("content", "")} for m in req.history]
+    _history_for_select = [{"role": m.get("role"), "body": m.get("content", "")} for m in history_messages]
     enabled_tools = _select_tools(all_tools, _history_for_select, req.message, extra_always_on=_custom_tool_keys)
 
     async def _execute(fn: str, args: dict) -> str:

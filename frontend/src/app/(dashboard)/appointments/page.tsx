@@ -10,10 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
-import { format, parseISO, subWeeks, subMonths } from 'date-fns'
+import { format, subWeeks, subMonths } from 'date-fns'
 import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore } from 'lucide-react'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { BOOKING_STATUS } from '@/lib/booking-status'
+import { parseClinicLocal } from '@/lib/utils'
 import type { Booking } from '@/lib/types'
 
 const CLEAR_OLDER_THAN_OPTIONS: { value: string; label: string; cutoff: () => Date }[] = [
@@ -87,7 +88,7 @@ export default function AppointmentsPage() {
     if (!tenant || !booking.contact?.phone) return
     setSendingId(`${booking.id}:${type}`)
     try {
-      const scheduled = parseISO(booking.scheduled_at.slice(0, 19))
+      const scheduled = parseClinicLocal(booking.scheduled_at)
       const res = await fetch('/api/campaigns/send-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -138,11 +139,13 @@ export default function AppointmentsPage() {
     const option = CLEAR_OLDER_THAN_OPTIONS.find((o) => o.value === clearOlderThan)
     if (!option) return
     const cutoffDate = option.cutoff()
-    // scheduled_at is stored as naive clinic-local wall-clock digits, never
-    // UTC — the cutoff must be built the same way (not .toISOString(),
-    // which would tag it as UTC and silently shift it by the clinic's
-    // offset, same bug class fixed elsewhere in this app already).
-    const cutoffLocal = format(cutoffDate, "yyyy-MM-dd'T'HH:mm:ss")
+    // scheduled_at is a real TIMESTAMPTZ (confirmed live against the
+    // database -- see parseClinicLocal in lib/utils.ts for the full story).
+    // "Older than N weeks ago" is a pure absolute-instant comparison with no
+    // timezone ambiguity at all, so the browser's own real "now" converted
+    // to a UTC ISO string is exactly correct here -- no manual offset math
+    // needed for this particular comparison.
+    const cutoffLocal = cutoffDate.toISOString()
     if (!confirm(
       `Archive all appointments scheduled before ${format(cutoffDate, 'MMM d, yyyy')}? `
       + 'This only hides them from this list — nothing is deleted, and you can bring them back anytime under "Show archived".'
@@ -254,7 +257,7 @@ export default function AppointmentsPage() {
                     <p className="text-xs text-muted-foreground">{b.contact?.phone}</p>
                   </TableCell>
                   <TableCell>{b.service_type}</TableCell>
-                  <TableCell>{format(parseISO(b.scheduled_at.slice(0, 19)), 'MMM d, yyyy h:mm a')}</TableCell>
+                  <TableCell>{format(parseClinicLocal(b.scheduled_at), 'MMM d, yyyy h:mm a')}</TableCell>
                   <TableCell className="capitalize">{b.source}</TableCell>
                   <TableCell>
                     <Badge variant="outline" className={BOOKING_STATUS[b.status as keyof typeof BOOKING_STATUS]?.badgeClass}>

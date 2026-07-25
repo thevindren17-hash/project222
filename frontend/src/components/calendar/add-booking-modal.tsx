@@ -54,7 +54,13 @@ export default function AddBookingModal({ open, onClose, defaultDate }: Props) {
         tenant_id: tenant.id,
         contact_id: contactId,
         service_type: service,
-        scheduled_at: `${date}T${time}:00`,
+        // scheduled_at is a real TIMESTAMPTZ -- without an explicit offset,
+        // Postgres stores this naive "2:00 PM" string as 2:00 PM UTC, which
+        // is 10:00 PM Malaysia time, not the 2:00 PM the staff member
+        // actually picked (confirmed live against the database; see
+        // parseClinicLocal in lib/utils.ts for the read-side half of this
+        // same bug). Asia/Kuala_Lumpur is a fixed UTC+8 offset, no DST.
+        scheduled_at: `${date}T${time}:00+08:00`,
         status: 'pending',
         source: 'whatsapp',
         details: notes ? { notes } : {},
