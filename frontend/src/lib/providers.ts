@@ -1,10 +1,16 @@
 // ── WhatsApp text agent providers ──────────────────────────────────────────
 
 // Model IDs below are periodically retired by each provider without
-// warning (this is what broke Gemini's "2.5 Flash" option — Google pulled
-// the dated preview snapshot it pointed to). Prefer stable, non-versioned
-// IDs; avoid "-preview"/"-exp-"-suffixed snapshots where a stable
-// equivalent exists, since those are the ones providers retire fastest.
+// warning -- Gemini specifically has done this twice now: first pulling a
+// dated preview snapshot, then (9 Jul 2026) silently blocking brand-new API
+// keys from gemini-2.5-flash/-flash-lite/-pro with a 404 "no longer
+// available to new users", months before its own docs' stated 16 Oct 2026
+// retirement date. Trust live/reported behavior over Google's docs for this
+// provider -- they've already been shown to disagree. Prefer stable,
+// non-versioned IDs; avoid "-preview"/"-exp-"-suffixed snapshots where a
+// stable equivalent exists, since those are the ones providers retire
+// fastest (no Gemini Pro-tier option is listed below for exactly this
+// reason -- only a "-preview" Pro build currently exists).
 export const LLM_PROVIDERS = [
   {
     provider: 'groq',
@@ -47,13 +53,11 @@ export const LLM_PROVIDERS = [
     name: 'Google Gemini',
     models: [
       { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite — Recommended (cheap & stable)' },
-      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash — Best Price-Performance' },
-      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite — Cheapest (retires 16 Oct 2026, avoid for new setups)' },
       { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite — Latest Budget Tier' },
+      { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash — Fast & Capable' },
       { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash — Latest & Most Capable' },
-      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro — Most Powerful' },
     ],
-    description: 'Best for multilingual support. Free tier on Flash/Flash-Lite models (Pro requires a paid key).',
+    description: 'Best for multilingual support. Free tier on Flash/Flash-Lite models. (The entire Gemini 2.5 line — Flash, Flash-Lite, and Pro — is currently blocked for brand-new API keys, so it is intentionally not offered here even though Google\'s docs still list it.)',
     recommended: false,
     estimatedCostPerCall: 'Free–$0.01',
   },
