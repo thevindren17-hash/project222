@@ -15,10 +15,10 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { LLM_PROVIDERS, VOICE_STT_PROVIDERS, VOICE_TTS_PROVIDERS, VOICE_LANGUAGES } from '@/lib/providers'
+import { LLM_PROVIDERS } from '@/lib/providers'
 import {
-  Loader2, Bot, BookOpen, Zap, Users, Code, Eye, Plus, Trash2, Brain, Mic, Sparkles, Key, Check, Languages,
-  Volume2, Play, ExternalLink, CheckCircle2, Database, Wrench, Upload,
+  Loader2, Bot, BookOpen, Users, Code, Eye, Plus, Trash2, Brain, Sparkles, Key, Check,
+  ExternalLink, CheckCircle2, Database, Wrench, Upload,
 } from 'lucide-react'
 
 const SERVICES = [
@@ -26,24 +26,13 @@ const SERVICES = [
   'Braces & Orthodontics', 'Root Canal', 'Dental Crown', 'Dental Implant', 'Other',
 ]
 
-const TOOL_LABELS: Record<string, { label: string; desc: string }> = {
-  book_appointment: { label: 'Book Appointments', desc: 'AI can create new appointment bookings' },
-  check_slots: { label: 'Check Available Slots', desc: 'AI can look up free appointment times' },
-  lookup_patient: { label: 'Look Up Patient Records', desc: 'AI can check if a caller is an existing patient by phone number (read-only)' },
-  get_faq: { label: 'Look Up FAQ', desc: 'AI references your knowledge base when answering' },
-  escalate: { label: 'Escalate to Human', desc: 'AI can hand off conversations to staff' },
-}
-
 const SECTIONS = [
   { id: 'instructions', label: 'Instructions', icon: Code },
   { id: 'model', label: 'Model Settings', icon: Brain },
   { id: 'fields', label: 'Data Fields', icon: Database },
   { id: 'custom-tools', label: 'Custom Tools', icon: Wrench },
   { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
-  { id: 'language', label: 'Language', icon: Languages },
-  { id: 'voice', label: 'Voice', icon: Mic },
   { id: 'handoff', label: 'Handoff', icon: Users },
-  { id: 'capabilities', label: 'Capabilities', icon: Zap },
 ]
 
 const LLM_CRED_FIELDS: Record<string, { placeholder: string }> = {
@@ -181,8 +170,6 @@ export default function AgentPluginPage() {
   const [voiceSttProvider, setVoiceSttProvider] = useState('openai')
   const [newVoiceSttKey, setNewVoiceSttKey] = useState('')
   const [newVoiceTtsKey, setNewVoiceTtsKey] = useState('')
-  const [previewLoading, setPreviewLoading] = useState<string | null>(null)
-  const previewAudioRef = useRef<HTMLAudioElement | null>(null)
   const [replyLanguage, setReplyLanguage] = useState('ask')
 
   const [humanTakeover, setHumanTakeover] = useState(true)
@@ -328,34 +315,6 @@ export default function AgentPluginPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   })
-
-  async function playVoicePreview(provider: string, voiceId: string, language: string) {
-    if (!tenant || !voiceId) return
-    const key = `${language}:${voiceId}`
-    setPreviewLoading(key)
-    try {
-      const res = await fetch('/api/voice-preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: tenant.id, provider, voice_id: voiceId, language }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        toast.error(data.error || 'Preview failed')
-        return
-      }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      previewAudioRef.current?.pause()
-      const audio = new Audio(url)
-      previewAudioRef.current = audio
-      await audio.play()
-    } catch {
-      toast.error('Network error')
-    } finally {
-      setPreviewLoading(null)
-    }
-  }
 
   function toggleService(service: string) {
     setSelectedServices((prev) =>
@@ -1189,329 +1148,6 @@ export default function AgentPluginPage() {
             </>
           )}
 
-          {/* Language */}
-          {section === 'language' && (
-            <>
-              <div>
-                <h2 className="text-lg font-semibold">Language Settings</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Control which language your AI agent uses. Malaysians often write Manglish (mixed English + Malay) — set a strict policy to avoid confusion.
-                </p>
-              </div>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Languages className="h-4 w-4 text-primary" />
-                    Reply Language Policy
-                  </CardTitle>
-                  <CardDescription>Choose how the AI decides which language to reply in.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {[
-                    {
-                      value: 'ask',
-                      label: 'Ask user at start of conversation',
-                      desc: 'AI greets and asks "English, Bahasa Melayu, or Chinese?" before doing anything else. Recommended for Malaysian clinics.',
-                    },
-                    {
-                      value: 'ms',
-                      label: 'Always Bahasa Melayu',
-                      desc: 'AI always replies in Bahasa Melayu regardless of what language the user writes in.',
-                    },
-                    {
-                      value: 'en',
-                      label: 'Always English',
-                      desc: 'AI always replies in English regardless of what language the user writes in.',
-                    },
-                    {
-                      value: 'zh',
-                      label: 'Always Mandarin Chinese',
-                      desc: 'AI always replies in Mandarin Chinese regardless of what language the user writes in.',
-                    },
-                  ].map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setReplyLanguage(opt.value)}
-                      className={cn(
-                        'w-full text-left p-3 rounded-xl border-2 transition-all',
-                        replyLanguage === opt.value
-                          ? 'border-primary bg-primary/5'
-                          : 'border-border hover:border-muted-foreground/40'
-                      )}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className={cn(
-                          'mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center',
-                          replyLanguage === opt.value ? 'border-primary' : 'border-muted-foreground/40'
-                        )}>
-                          {replyLanguage === opt.value && (
-                            <div className="h-2 w-2 rounded-full bg-primary" />
-                          )}
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium">{opt.label}</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">{opt.desc}</p>
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </CardContent>
-              </Card>
-
-              {replyLanguage === 'ask' && (
-                <div className="rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-4 text-sm text-blue-800 dark:text-blue-300">
-                  <p className="font-semibold mb-1">How "Ask user" works</p>
-                  <p className="text-xs leading-relaxed">
-                    When a new WhatsApp conversation starts, the AI will greet the user and ask which language they prefer (English, Bahasa Melayu, or Chinese) before doing anything else.
-                    Once the user replies (e.g. "English", "BM", or "Chinese"), the AI uses that language for the rest of the conversation.
-                    This is the best option for Malaysia where users freely mix English and Malay (Manglish).
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Voice */}
-          {section === 'voice' && (
-            <>
-              <div>
-                <h2 className="text-lg font-semibold">Voice Messages</h2>
-                <p className="text-sm text-muted-foreground">Let customers send voice notes — AI transcribes and replies with voice</p>
-              </div>
-
-              <Card>
-                <CardContent className="pt-4 space-y-5">
-                  <div className="flex items-center justify-between p-3 bg-muted/40 rounded-lg">
-                    <div>
-                      <p className="font-medium text-sm">Enable voice replies</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">AI receives voice notes, transcribes them, and replies with a voice message</p>
-                    </div>
-                    <Switch checked={voiceReplyEnabled} onCheckedChange={setVoiceReplyEnabled} />
-                  </div>
-
-                  {voiceReplyEnabled && (
-                    <>
-                      <Separator />
-
-                      {/* STT provider picker */}
-                      <div className="space-y-3">
-                        <div>
-                          <Label className="flex items-center gap-1.5 text-sm font-medium">
-                            <Mic className="h-3.5 w-3.5" />Speech-to-Text
-                          </Label>
-                          <p className="text-xs text-muted-foreground">How incoming voice messages are converted to text</p>
-                        </div>
-                        <div className="grid grid-cols-3 gap-2">
-                          {VOICE_STT_PROVIDERS.map((p) => {
-                            const active = voiceSttProvider === p.provider
-                            return (
-                              <button
-                                key={p.provider}
-                                type="button"
-                                onClick={() => setVoiceSttProvider(p.provider)}
-                                className={cn(
-                                  'relative flex flex-col gap-1 rounded-xl border px-3 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                                  active
-                                    ? 'border-primary bg-primary/5 shadow-sm'
-                                    : 'border-border hover:border-muted-foreground/30 hover:bg-muted/20'
-                                )}
-                              >
-                                {active && (
-                                  <span className="absolute top-2 right-2 flex h-4 w-4 items-center justify-center rounded-full bg-primary">
-                                    <Check className="h-2.5 w-2.5 text-primary-foreground" />
-                                  </span>
-                                )}
-                                <span className="text-xs font-semibold leading-snug pr-5">{p.name}</span>
-                                {p.badge && <Badge variant="secondary" className="text-[10px] w-fit">{p.badge}</Badge>}
-                                <span className="text-[11px] text-muted-foreground leading-snug">{p.description}</span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                        {(() => {
-                          const selected = VOICE_STT_PROVIDERS.find((p) => p.provider === voiceSttProvider)
-                          if (!selected) return null
-                          return (
-                            <div className="space-y-1.5 max-w-sm">
-                              <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                                <Key className="h-3 w-3" />API Key
-                                {credExistence?.[voiceSttProvider] && !newVoiceSttKey && (
-                                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
-                                    <Check className="h-2.5 w-2.5" />Key saved
-                                  </Badge>
-                                )}
-                                <a href={selected.keyUrl} target="_blank" rel="noopener noreferrer" className="ml-auto text-[11px] text-primary flex items-center gap-1 hover:underline">
-                                  Get key <ExternalLink className="h-2.5 w-2.5" />
-                                </a>
-                              </Label>
-                              <Input
-                                type="password"
-                                placeholder={credExistence?.[voiceSttProvider] ? 'Enter new key to replace…' : selected.keyPlaceholder}
-                                value={newVoiceSttKey}
-                                onChange={(e) => setNewVoiceSttKey(e.target.value)}
-                              />
-                            </div>
-                          )
-                        })()}
-                      </div>
-
-                      <Separator />
-
-                      {/* TTS provider picker */}
-                      <div className="space-y-3">
-                        <div>
-                          <Label className="flex items-center gap-1.5 text-sm font-medium">
-                            <Volume2 className="h-3.5 w-3.5" />AI Voice
-                          </Label>
-                          <p className="text-xs text-muted-foreground">The voice used when the AI speaks back — one per language</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          {VOICE_TTS_PROVIDERS.map((p) => {
-                            const active = voiceTtsProvider === p.provider
-                            return (
-                              <button
-                                key={p.provider}
-                                type="button"
-                                onClick={() => setVoiceTtsProvider(p.provider)}
-                                className={cn(
-                                  'relative flex flex-col gap-1 rounded-xl border px-3 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                                  active
-                                    ? 'border-primary bg-primary/5 shadow-sm'
-                                    : 'border-border hover:border-muted-foreground/30 hover:bg-muted/20'
-                                )}
-                              >
-                                {active && (
-                                  <span className="absolute top-2 right-2 flex h-4 w-4 items-center justify-center rounded-full bg-primary">
-                                    <Check className="h-2.5 w-2.5 text-primary-foreground" />
-                                  </span>
-                                )}
-                                <span className="text-xs font-semibold leading-snug pr-5">{p.name}</span>
-                                {p.badge && (
-                                  <Badge variant="outline" className="text-[10px] w-fit text-primary border-primary/30">{p.badge}</Badge>
-                                )}
-                              </button>
-                            )
-                          })}
-                        </div>
-                        {(() => {
-                          const selected = VOICE_TTS_PROVIDERS.find((p) => p.provider === voiceTtsProvider)
-                          if (!selected) return null
-                          const hasKey = !!credExistence?.[voiceTtsProvider]
-                          return (
-                            <>
-                              <div className="space-y-1.5 max-w-sm">
-                                <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                                  <Key className="h-3 w-3" />API Key
-                                  {hasKey && !newVoiceTtsKey && (
-                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
-                                      <Check className="h-2.5 w-2.5" />Key saved
-                                    </Badge>
-                                  )}
-                                  <a href={selected.keyUrl} target="_blank" rel="noopener noreferrer" className="ml-auto text-[11px] text-primary flex items-center gap-1 hover:underline">
-                                    Get key <ExternalLink className="h-2.5 w-2.5" />
-                                  </a>
-                                </Label>
-                                <Input
-                                  type="password"
-                                  placeholder={hasKey ? 'Enter new key to replace…' : selected.keyPlaceholder}
-                                  value={newVoiceTtsKey}
-                                  onChange={(e) => setNewVoiceTtsKey(e.target.value)}
-                                />
-                              </div>
-
-                              <div className="space-y-2 pt-1">
-                                {VOICE_LANGUAGES.map((lang) => {
-                                  const voices = selected.voicesByLanguage[lang.code] || []
-                                  const currentVoiceId = voiceTtsVoiceMap[lang.code] || voices[0]?.id || ''
-                                  const previewKey = `${lang.code}:${currentVoiceId}`
-                                  return (
-                                    <div key={lang.code} className="flex items-center gap-2 rounded-lg border p-2.5">
-                                      <span className="text-xs font-medium w-28 shrink-0">{lang.name}</span>
-                                      <Select
-                                        value={currentVoiceId}
-                                        onValueChange={(v) => v && setVoiceTtsVoiceMap({ ...voiceTtsVoiceMap, [lang.code]: v })}
-                                      >
-                                        <SelectTrigger className="h-8 text-xs flex-1"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                          {voices.map((v) => (
-                                            <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
-                                          ))}
-                                        </SelectContent>
-                                      </Select>
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="icon"
-                                        className="h-8 w-8 shrink-0"
-                                        disabled={!hasKey || previewLoading === previewKey}
-                                        title={hasKey ? 'Preview this voice' : 'Add an API key above first'}
-                                        onClick={() => playVoicePreview(voiceTtsProvider, currentVoiceId, lang.code)}
-                                      >
-                                        {previewLoading === previewKey
-                                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                          : <Play className="h-3.5 w-3.5" />}
-                                      </Button>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            </>
-                          )
-                        })()}
-                      </div>
-
-                      <Separator />
-
-                      <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4">
-                        <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Requirements</p>
-                        <ul className="mt-1 space-y-0.5 text-sm text-amber-700 dark:text-amber-400">
-                          <li>• Add an API key above for whichever STT and TTS provider you pick — same key store as <strong>Model Settings</strong>, so a Groq key you&apos;ve already saved there works here too</li>
-                          <li>• Works with WhatsApp voice notes (OGG/Opus format)</li>
-                          <li>• Each voice exchange uses a small amount of API credit, depending on the provider</li>
-                        </ul>
-                      </div>
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-
-              <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/30 p-4">
-                <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">How voice messages work</p>
-                <p className="text-sm text-blue-700 dark:text-blue-400 mt-1">
-                  Customer sends a WhatsApp voice note → AI transcribes it → generates a reply → sends back a voice note.
-                  If voice reply is disabled, the AI still reads the voice note but replies as text.
-                </p>
-              </div>
-            </>
-          )}
-
-          {/* Capabilities */}
-          {section === 'capabilities' && (
-            <>
-              <div>
-                <h2 className="text-lg font-semibold">Capabilities</h2>
-                <p className="text-sm text-muted-foreground">Choose which actions your AI is allowed to perform</p>
-              </div>
-
-              <Card>
-                <CardContent className="pt-4 space-y-2">
-                  {Object.entries(TOOL_LABELS).map(([key, { label, desc }]) => (
-                    <div key={key} className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/30 transition-colors">
-                      <div>
-                        <p className="text-sm font-medium">{label}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
-                      </div>
-                      <Switch
-                        checked={toolConfig[key] ?? false}
-                        onCheckedChange={(v) => setToolConfig({ ...toolConfig, [key]: v })}
-                      />
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            </>
-          )}
         </div>
       </div>
     </div>
