@@ -319,6 +319,14 @@ class LLMClient:
             # OpenAI SDK's typed create() signature -- must go through
             # extra_body or the SDK raises TypeError on an unknown kwarg.
             kwargs["extra_body"] = {"include_reasoning": False}
+        elif self.provider in ("gemini", "google") and "flash" in self.model and "lite" not in self.model:
+            # Same latency trap, different provider: Gemini's non-Lite Flash
+            # tier (2.5/3.x) defaults to a dynamic "thinking" budget that's
+            # on by default -- Flash-Lite already defaults it off (left
+            # alone here), and Pro is deliberately chosen for deep reasoning
+            # so it's left alone too. reasoning_effort is natively supported
+            # through Gemini's OpenAI-compatible endpoint.
+            kwargs["reasoning_effort"] = llm_config.get("reasoning_effort", "low")
 
         response = await client.chat.completions.create(**kwargs)
         choice = response.choices[0].message
