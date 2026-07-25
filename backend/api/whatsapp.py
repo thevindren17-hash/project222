@@ -1521,11 +1521,13 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
             else:
                 return f"Rescheduled! Your new appointment is on {new}."
         else:
-            err = result.get("error", "")
+            msg = result.get("message", "")
             if language == "ms":
-                return err or "Tidak dapat menukar temujanji. Sila hubungi kami."
+                return msg or "Tidak dapat menukar temujanji. Sila hubungi kami."
+            elif language == "zh":
+                return msg or "无法更改预约，请联系我们。"
             else:
-                return err or "Couldn't reschedule that appointment."
+                return msg or "Couldn't reschedule that appointment."
 
     elif fn_name == "lookup_patient":
         phone = args.get("contact_phone", "")

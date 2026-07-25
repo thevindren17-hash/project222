@@ -365,9 +365,25 @@ async def reschedule_appointment(
     from shared.utils import parse_datetime
     supabase = get_supabase_client()
     duration = getattr(tenant_config, "appointment_duration_minutes", None) or 30
+    buffer_min = getattr(tenant_config, "booking_buffer_minutes", None) or 0
     new_scheduled_at = parse_datetime(new_date, new_time)
     if not new_scheduled_at:
-        return {"success": False, "error": "Invalid date or time format"}
+        return {
+            "success": False, "error": "invalid_format",
+            "message": "I couldn't understand that date and time. Could you say it again?",
+        }
+
+    # Same guardrails book_appointment applies -- without this, rescheduling
+    # could silently move a booking to the past, outside business hours, or
+    # onto a closed day, since nothing else in this function checks any of
+    # that.
+    if tenant_config:
+        validation = validate_booking_time(
+            new_scheduled_at, tenant_config.business_hours,
+            timezone=getattr(tenant_config, "timezone", "Asia/Kuala_Lumpur"),
+        )
+        if not validation["valid"]:
+            return {"success": False, "error": "invalid_time", "message": validation["error"]}
 
     if booking_id:
         _bid_lookup = booking_id
@@ -382,14 +398,51 @@ async def reschedule_appointment(
         ).order("scheduled_at", desc=True).limit(1).maybe_single().execute())
 
     if not booking.data:
-        return {"success": False, "error": "Booking not found"}
+        return {
+            "success": False, "error": "not_found",
+            "message": "I couldn't find that appointment to reschedule. Could you confirm the details?",
+        }
 
     old_scheduled_at = booking.data["scheduled_at"]
     _bid = booking.data["id"]
+
+    # Same pre-flight conflict window book_appointment/check_slots use --
+    # without this, rescheduling straight into an already-booked slot would
+    # skip the friendly "that time is taken" message entirely and go
+    # straight to the raw exclusion-constraint error below. Exclude this
+    # booking's own id: it still holds its OLD scheduled_at until the update
+    # below runs, so if old and new times are close together it would
+    # otherwise conflict with itself.
+    time_start = to_db_timestamp(new_scheduled_at - timedelta(minutes=buffer_min))
+    time_end = to_db_timestamp(new_scheduled_at + timedelta(minutes=duration + buffer_min))
+    existing = await _db(lambda: supabase.table("bookings").select("id, scheduled_at").eq(
+        "tenant_id", tenant_id
+    ).neq("id", _bid).in_("status", ["pending", "confirmed"]).gte(
+        "scheduled_at", time_start
+    ).lte("scheduled_at", time_end).execute())
+    if existing.data:
+        conflict_time = from_db_timestamp(existing.data[0]["scheduled_at"]).strftime("%I:%M %p")
+        return {
+            "success": False,
+            "error": "double_booking",
+            "message": f"That time slot is already taken (appointment at {conflict_time}). Would you like to try another time?",
+        }
+
     update_data: Dict[str, Any] = {"scheduled_at": to_db_timestamp(new_scheduled_at)}
     if custom_fields:
         update_data["details"] = {**(booking.data.get("details") or {}), **custom_fields}
-    await _db(lambda: supabase.table("bookings").update(update_data).eq("id", _bid).execute())
+    try:
+        await _db(lambda: supabase.table("bookings").update(update_data).eq("id", _bid).execute())
+    except Exception as e:
+        # Pre-flight check above isn't atomic with this update -- same race
+        # window as book_appointment, caught the same way.
+        if "23P01" in str(e) or "exclusion" in str(e).lower() or "bookings_no_overlap" in str(e):
+            return {
+                "success": False,
+                "error": "double_booking",
+                "message": "That time slot was just taken by another booking. Would you like to try another time?",
+            }
+        raise
 
     calendar_event_id = booking.data.get("calendar_event_id")
     if calendar_event_id:

@@ -302,6 +302,23 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # gpt-oss on Groq is a reasoning model that defaults to "medium"
+        # reasoning_effort -- it silently spends several extra seconds
+        # "thinking" before every reply, tool call or not, which is most of
+        # where WhatsApp's multi-second-to-30s response times were coming
+        # from. A receptionist's turns (confirm a name, ask for a date) don't
+        # need deep reasoning, so default to "low" for latency; still
+        # per-tenant overridable via llm_config for a clinic that wants more
+        # deliberate FAQ answers. include_reasoning=False additionally
+        # ensures the model's internal reasoning trace never ends up
+        # concatenated into the visible reply content (a leakage bug Groq
+        # itself has open reports of for this model family).
+        if self.provider == "groq" and "gpt-oss" in self.model:
+            kwargs["reasoning_effort"] = llm_config.get("reasoning_effort", "low")
+            # include_reasoning is a Groq-specific field, not part of the
+            # OpenAI SDK's typed create() signature -- must go through
+            # extra_body or the SDK raises TypeError on an unknown kwarg.
+            kwargs["extra_body"] = {"include_reasoning": False}
 
         response = await client.chat.completions.create(**kwargs)
         choice = response.choices[0].message
