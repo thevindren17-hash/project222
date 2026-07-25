@@ -607,12 +607,26 @@ async def extract_faq_from_document(tenant_id: str = Form(...), file: UploadFile
         logger.error(f"FAQ extraction returned unparseable JSON | tenant={tenant_id} | content={content[:300]}")
         raise HTTPException(status_code=502, detail="The AI didn't return a usable list -- try again or a shorter document")
 
+    # Despite the prompt asking for a bare array, some models wrap it in an
+    # object anyway (e.g. {"faq": [...]} or {"qa_pairs": [...]}) -- unwrap
+    # the first list value found rather than treating that as "no results."
+    if isinstance(parsed, dict):
+        parsed = next((v for v in parsed.values() if isinstance(v, list)), [])
+
     faq = [
         {"q": str(item["q"]), "a": str(item["a"])}
         for item in (parsed if isinstance(parsed, list) else [])
         if isinstance(item, dict) and item.get("q") and item.get("a")
     ]
     if not faq:
-        raise HTTPException(status_code=400, detail="Couldn't extract any Q&A pairs from that document")
+        logger.warning(f"FAQ extraction produced zero pairs | tenant={tenant_id} | raw_content={content[:500]}")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Couldn't find anything to turn into Q&A from that document -- it may not have enough "
+                "clinic-relevant text (hours, services, pricing, policies, etc). Try 'Add Entry' to add "
+                "a few manually, or a different document."
+            ),
+        )
 
     return {"faq": faq, "truncated": truncated}

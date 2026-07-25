@@ -385,7 +385,7 @@ export default function AgentPluginPage() {
       form.set('file', file)
       const res = await fetch('/api/agent/extract-faq', { method: 'POST', body: form })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Could not extract Q&A from that document')
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not extract Q&A from that document')
       setFaq([...faq, ...(data.faq || [])])
       toast.success(
         `Added ${data.faq?.length || 0} entries from "${file.name}" — review them below, then Save Changes`
