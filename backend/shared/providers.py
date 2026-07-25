@@ -145,7 +145,27 @@ class LLMClient:
                 is_retriable = any(k in err_str for k in _RETRIABLE)
                 if not is_retriable or attempt == max_retries - 1:
                     raise
-                wait = (2 ** attempt) + random.uniform(0, 1)
+                # A 429 against a per-MINUTE token quota won't have reset in
+                # the few seconds the old fixed exponential backoff waited
+                # (1-2s, then 2-3s) -- retrying against an already-exhausted
+                # per-minute budget was close to guaranteed to fail again,
+                # exhausting all retries and falling through to the "having
+                # trouble responding" error message (confirmed live: a real,
+                # normally-paced WhatsApp conversation hit exactly this).
+                # Rate-limit errors carry the provider's own authoritative
+                # wait time in a Retry-After header -- use it when available;
+                # only guess with the short backoff for genuinely transient
+                # errors (timeouts, connection blips) where a quick retry is
+                # actually appropriate.
+                retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("retry-after")
+                wait: float
+                if retry_after:
+                    try:
+                        wait = min(float(retry_after), 30.0) + random.uniform(0, 1)
+                    except ValueError:
+                        wait = (2 ** attempt) + random.uniform(0, 1)
+                else:
+                    wait = (2 ** attempt) + random.uniform(0, 1)
                 _logger.warning(
                     f"LLM {self.provider} transient error (attempt {attempt + 1}/{max_retries}), "
                     f"retrying in {wait:.1f}s: {exc}"
