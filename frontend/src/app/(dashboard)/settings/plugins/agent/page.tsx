@@ -150,7 +150,7 @@ export default function AgentPluginPage() {
   const [neverSay, setNeverSay] = useState('')
 
   const [temperature, setTemperature] = useState(0.7)
-  const [maxTokens, setMaxTokens] = useState(1024)
+  const [maxTokens, setMaxTokens] = useState(200)
   const [toolConfig, setToolConfig] = useState<Record<string, boolean>>({
     book_appointment: true, check_slots: true, get_faq: true, escalate: true,
   })
@@ -191,7 +191,7 @@ export default function AgentPluginPage() {
       setLlmProvider(settings.llm_config?.provider || 'groq')
       setLlmModel(settings.llm_config?.model || 'openai/gpt-oss-120b')
       setTemperature(settings.llm_config?.temperature ?? 0.7)
-      setMaxTokens(settings.llm_config?.max_tokens ?? 1024)
+      setMaxTokens(settings.llm_config?.max_tokens ?? 200)
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
       setHumanTakeover(settings.tool_config?.escalate ?? true)
       setFaq(settings.faq || [])
@@ -808,10 +808,14 @@ export default function AgentPluginPage() {
 
                   <div className="space-y-2">
                     <Label htmlFor="max-tokens">Max Tokens per Response</Label>
-                    <p className="text-xs text-muted-foreground">Limits how long each AI reply can be (128–4096)</p>
+                    <p className="text-xs text-muted-foreground">
+                      Limits how long each AI reply can be (128–4096). Keep this low (around 200) for a WhatsApp
+                      receptionist — it&apos;s a hard backstop against the AI rambling or repeating itself, not just a
+                      length preference.
+                    </p>
                     <div className="flex items-center gap-3">
                       <Input id="max-tokens" type="number" min={128} max={4096} step={128} value={maxTokens}
-                        onChange={(e) => setMaxTokens(parseInt(e.target.value) || 1024)}
+                        onChange={(e) => setMaxTokens(parseInt(e.target.value) || 200)}
                         className="w-36"
                       />
                       <span className="text-xs text-muted-foreground">tokens ≈ {Math.round(maxTokens * 0.75)} words</span>

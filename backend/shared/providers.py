@@ -284,10 +284,21 @@ class LLMClient:
         # (e.g. a repetition loop) kept going until the *provider's* own
         # ceiling kicked in instead of the tenant's configured limit.
         llm_config = getattr(self._tenant, "llm_config", None) or {}
+        # 1024 was generous enough that a model degenerating into a repeat/
+        # rephrase loop (observed live: Groq's gpt-oss family asking the same
+        # "what time works" question 6+ different ways in one reply, or
+        # narrating a fake booking confirmation without ever calling the
+        # tool) could ramble for hundreds of tokens before hitting any
+        # ceiling at all -- frequency/presence_penalty only discourage exact
+        # token repeats, not a differently-worded restatement of the same
+        # question, so they didn't catch this pattern. A real WhatsApp reply
+        # (even a detailed confirmation with name/date/time) or a tool call's
+        # JSON arguments comfortably fits under 200 -- this is a hard,
+        # can't-be-talked-around backstop, not just a lower suggestion.
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": llm_config.get("max_tokens") or 1024,
+            "max_tokens": llm_config.get("max_tokens") or 200,
         }
         if llm_config.get("temperature") is not None:
             kwargs["temperature"] = llm_config["temperature"]
