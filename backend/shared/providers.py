@@ -145,13 +145,22 @@ class LLMClient:
                 is_retriable = any(k in err_str for k in _RETRIABLE)
                 if not is_retriable or attempt == max_retries - 1:
                     raise
-                # A 429 against a per-MINUTE token quota won't have reset in
-                # the few seconds the old fixed exponential backoff waited
-                # (1-2s, then 2-3s) -- retrying against an already-exhausted
-                # per-minute budget was close to guaranteed to fail again,
-                # exhausting all retries and falling through to the "having
-                # trouble responding" error message (confirmed live: a real,
-                # normally-paced WhatsApp conversation hit exactly this).
+                # Confirmed live (escalations table): Groq's 429s come in two
+                # shapes that need completely different handling. A per-
+                # MINUTE (TPM) quota genuinely resets within the Retry-After
+                # window (seconds), so waiting that long and retrying can
+                # actually succeed. A per-DAY (TPD) quota -- hit here after a
+                # full day of testing exhausted the free tier's 200,000
+                # tokens/day -- reports Retry-After in MINUTES (seen: "try
+                # again in 15m"), which no request should ever block on. The
+                # old fixed 30s cap made this worse, not better: it waited
+                # just long enough to burn all 3 retries pointlessly before
+                # failing anyway, instead of failing fast. Detect the daily
+                # case from Groq's own error text and don't retry it at all
+                # -- no wait inside a single request can make a 15-minute
+                # quota reset happen sooner.
+                if "tokens per day" in err_str or "(tpd)" in err_str:
+                    raise
                 # Rate-limit errors carry the provider's own authoritative
                 # wait time in a Retry-After header -- use it when available;
                 # only guess with the short backoff for genuinely transient
