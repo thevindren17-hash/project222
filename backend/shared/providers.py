@@ -297,8 +297,14 @@ class LLMClient:
         # instead of the single question the system prompt asks for. A
         # modest repetition penalty makes the sampler less likely to repeat
         # tokens it already used, without materially changing normal replies.
-        kwargs["frequency_penalty"] = llm_config.get("frequency_penalty", 0.4)
-        kwargs["presence_penalty"] = llm_config.get("presence_penalty", 0.2)
+        # NOT sent to Gemini: its OpenAI-compatible endpoint rejects both
+        # fields outright on 2.5+ models with a hard 400 INVALID_ARGUMENT
+        # ("Unknown name 'frequency_penalty': Cannot find field") -- this
+        # was breaking every single call for a tenant on Gemini, not just
+        # this one feature, until caught live.
+        if self.provider not in ("gemini", "google"):
+            kwargs["frequency_penalty"] = llm_config.get("frequency_penalty", 0.4)
+            kwargs["presence_penalty"] = llm_config.get("presence_penalty", 0.2)
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
