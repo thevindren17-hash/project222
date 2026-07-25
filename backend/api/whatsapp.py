@@ -395,6 +395,7 @@ def _build_date_context(
     custom_tools: Optional[list] = None,
     campaign_context: Optional[dict] = None,
     known_phone: Optional[str] = None,
+    has_custom_flow: bool = False,
 ) -> str:
     try:
         from zoneinfo import ZoneInfo
@@ -494,16 +495,23 @@ def _build_date_context(
     # for the "full phone number" moments later once it realized 4 digits
     # wasn't enough to fill the tool argument -- a confusing loop the patient
     # had no way to make sense of, since they'd already answered.
+    # Kept OUTSIDE default_flow_block below and always included regardless of
+    # has_custom_flow -- this is a factual/correctness guarantee (don't
+    # re-ask for something already known), not flow-ordering guidance, so a
+    # clinic's own custom flow doesn't make it redundant the way the generic
+    # step-by-step ordering is. Omitting it for custom-flow tenants
+    # previously reintroduced the exact phone-number-confirmation-loop bug
+    # fixed earlier -- caught before shipping, not after.
     if known_phone:
         phone_step = (
-            f"  Step 7: Their {phone_label} is already known from WhatsApp ({known_phone}) -- do NOT ask "
+            f"  Their {phone_label} is already known from WhatsApp ({known_phone}) -- do NOT ask "
             f"them to type it in. When you confirm the booking back to them, mention only the last 4 digits "
             f"(e.g. \"ending in {known_phone[-4:]}\") for their reassurance -- never read back the full number. "
             f"Use the full value \"{known_phone}\" as the contact_phone tool argument. Only ask for a different "
             "number if the patient explicitly says this booking is for someone else / a different number.\n"
         )
     else:
-        phone_step = f"  Step 7: Ask for their {phone_label} (if not already given) — this is the tool argument contact_phone.\n"
+        phone_step = f"  Ask for their {phone_label} (if not already given) — this is the tool argument contact_phone.\n"
 
     # Same anti-hallucination reinforcement as book_appointment above — a
     # weaker model will otherwise invent its own key names here too (e.g.
@@ -567,6 +575,31 @@ def _build_date_context(
             "book, honor whatever offer/service was mentioned and move straight into checking availability.\n"
         )
 
+    # Skipped entirely for a clinic that has already written its own flow in
+    # custom_instructions (this block's own text has always said it's a
+    # fallback, never meant to apply to them) -- saves a real ~330 tokens on
+    # every single call for exactly the tenants who never needed it, which
+    # matters given the free-tier Groq rate limit this system has been
+    # running up against (confirmed live: normally-paced conversations
+    # exhausting an 8,000-token-per-minute budget).
+    default_flow_block = ""
+    if not has_custom_flow:
+        default_flow_block = (
+            "DEFAULT BOOKING FLOW — use this ONLY if the clinic's instructions above don't already describe "
+            "their own conversation flow or question order. If they did, follow THEIRS instead — this is "
+            "just a fallback, not an override:\n"
+            f"  Step 1: Ask what {service_label} they need (e.g. scaling, checkup, whitening) — this is the tool argument service_type.\n"
+            f"  Step 2: Ask what {date_label} they prefer — this is the tool argument date.\n"
+            "  Step 3: ONLY after you have BOTH service AND date → call check_slots.\n"
+            "  Step 4: Present the available times clearly. Ask which time they prefer.\n"
+            "  Step 5: If user replies with a number like '10' or '10am', treat it as the time (e.g. 10:00) — this is the tool argument time. Do NOT call check_slots again.\n"
+            f"  Step 6: Ask for their {name_label} (if not already given in this conversation) — this is the tool argument contact_name. Once given, briefly acknowledge it (e.g. \"Thanks, {{name}}!\") before your next question — natural, not repeated every message after.\n"
+            "  Step 7: See the phone number rule below — never ask for it unless told otherwise.\n"
+            "  Step 8: Ask if they have any NOTES or special requests for this visit (optional — one short question, accept 'no' as an answer) — this is the tool argument notes.\n"
+            f"{custom_fields_step}"
+            "  Step 9: Confirm all details back to the patient in plain language, then call book_appointment.\n"
+        )
+
     return (
         f"\n\n[SYSTEM INFO — Today is {now.strftime('%A, %d %B %Y')} ({now.strftime('%Y-%m-%d')}). "
         f"Tomorrow is {tomorrow.strftime('%A, %Y-%m-%d')}.\n"
@@ -575,19 +608,9 @@ def _build_date_context(
         "AVAILABLE TOOL: lookup_patient(contact_phone, contact_name?) — read-only, checks if someone is "
         "already a patient on file by phone number. Use it whenever the clinic's own instructions above "
         "ask you to tell new patients from returning ones, or whenever it's otherwise useful to check.\n"
-        "DEFAULT BOOKING FLOW — use this ONLY if the clinic's instructions above don't already describe "
-        "their own conversation flow or question order. If they did, follow THEIRS instead — this is "
-        "just a fallback, not an override:\n"
-        f"  Step 1: Ask what {service_label} they need (e.g. scaling, checkup, whitening) — this is the tool argument service_type.\n"
-        f"  Step 2: Ask what {date_label} they prefer — this is the tool argument date.\n"
-        "  Step 3: ONLY after you have BOTH service AND date → call check_slots.\n"
-        "  Step 4: Present the available times clearly. Ask which time they prefer.\n"
-        "  Step 5: If user replies with a number like '10' or '10am', treat it as the time (e.g. 10:00) — this is the tool argument time. Do NOT call check_slots again.\n"
-        f"  Step 6: Ask for their {name_label} (if not already given in this conversation) — this is the tool argument contact_name. Once given, briefly acknowledge it (e.g. \"Thanks, {{name}}!\") before your next question — natural, not repeated every message after.\n"
+        "PHONE NUMBER (always applies, whichever flow you're following):\n"
         f"{phone_step}"
-        "  Step 8: Ask if they have any NOTES or special requests for this visit (optional — one short question, accept 'no' as an answer) — this is the tool argument notes.\n"
-        f"{custom_fields_step}"
-        "  Step 9: Confirm all details back to the patient in plain language, then call book_appointment.\n"
+        f"{default_flow_block}"
         "HARD RULES (these always apply, regardless of which flow — clinic's own or the default above — you're following):\n"
         "- NEVER call check_slots unless you already know the specific date the user wants.\n"
         "- NEVER call book_appointment unless you have all 5 REQUIRED TOOL ARGUMENTS: contact_name, contact_phone, service_type, date, time. "
@@ -944,6 +967,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
             custom_tools=getattr(tenant, "custom_tools", None),
             campaign_context=campaign_context,
             known_phone=contact.get("phone"),
+            has_custom_flow=bool((getattr(tenant, "custom_instructions", "") or "").strip()),
         )
 
         messages_payload = [
@@ -1145,6 +1169,7 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         custom_tools=getattr(tenant, "custom_tools", None),
         campaign_context=campaign_context,
         known_phone=contact.get("phone"),
+        has_custom_flow=bool((getattr(tenant, "custom_instructions", "") or "").strip()),
     )
     messages_payload = [
         {"role": "system", "content": tenant.system_prompt + date_context},

@@ -421,6 +421,7 @@ async def test_agent(req: TestMessage):
         custom_booking_fields=getattr(tenant, "custom_booking_fields", None),
         base_field_labels=getattr(tenant, "base_field_labels", None),
         custom_tools=getattr(tenant, "custom_tools", None),
+        has_custom_flow=bool((getattr(tenant, "custom_instructions", "") or "").strip()),
     ) + "\n\n[TEST MODE — all tools run for real and save to the database.]"
 
     # The real WhatsApp handler caps conversation history at 20 messages / 50KB
