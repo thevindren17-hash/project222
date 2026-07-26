@@ -824,7 +824,26 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         if thread_result.data:
             thread = thread_result.data[0]
             thread_lang = thread.get("language") or "en"
-            language = detected_lang if detected_lang in ("ms", "zh") else thread_lang
+            # Reported live: an entirely-English booking conversation
+            # suddenly replied in Malay right after the patient said "yes"
+            # -- traced to this line. A single stray Manglish word (very
+            # common for Malaysian English -- "lah", "boleh", "tolong"
+            # casually mixed into otherwise-English sentences) is enough to
+            # trip detect_language's low bar, and since only a fresh ms/zh
+            # reading ever overrides the thread's sticky stored language
+            # (never a fresh "en" reading), that one false positive
+            # permanently locked every later reply into Malay with no way
+            # back. Only trust a fresh ms/zh detection enough to switch an
+            # already-different established thread language when the
+            # message has enough real content for that detection to mean
+            # something -- a short message is exactly where one incidental
+            # word dominates the score. Once a thread is genuinely in that
+            # language already, any further same-language detection (even a
+            # short one) still confirms it with no extra bar.
+            _confident_switch = detected_lang in ("ms", "zh") and (
+                detected_lang == thread_lang or len(message_text.split()) >= 4
+            )
+            language = detected_lang if _confident_switch else thread_lang
             if thread.get("status") == "human_takeover":
                 await _db(lambda: supabase.table("messages").insert({
                     "thread_id": thread["id"],
