@@ -40,6 +40,15 @@ def detect_language(text: str) -> str:
     # actual Malay word for appointment) already covers genuine Malay
     # usage, and the remaining words are all distinctively Malay, not
     # ordinary English vocabulary that happens to overlap.
+    # Extended with more common everyday Malay words (kenapa/anda/berbual/
+    # dalam/bahasa/melayu/etc.) -- reported live: a genuinely Malay sentence
+    # ("Kenapa anda berbual dalam bahasa melayu") used none of the words
+    # that used to be here and silently defaulted to "en", which only
+    # happened to "work" by accident (the thread was already stuck on
+    # Malay from something else). Matters more now that whatsapp.py trusts
+    # a fresh "en" reading on a substantive message to switch languages --
+    # a real Malay sentence needs to actually be detected as such, not rely
+    # on a sticky value from earlier for correctness.
     malay_words = [
         "nak", "saya", "boleh", "dengan", "untuk", "ada", "tak", "atau",
         "sini", "mana", "esok", "buat", "nama", "hari", "ini", "telefon",
@@ -48,6 +57,10 @@ def detect_language(text: str) -> str:
         "malam", "minggu", "bulan", "tolong", "terima", "kasih", "selamat",
         "pergi", "datang", "baik", "lah", "juga", "dah",
         "sudah", "akan", "nanti", "lepas", "sebelum", "berapa", "bila",
+        "kenapa", "apa", "siapa", "kalau", "kerana", "sebab", "anda",
+        "berbual", "dalam", "bahasa", "melayu", "cakap", "mahu", "hendak",
+        "jangan", "mesti", "sekarang", "faham", "tahu", "betul", "salah",
+        "bukan", "memang", "guna", "punya", "macam",
     ]
     malay_score = sum(1 for w in malay_words if w in text_lower.split())
     if malay_score >= 1:

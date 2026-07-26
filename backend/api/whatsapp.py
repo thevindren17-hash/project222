@@ -824,24 +824,33 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         if thread_result.data:
             thread = thread_result.data[0]
             thread_lang = thread.get("language") or "en"
-            # Reported live: an entirely-English booking conversation
-            # suddenly replied in Malay right after the patient said "yes"
-            # -- traced to this line. A single stray Manglish word (very
-            # common for Malaysian English -- "lah", "boleh", "tolong"
-            # casually mixed into otherwise-English sentences) is enough to
-            # trip detect_language's low bar, and since only a fresh ms/zh
-            # reading ever overrides the thread's sticky stored language
-            # (never a fresh "en" reading), that one false positive
-            # permanently locked every later reply into Malay with no way
-            # back. Only trust a fresh ms/zh detection enough to switch an
-            # already-different established thread language when the
-            # message has enough real content for that detection to mean
-            # something -- a short message is exactly where one incidental
-            # word dominates the score. Once a thread is genuinely in that
-            # language already, any further same-language detection (even a
-            # short one) still confirms it with no extra bar.
-            _confident_switch = detected_lang in ("ms", "zh") and (
-                detected_lang == thread_lang or len(message_text.split()) >= 4
+            # Reported live twice: (1) a single stray word was enough to
+            # permanently flip an English conversation to Malay with no way
+            # back, because only a fresh ms/zh reading was ever trusted to
+            # override the thread's sticky language, never a fresh "en"
+            # reading; (2) after the thread genuinely (and correctly)
+            # switched to Malay, a patient typing a clear, unambiguous
+            # English sentence ("I want to change my date again") got stuck
+            # in Malay anyway, for the exact same reason in the other
+            # direction -- the one-way rule doesn't let anyone switch back.
+            # detected_lang is only ever a confident, deliberate signal in
+            # one direction too: "ms"/"zh" come from an actual word/character
+            # match, but "en" is just what detect_language returns whenever
+            # NEITHER of those matched -- including a short reply that could
+            # be answering anything ("yes", "11", a bare date) regardless of
+            # what language the conversation is actually in. So: trust a
+            # fresh reading (whichever of the three it is) to set the
+            # language once the message has enough real content behind it
+            # to mean something either way: enough Malay/Chinese signal
+            # (detected_lang != "en"), OR enough words that "no ms/zh signal
+            # found" is itself informative rather than just the default for
+            # a one-word reply. Short/ambiguous messages still fall back to
+            # the established thread language either way.
+            _is_substantive = len(message_text.split()) >= 4
+            _confident_switch = (
+                detected_lang == thread_lang
+                or detected_lang in ("ms", "zh")
+                or _is_substantive
             )
             language = detected_lang if _confident_switch else thread_lang
             if thread.get("status") == "human_takeover":
