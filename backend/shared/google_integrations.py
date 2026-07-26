@@ -259,6 +259,35 @@ def _normalize_header(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def _digits_only(s: str) -> str:
+    import re
+    return re.sub(r"\D", "", s or "")
+
+
+def _col_letter(idx: int) -> str:
+    """0-based column index -> Sheets column letter (0->A, 25->Z, 26->AA)."""
+    idx += 1
+    letters = ""
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _find_column_index(headers: List[str], canonical: str) -> Optional[int]:
+    """Same alias matching as _match_header_to_field, but for locating a
+    known column's position rather than placing a value — used to find the
+    phone/appointment_time/status columns on an existing sheet so an
+    in-place update can target the right cell."""
+    aliases = set(_CANONICAL_FIELD_ALIASES.get(canonical, [canonical]))
+    for idx, header in enumerate(headers):
+        h = _normalize_header(header)
+        candidates = {h, h[:-1]} if h.endswith("s") and len(h) > 1 else {h}
+        if candidates & aliases:
+            return idx
+    return None
+
+
 def _match_header_to_field(header: str, available: Dict[str, str]) -> Optional[str]:
     """
     Given one column header from a clinic's sheet, find which (if any) of
@@ -390,6 +419,85 @@ class GoogleSheetsIntegration:
         if r.status_code not in (200, 201):
             raise RuntimeError(f"Sheets append failed ({r.status_code}): {r.text[:200]}")
         return r.json()
+
+    async def update_status_by_match(
+        self,
+        phone: str,
+        appointment_time: str,
+        new_status: str,
+        new_appointment_time: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Find the row this booking was originally logged as (matched by
+        phone + its original appointment_time together, not phone alone --
+        a returning patient can have several bookings logged over time, and
+        matching on phone alone risks updating the wrong one) and update
+        its Status cell in place, instead of appending a new row. Used by
+        cancel_appointment/reschedule_appointment so a clinic's sheet shows
+        one row per booking whose status changes over its lifecycle (e.g.
+        BOOKED -> CANCELLED), matching how their own dropdown/color-coded
+        Status column is meant to work, rather than accumulating a new row
+        per event. For a reschedule, also updates the appointment_time cell
+        to the new date/time so the row reflects the booking's current
+        details, not the one that's no longer valid.
+
+        Returns {"success": False, "error": "not_found"} (among other
+        error cases) rather than raising -- callers are expected to fall
+        back to the existing append-a-new-row behavior when this can't
+        find a match, so a status change is never silently lost.
+        """
+        if not self.spreadsheet_id:
+            return {"success": False, "error": "no_spreadsheet"}
+        token = await self._get_token()
+        async with httpx.AsyncClient(timeout=15) as client:
+            all_res = await client.get(
+                f"{SHEETS_API}/{self.spreadsheet_id}/values/{self.tab_name}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if all_res.status_code != 200:
+                return {"success": False, "error": f"read_failed_{all_res.status_code}"}
+            rows = all_res.json().get("values") or []
+            if not rows:
+                return {"success": False, "error": "no_header"}
+            headers = rows[0]
+
+            phone_idx = _find_column_index(headers, "phone")
+            appt_idx = _find_column_index(headers, "appointment_time")
+            status_idx = _find_column_index(headers, "event")
+            if phone_idx is None or appt_idx is None or status_idx is None:
+                return {"success": False, "error": "missing_columns"}
+
+            target_phone = _digits_only(phone)
+            target_appt = (appointment_time or "").strip()
+            match_row_number = None  # 1-indexed sheet row, so +2 to skip the header at rows[0]
+            for i, row in enumerate(rows[1:]):
+                row_phone = _digits_only(row[phone_idx]) if phone_idx < len(row) else ""
+                row_appt = (row[appt_idx] if appt_idx < len(row) else "").strip()
+                if row_phone and row_phone == target_phone and row_appt == target_appt:
+                    match_row_number = i + 2
+                    break
+
+            if match_row_number is None:
+                return {"success": False, "error": "not_found"}
+
+            updates = [{
+                "range": f"{self.tab_name}!{_col_letter(status_idx)}{match_row_number}",
+                "values": [[new_status]],
+            }]
+            if new_appointment_time:
+                updates.append({
+                    "range": f"{self.tab_name}!{_col_letter(appt_idx)}{match_row_number}",
+                    "values": [[new_appointment_time]],
+                })
+
+            r = await client.post(
+                f"{SHEETS_API}/{self.spreadsheet_id}/values:batchUpdate",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"valueInputOption": "USER_ENTERED", "data": updates},
+            )
+        if r.status_code not in (200, 201):
+            return {"success": False, "error": f"update_failed_{r.status_code}"}
+        return {"success": True}
 
 
 # ── OAuth helpers ──────────────────────────────────────────────────────────────

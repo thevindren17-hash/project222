@@ -179,11 +179,17 @@ async def book_appointment(
     gsheets = await get_google_sheets(tenant_id)
     if gsheets:
         try:
+            # Uppercase to match a common clinic dropdown/color-coding
+            # convention (e.g. a Sheets Status column with BOOKED/
+            # CANCELLED/RESCHEDULED options) -- cancel_appointment and
+            # reschedule_appointment below update this SAME row's Status
+            # cell in place using this exact value as their starting point,
+            # so the casing has to agree across all three.
             await gsheets.log_lead(
                 name=contact_name,
                 phone=contact_phone,
                 source=source,
-                status="booked",
+                status="BOOKED",
                 service_interest=service_type,
                 appointment_time=scheduled_at.strftime("%Y-%m-%d %H:%M"),
                 notes=f"Booked for {scheduled_at.strftime('%Y-%m-%d %H:%M')}"
@@ -348,15 +354,28 @@ async def cancel_appointment(
                 "name, phone"
             ).eq("id", contact_id).maybe_single().execute())
             contact_data = contact_res.data or {}
-            await gsheets.log_lead(
-                name=contact_data.get("name") or "Unknown",
-                phone=contact_data.get("phone") or "",
-                source="whatsapp",
-                status="cancelled",
-                appointment_time=scheduled.strftime("%Y-%m-%d %H:%M"),
-                notes=f"Cancelled appointment originally at {scheduled.strftime('%Y-%m-%d %H:%M')}",
-                custom_fields=custom_fields,
+            _phone = contact_data.get("phone") or ""
+            _orig_time = scheduled.strftime("%Y-%m-%d %H:%M")
+            # Prefer updating the SAME row this booking was originally
+            # logged under (matched by phone + its original time) so the
+            # clinic's sheet shows one row per booking that changes status
+            # over its lifecycle, rather than a second new row per event.
+            # Only append a fresh row as a fallback if no matching row is
+            # found (e.g. the clinic's sheet predates this booking, or the
+            # original log_lead call failed) -- never silently drop it.
+            _update_result = await gsheets.update_status_by_match(
+                phone=_phone, appointment_time=_orig_time, new_status="CANCELLED",
             )
+            if not _update_result.get("success"):
+                await gsheets.log_lead(
+                    name=contact_data.get("name") or "Unknown",
+                    phone=_phone,
+                    source="whatsapp",
+                    status="CANCELLED",
+                    appointment_time=_orig_time,
+                    notes=f"Cancelled appointment originally at {_orig_time}",
+                    custom_fields=custom_fields,
+                )
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
@@ -477,15 +496,31 @@ async def reschedule_appointment(
                 "name, phone"
             ).eq("id", contact_id).maybe_single().execute())
             contact_data = contact_res.data or {}
-            await gsheets.log_lead(
-                name=contact_data.get("name") or "Unknown",
-                phone=contact_data.get("phone") or "",
-                source="whatsapp",
-                status="rescheduled",
-                appointment_time=new_scheduled_at.strftime("%Y-%m-%d %H:%M"),
-                notes=f"Rescheduled from {old_scheduled_at} to {new_scheduled_at.strftime('%Y-%m-%d %H:%M')}",
-                custom_fields=custom_fields,
+            _phone = contact_data.get("phone") or ""
+            # old_scheduled_at is the raw DB value (real UTC instant) --
+            # convert it the same way it was originally formatted into the
+            # sheet at booking time, or it won't match that row's stored
+            # appointment_time string.
+            _old_time_str = from_db_timestamp(old_scheduled_at).strftime("%Y-%m-%d %H:%M")
+            _new_time_str = new_scheduled_at.strftime("%Y-%m-%d %H:%M")
+            # Same prefer-update-in-place-then-fall-back-to-append pattern
+            # as cancel_appointment above -- also updates the
+            # appointment_time cell to the new date/time so the row
+            # reflects the booking's current details.
+            _update_result = await gsheets.update_status_by_match(
+                phone=_phone, appointment_time=_old_time_str, new_status="RESCHEDULED",
+                new_appointment_time=_new_time_str,
             )
+            if not _update_result.get("success"):
+                await gsheets.log_lead(
+                    name=contact_data.get("name") or "Unknown",
+                    phone=_phone,
+                    source="whatsapp",
+                    status="RESCHEDULED",
+                    appointment_time=_new_time_str,
+                    notes=f"Rescheduled from {_old_time_str} to {_new_time_str}",
+                    custom_fields=custom_fields,
+                )
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
