@@ -28,13 +28,25 @@ def detect_language(text: str) -> str:
     if chinese_score > 2:
         return "zh"
 
+    # Reported live, reproduced twice: an entirely-English conversation
+    # about booking a dental "appointment" (naturally, repeatedly, since
+    # that's the whole domain this bot operates in) got detected as Malay
+    # and stuck there (see the sticky-language fix in api/whatsapp.py) --
+    # traced to "appointment" and "okay" being listed here. Both are
+    # ordinary, extremely common English words -- "appointment" is
+    # basically guaranteed to appear in any booking conversation regardless
+    # of language, and "okay" is a near-universal English/international
+    # word, not a distinctively Malay one. Removed both; "temujanji" (the
+    # actual Malay word for appointment) already covers genuine Malay
+    # usage, and the remaining words are all distinctively Malay, not
+    # ordinary English vocabulary that happens to overlap.
     malay_words = [
         "nak", "saya", "boleh", "dengan", "untuk", "ada", "tak", "atau",
         "sini", "mana", "esok", "buat", "nama", "hari", "ini", "telefon",
         "nombor", "ya", "tidak", "awak", "kita", "kami", "mereka", "dia",
-        "appointment", "temujanji", "tarikh", "masa", "pagi", "petang",
+        "temujanji", "tarikh", "masa", "pagi", "petang",
         "malam", "minggu", "bulan", "tolong", "terima", "kasih", "selamat",
-        "pergi", "datang", "baik", "okay", "lah", "pun", "juga", "dah",
+        "pergi", "datang", "baik", "lah", "juga", "dah",
         "sudah", "akan", "nanti", "lepas", "sebelum", "berapa", "bila",
     ]
     malay_score = sum(1 for w in malay_words if w in text_lower.split())
