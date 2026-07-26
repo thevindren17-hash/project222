@@ -47,10 +47,10 @@ interface FaqItem { q: string; a: string }
 type CustomFieldAction = 'book_appointment' | 'cancel_appointment' | 'reschedule_appointment'
 interface CustomFieldItem { key: string; label: string; instruction: string; action: CustomFieldAction }
 
-const CUSTOM_FIELD_ACTIONS: { value: CustomFieldAction; label: string }[] = [
-  { value: 'book_appointment', label: 'Booking' },
-  { value: 'cancel_appointment', label: 'Cancellation' },
-  { value: 'reschedule_appointment', label: 'Reschedule' },
+const CUSTOM_FIELD_ACTIONS: { value: CustomFieldAction; label: string; description: string }[] = [
+  { value: 'book_appointment', label: 'Book Appointment', description: 'Extra questions asked when booking a new appointment, on top of the usual name, phone, service, date, and time.' },
+  { value: 'cancel_appointment', label: 'Cancel Appointment', description: 'Extra questions asked when a patient wants to cancel an appointment.' },
+  { value: 'reschedule_appointment', label: 'Reschedule Appointment', description: 'Extra questions asked when a patient wants to reschedule an appointment.' },
 ]
 
 // Built-in tool names a clinic-created custom tool's key must never collide
@@ -395,7 +395,9 @@ export default function AgentPluginPage() {
       setUploadingFaq(false)
     }
   }
-  function addCustomField() { setCustomFields([...customFields, { key: '', label: '', instruction: '', action: 'book_appointment' }]) }
+  function addCustomFieldForAction(action: CustomFieldAction) {
+    setCustomFields([...customFields, { key: '', label: '', instruction: '', action }])
+  }
   function updateCustomFieldLabel(i: number, label: string) {
     const next = [...customFields]
     next[i] = { ...next[i], label, key: slugifyFieldKey(label) }
@@ -403,9 +405,6 @@ export default function AgentPluginPage() {
   }
   function updateCustomFieldInstruction(i: number, instruction: string) {
     const next = [...customFields]; next[i] = { ...next[i], instruction }; setCustomFields(next)
-  }
-  function updateCustomFieldAction(i: number, action: CustomFieldAction) {
-    const next = [...customFields]; next[i] = { ...next[i], action }; setCustomFields(next)
   }
   function removeCustomField(i: number) { setCustomFields(customFields.filter((_, idx) => idx !== i)) }
   function addCustomTool() {
@@ -829,82 +828,83 @@ export default function AgentPluginPage() {
           {/* Data Fields */}
           {section === 'fields' && (
             <>
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold">Data Fields</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Extra questions the AI asks for Booking, Cancellation, or Reschedule — on top of the usual
-                    name, phone, service, date, and time. Each field belongs to one action, since that's the
-                    specific moment the AI actually asks for it. Captured values are saved with the booking
-                    and, if connected, mirrored to your Google Sheet.
-                  </p>
-                </div>
-                <Button variant="outline" size="sm" onClick={addCustomField}>
-                  <Plus className="h-3.5 w-3.5 mr-1.5" />Add Field
-                </Button>
+              <div>
+                <h2 className="text-lg font-semibold">Data Fields</h2>
+                <p className="text-sm text-muted-foreground">
+                  Extra questions the AI asks, grouped under whichever function it's actually collecting them
+                  for — on top of the usual name, phone, service, date, and time. Captured values are saved
+                  with the booking and, if connected, mirrored to your Google Sheet.
+                </p>
               </div>
 
-              <div className="space-y-3">
-                {customFields.length === 0 && (
-                  <Card className="border-dashed">
-                    <CardContent className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
-                      <Database className="h-9 w-9 opacity-25" />
-                      <p className="text-sm font-medium">No custom fields yet</p>
-                      <p className="text-xs text-center max-w-xs">
-                        Add a field like &quot;Insurance Provider&quot; or &quot;Referral Source&quot; for the AI to ask about during booking.
-                      </p>
-                      <Button variant="outline" size="sm" className="mt-2" onClick={addCustomField}>
-                        <Plus className="h-3.5 w-3.5 mr-1.5" />Add First Field
-                      </Button>
-                    </CardContent>
-                  </Card>
-                )}
-                {customFields.map((f, i) => (
-                  <Card key={i}>
-                    <CardContent className="pt-4 pb-4">
-                      <div className="flex items-start gap-3">
-                        <div className="flex-1 space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Input
-                              placeholder="Field label — e.g. Insurance Provider"
-                              value={f.label}
-                              onChange={(e) => updateCustomFieldLabel(i, e.target.value)}
-                              className="font-medium flex-1"
-                            />
-                            <Select value={f.action} onValueChange={(v) => updateCustomFieldAction(i, v as CustomFieldAction)}>
-                              <SelectTrigger className="w-[150px] shrink-0">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {CUSTOM_FIELD_ACTIONS.map((a) => (
-                                  <SelectItem key={a.value} value={a.value}>{a.label}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <Textarea
-                            placeholder="What should the AI ask? — e.g. Ask if they have insurance and which provider."
-                            value={f.instruction}
-                            onChange={(e) => updateCustomFieldInstruction(i, e.target.value)}
-                            rows={2}
-                            className="text-sm resize-none"
-                          />
-                          {f.key && RESERVED_FIELD_KEYS.has(f.key) ? (
-                            <p className="text-[11px] text-destructive">
-                              This overlaps with a built-in field (name, phone, service, date, or time) and will be ignored — choose a different label.
-                            </p>
-                          ) : f.key && (
-                            <p className="text-[11px] text-muted-foreground font-mono">key: {f.key}</p>
-                          )}
-                        </div>
-                        <Button variant="ghost" size="icon" onClick={() => removeCustomField(i)} className="text-muted-foreground hover:text-destructive shrink-0 mt-0.5">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+              {CUSTOM_FIELD_ACTIONS.map((actionDef) => {
+                // Original array indexes preserved through the filter, since
+                // add/update/remove all operate on the single shared
+                // customFields array — only the display groups fields by
+                // which function they belong to.
+                const fieldsForAction = customFields
+                  .map((f, i) => ({ field: f, idx: i }))
+                  .filter(({ field }) => field.action === actionDef.value)
+
+                return (
+                  <div key={actionDef.value} className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold">{actionDef.label}</h3>
+                        <p className="text-xs text-muted-foreground">{actionDef.description}</p>
                       </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
+                      <Button variant="outline" size="sm" onClick={() => addCustomFieldForAction(actionDef.value)}>
+                        <Plus className="h-3.5 w-3.5 mr-1.5" />Add Field
+                      </Button>
+                    </div>
+
+                    {fieldsForAction.length === 0 ? (
+                      <Card className="border-dashed">
+                        <CardContent className="flex flex-col items-center justify-center py-8 gap-1.5 text-muted-foreground">
+                          <Database className="h-6 w-6 opacity-25" />
+                          <p className="text-xs">No extra fields for {actionDef.label.toLowerCase()} yet</p>
+                        </CardContent>
+                      </Card>
+                    ) : (
+                      <div className="space-y-3">
+                        {fieldsForAction.map(({ field: f, idx: i }) => (
+                          <Card key={i}>
+                            <CardContent className="pt-4 pb-4">
+                              <div className="flex items-start gap-3">
+                                <div className="flex-1 space-y-2">
+                                  <Input
+                                    placeholder="Field label — e.g. Insurance Provider"
+                                    value={f.label}
+                                    onChange={(e) => updateCustomFieldLabel(i, e.target.value)}
+                                    className="font-medium"
+                                  />
+                                  <Textarea
+                                    placeholder="What should the AI ask? — e.g. Ask if they have insurance and which provider."
+                                    value={f.instruction}
+                                    onChange={(e) => updateCustomFieldInstruction(i, e.target.value)}
+                                    rows={2}
+                                    className="text-sm resize-none"
+                                  />
+                                  {f.key && RESERVED_FIELD_KEYS.has(f.key) ? (
+                                    <p className="text-[11px] text-destructive">
+                                      This overlaps with a built-in field (name, phone, service, date, or time) and will be ignored — choose a different label.
+                                    </p>
+                                  ) : f.key && (
+                                    <p className="text-[11px] text-muted-foreground font-mono">key: {f.key}</p>
+                                  )}
+                                </div>
+                                <Button variant="ghost" size="icon" onClick={() => removeCustomField(i)} className="text-muted-foreground hover:text-destructive shrink-0 mt-0.5">
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </>
           )}
 
