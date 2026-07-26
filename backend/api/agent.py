@@ -480,8 +480,22 @@ async def test_agent(req: TestMessage):
             execute_tool=_execute,
         )
     except Exception as e:
-        logger.error(f"Agent test LLM error: {e}")
-        raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
+        # See the matching comment in api/whatsapp.py -- _select_tools is a
+        # best-effort filter, not a guarantee; retry once with the tenant's
+        # full tool set if that filtering is what caused the failure.
+        if "not in request.tools" in str(e).lower():
+            try:
+                result = await llm_client.run_with_tools(
+                    messages=messages_payload,
+                    tools=all_tools or None,
+                    execute_tool=_execute,
+                )
+            except Exception as e2:
+                logger.error(f"Agent test LLM error (after tool-set retry): {e2}")
+                raise HTTPException(status_code=502, detail=f"LLM error: {str(e2)}")
+        else:
+            logger.error(f"Agent test LLM error: {e}")
+            raise HTTPException(status_code=502, detail=f"LLM error: {str(e)}")
 
     reply = result.get("content") or "I'm sorry, I couldn't process that. Please check your LLM configuration."
     tool_results = result.get("tool_calls") or []

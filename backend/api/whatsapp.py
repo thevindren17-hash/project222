@@ -1021,12 +1021,33 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         async def _execute(fn_name: str, args: dict) -> str:
             return await _execute_wa_tool(fn_name, args, tenant, contact, language, has_date_mention)
 
-        result = await llm_client.run_with_tools(
-            messages=messages_payload,
-            tools=enabled_tools or None,
-            execute_tool=_execute,
-            parse_embedded_tool_calls=_parse_embedded_tool_calls,
-        )
+        try:
+            result = await llm_client.run_with_tools(
+                messages=messages_payload,
+                tools=enabled_tools or None,
+                execute_tool=_execute,
+                parse_embedded_tool_calls=_parse_embedded_tool_calls,
+            )
+        except Exception as tool_err:
+            # Confirmed live (escalations table): _select_tools' relevance
+            # filtering is a best-effort heuristic (e.g. "check_slots already
+            # shown, exclude it"), not a hard guarantee of what the model
+            # will actually try to call. When it calls something outside
+            # that turn's filtered set anyway, Groq's strict schema
+            # validation rejects the ENTIRE request with a 400 -- previously
+            # that meant total failure (the patient-facing "having trouble
+            # responding" fallback) instead of just the one stray call being
+            # ignored. Retry once with the tenant's full, unfiltered tool
+            # set so a legitimate call that got filtered out still succeeds.
+            if "not in request.tools" in str(tool_err).lower():
+                result = await llm_client.run_with_tools(
+                    messages=messages_payload,
+                    tools=all_tools or None,
+                    execute_tool=_execute,
+                    parse_embedded_tool_calls=_parse_embedded_tool_calls,
+                )
+            else:
+                raise
         reply_text = result.get("content") or "I'm sorry, I couldn't process that. Please try again or call us directly."
     except Exception as llm_err:
         logger.error(

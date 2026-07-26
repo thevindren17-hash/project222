@@ -753,7 +753,13 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "booking_id": {"type": "string", "description": "Booking ID, if already known from earlier in this conversation (optional — omit to cancel the current patient's most recent pending booking)"},
+                    # type accepts null in addition to string: confirmed live
+                    # (a real 400 from Groq's strict schema validation) that
+                    # the model sometimes sends an explicit JSON null instead
+                    # of omitting this optional key entirely -- string-only
+                    # rejected that outright instead of treating it the same
+                    # as "not given."
+                    "booking_id": {"type": ["string", "null"], "description": "Booking ID, if already known from earlier in this conversation (optional — omit or send null to cancel the current patient's most recent pending booking)"},
                 },
                 "required": [],
             },
@@ -769,7 +775,8 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "new_date": {"type": "string", "description": "New appointment date in YYYY-MM-DD format"},
                     "new_time": {"type": "string", "description": "New appointment time in HH:MM 24-hour format"},
-                    "booking_id": {"type": "string", "description": "Booking ID, if already known from earlier in this conversation (optional — omit to reschedule the current patient's most recent pending booking)"},
+                    # Same null-tolerant fix as cancel_appointment above.
+                    "booking_id": {"type": ["string", "null"], "description": "Booking ID, if already known from earlier in this conversation (optional — omit or send null to reschedule the current patient's most recent pending booking)"},
                 },
                 "required": ["new_date", "new_time"],
             },
