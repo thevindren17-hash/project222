@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { Loader2, UserRoundCheck, FlaskConical, AlertCircle, CheckCircle2, Plus, Trash2 } from 'lucide-react'
-import CsvCampaignUploader from '@/components/campaigns/csv-campaign-uploader'
+import CsvCampaignUploader, { ExtraColumn } from '@/components/campaigns/csv-campaign-uploader'
 
 interface RecallSegment {
   id: string
@@ -25,7 +25,7 @@ interface RecallSegment {
   whatsapp_template_id: string | null
 }
 
-interface ApprovedTemplate { id: string; name: string }
+interface ApprovedTemplate { id: string; name: string; variables: string[] }
 
 const DEFAULT_RECALL_PREVIEW =
   "Hi {name}! 👋 It's been a while since your last visit at {clinic}. We'd love to see you again! Just reply to book your next appointment. 😊"
@@ -62,8 +62,10 @@ export default function PatientRecallSystemPage() {
       if (!tenant) return []
       const res = await fetch(`/api/templates?tenant_id=${tenant.id}`)
       const data = await res.json()
-      const list = (Array.isArray(data) ? data : []) as { id: string; name: string; status: string }[]
-      return list.filter((t) => t.status === 'approved') as ApprovedTemplate[]
+      const list = (Array.isArray(data) ? data : []) as { id: string; name: string; status: string; variables?: string[] }[]
+      return list
+        .filter((t) => t.status === 'approved')
+        .map((t) => ({ id: t.id, name: t.name, variables: t.variables || [] })) as ApprovedTemplate[]
     },
     enabled: !!tenant,
   })
@@ -170,6 +172,16 @@ export default function PatientRecallSystemPage() {
   }
 
   const csvSegment = segments.find((s) => s.id === selectedCsvSegmentId)
+  // The segment's own linked template (if any) drives BOTH which template
+  // gets used to send (so recall actually reaches these dormant-by-
+  // definition patients instead of failing as free text outside the 24h
+  // window) and which spreadsheet columns to offer for mapping -- one per
+  // template variable, exactly like the Marketing Templates page already
+  // does for its own campaign sends (same CsvCampaignUploader component).
+  const csvSegmentTemplate = approvedTemplates?.find((t) => t.id === csvSegment?.whatsapp_template_id)
+  const csvExtraColumns: ExtraColumn[] = csvSegmentTemplate
+    ? csvSegmentTemplate.variables.map((v) => ({ key: v, label: v, candidates: [v] }))
+    : [{ key: 'service', label: 'Service', candidates: ['service', 'treatment'] }]
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -322,15 +334,20 @@ export default function PatientRecallSystemPage() {
               </SelectContent>
             </Select>
           </div>
+          {csvSegment?.whatsapp_template_id && !csvSegmentTemplate && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              This segment&apos;s linked template couldn&apos;t be loaded (it may have been deleted) — sends will
+              fall back to the old default template setting, if any.
+            </p>
+          )}
           <CsvCampaignUploader
             type="recall"
             tenantId={tenant?.id || ''}
             isConnected={isConnected}
             messageTemplate={csvSegment?.message_template || DEFAULT_RECALL_PREVIEW}
             intervalMonths={csvSegment?.interval_months || 6}
-            extraColumns={[
-              { key: 'service', label: 'Service', candidates: ['service', 'treatment'] },
-            ]}
+            templateId={csvSegment?.whatsapp_template_id || undefined}
+            extraColumns={csvExtraColumns}
           />
         </CardContent>
       </Card>

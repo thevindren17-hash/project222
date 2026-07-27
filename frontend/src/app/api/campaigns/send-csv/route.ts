@@ -124,8 +124,11 @@ async function sendOneCampaignMessage(params: {
   if (!phone) return { status: 'failed', reason: `Invalid phone number: "${contact.phone}"` }
 
   const name = (contact.name || '').trim() || 'there'
+  // Checked on marketingTemplate itself, not `type === 'marketing'` — recall
+  // uses this exact same rich mechanism whenever its segment has its own
+  // approved template linked (see the loading logic in POST below).
   const message =
-    type === 'marketing' && marketingTemplate
+    marketingTemplate
       ? buildMarketingMessage(message_template, marketingTemplate.variables, contact)
       : buildMessage(message_template, {
           name,
@@ -168,10 +171,14 @@ async function sendOneCampaignMessage(params: {
 
     // Send via Meta API — reminder/feedback/marketing are always outside
     // the 24h customer service window, so they must use an approved
-    // template. Recall stays on free-text until its template is approved
-    // (templateName is null in that case).
+    // template. Recall is the same in practice (recipients are dormant
+    // patients by definition) once its segment has a template linked;
+    // templateName is only null for recall when no template is linked yet,
+    // in which case the plain-text fallback below will actually get
+    // rejected by Meta for anyone truly outside the 24h window — that's a
+    // real limitation to flag to the clinic, not a working alternative.
     const templateParams =
-      type === 'marketing' && marketingTemplate
+      marketingTemplate
         ? marketingTemplate.variables.map((v) => contact[v] || '')
         : type === 'reminder'
           ? [name, contact.service || '', contact.date || '', contact.time || '']
@@ -186,7 +193,7 @@ async function sendOneCampaignMessage(params: {
             name: templateName,
             language: { code: templateLanguage || 'en' },
             components: [
-              ...(type === 'marketing' && marketingTemplate?.header_media_id
+              ...(marketingTemplate?.header_media_id
                 ? [{ type: 'header', parameters: [{ type: 'image', image: { id: marketingTemplate.header_media_id } }] }]
                 : []),
               {
@@ -344,11 +351,19 @@ export async function POST(req: NextRequest) {
 
     // Marketing's template name/language/variables come from the specific
     // whatsapp_templates row the clinic picked, not a fixed tenant setting —
-    // must be Meta-approved before it can actually be used to send.
+    // must be Meta-approved before it can actually be used to send. Recall
+    // uses this SAME rich, fully-personalized mechanism when a segment has
+    // its own whatsapp_template_id linked (the per-segment template picker
+    // on the Patient Recall page) -- template_id is optional for recall
+    // (a segment may not have one linked yet), but marketing still requires
+    // it (enforced above). Recall recipients are dormant patients outside
+    // the 24h window by definition, so free text isn't actually deliverable
+    // for them regardless -- this is what makes an approved template
+    // effectively required for recall to work at all, not just an upgrade.
     let marketingTemplate: MarketingTemplateInfo | null = null
     let marketingTemplateName: string | null = null
     let marketingTemplateLanguage: string | null = null
-    if (type === 'marketing') {
+    if (type === 'marketing' || (type === 'recall' && template_id)) {
       const { data: tpl } = await supabaseAdmin
         .from('whatsapp_templates')
         .select('name, language, status, variables, header_media_id')
@@ -369,10 +384,14 @@ export async function POST(req: NextRequest) {
     const templateNameByType: Record<CampaignType, string | null> = {
       reminder: tenantSettings?.reminder_template_name || 'appointment_reminder',
       feedback: tenantSettings?.feedback_template_name || 'feedback_request',
-      recall: tenantSettings?.recall_template_name || null,
+      // Prefer the segment's own linked template (the current, documented
+      // mechanism) over the legacy single tenant-wide recall_template_name.
+      recall: marketingTemplateName || tenantSettings?.recall_template_name || null,
       marketing: marketingTemplateName,
     }
-    const templateLanguage = type === 'marketing' ? (marketingTemplateLanguage || 'en') : (tenantSettings?.whatsapp_template_language || 'en')
+    const templateLanguage = marketingTemplate
+      ? (marketingTemplateLanguage || 'en')
+      : (tenantSettings?.whatsapp_template_language || 'en')
 
     const results = { sent: 0, skipped: 0, failed: 0 }
     // Per-contact detail for skipped/failed rows — a bare aggregate count
