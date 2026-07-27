@@ -29,6 +29,32 @@ _RETRIABLE = ("rate limit", "ratelimit", "429", "503", "502", "timeout",
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?。！？])\s*')
 
 
+def _cap_to_first_question(text: str) -> str:
+    """
+    Second guard against the same gpt-oss degeneration _collapse_repeated_sentences
+    only partially covers: instead of repeating one question verbatim (which the
+    dedup above catches), the model sometimes asks the SAME question several
+    differently-worded ways in one reply -- confirmed live: "What other time on
+    July 29 would work for you?", "Which time would you prefer on July 29?",
+    "Please let me know a preferred time on July 29..." all landing in one message,
+    none of them exact-duplicate text so the dedup let every one through. Every
+    system prompt in this codebase already mandates exactly one question per turn
+    -- rather than trust the model to keep obeying that under a tool-heavy,
+    reasoning-model conversation, enforce it as a hard cut: once a second '?'
+    shows up, drop everything from there on, same philosophy as the max_tokens
+    backstop below (a hard ceiling, not just a lower suggestion).
+    """
+    if not text:
+        return text
+    first = text.find("?")
+    if first == -1:
+        return text
+    second = text.find("?", first + 1)
+    if second == -1:
+        return text
+    return text[: first + 1]
+
+
 def _collapse_repeated_sentences(text: str) -> str:
     """
     Defensive guard against decoding-repetition loops: a model (observed on
@@ -397,7 +423,8 @@ class LLMClient:
                 for tc in choice.tool_calls
             ]
 
-        return {"content": _collapse_repeated_sentences(choice.content or ""), "tool_calls": tool_calls}
+        content = _cap_to_first_question(_collapse_repeated_sentences(choice.content or ""))
+        return {"content": content, "tool_calls": tool_calls}
 
     async def _call_anthropic(
         self,
@@ -452,7 +479,8 @@ class LLMClient:
                     "function": {"name": block.name, "arguments": block.input},
                 })
 
-        return {"content": _collapse_repeated_sentences(content_text), "tool_calls": tool_calls}
+        content_text = _cap_to_first_question(_collapse_repeated_sentences(content_text))
+        return {"content": content_text, "tool_calls": tool_calls}
 
 
 def load_llm_client(tenant) -> LLMClient:
