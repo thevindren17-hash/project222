@@ -38,6 +38,8 @@ const SECTIONS = [
 const LLM_CRED_FIELDS: Record<string, { placeholder: string }> = {
   groq: { placeholder: 'gsk_...' },
   kimi: { placeholder: 'sk-...' },
+  openai: { placeholder: 'sk-...' },
+  anthropic: { placeholder: 'sk-ant-...' },
 }
 
 interface FaqItem { q: string; a: string }
@@ -698,7 +700,7 @@ export default function AgentPluginPage() {
                 <CardContent className="space-y-4">
 
                   {/* Compact provider grid */}
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-4 gap-2">
                     {LLM_PROVIDERS.map((p) => {
                       const active = llmProvider === p.provider
                       return (

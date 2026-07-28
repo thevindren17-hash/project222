@@ -480,9 +480,13 @@ class LLMClient:
                 system = m["content"]
 
         llm_config = getattr(self._tenant, "llm_config", None) or {}
+        # Matches the Groq/Kimi backstop below (was 1024, an unrelated
+        # leftover default from before this ever became a per-tenant
+        # dashboard value) -- 300 is enough for a real reply or a tool
+        # call's arguments, same reasoning as _call_openai's kwargs.
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "max_tokens": llm_config.get("max_tokens") or 1024,
+            "max_tokens": llm_config.get("max_tokens") or 300,
             "messages": _to_anthropic_messages(messages),
         }
         if llm_config.get("temperature") is not None:

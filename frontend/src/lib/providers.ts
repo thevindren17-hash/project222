@@ -11,12 +11,15 @@
 // stable equivalent exists, since those are the ones providers retire
 // fastest (no Gemini Pro-tier option is listed below for exactly this
 // reason -- only a "-preview" Pro build currently exists).
-// Trimmed to two options deliberately (2026-07-28): OpenAI/Anthropic/Gemini/
-// Mistral were removed at the clinic's request. Groq is free but its daily
-// token cap has already caused a real outage for a live tenant (hit the
-// 200k/day limit three times in one afternoon -- see escalations table,
-// 2026-07-25) -- Kimi is here specifically as the non-quota-capped backup a
-// clinic can switch to if Groq's free tier runs dry, not just a cost option.
+// Four options deliberately (2026-07-28), each locked to ITS cheapest capable
+// model only -- Gemini/Mistral stay excluded (Gemini has a documented history
+// of silently retiring/blocking models in this exact codebase; Mistral's
+// "free" tier turned out to be its consumer chat app, not a real API tier).
+// Clinics pick whichever provider they already trust/have a key for -- Groq
+// is free but its daily token cap has already caused a real outage for a
+// live tenant (hit the 200k/day limit three times in one afternoon -- see
+// escalations table, 2026-07-25); the other three are non-quota-capped paid
+// backups at cents-per-month cost for this system's usage pattern.
 export const LLM_PROVIDERS = [
   {
     provider: 'groq',
@@ -33,12 +36,31 @@ export const LLM_PROVIDERS = [
     provider: 'kimi',
     name: 'Kimi (Moonshot AI)',
     models: [
-      { id: 'kimi-k2.6', name: 'Kimi K2.6 — Recommended (general-purpose)' },
-      { id: 'kimi-k3', name: 'Kimi K3 — Most Powerful' },
+      { id: 'kimi-k2.6', name: 'Kimi K2.6 — Cheapest & Recommended' },
     ],
     description: 'Not free, but cheap and reliable with no daily cap -- good backup if Groq is rate-limited or down.',
     recommended: false,
     estimatedCostPerCall: '~$0.001–$0.005',
+  },
+  {
+    provider: 'openai',
+    name: 'OpenAI',
+    models: [
+      { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano — Cheapest & Recommended' },
+    ],
+    description: 'Well-known brand, cheapest OpenAI tier. Not free, no daily cap.',
+    recommended: false,
+    estimatedCostPerCall: '~$0.0005–$0.004',
+  },
+  {
+    provider: 'anthropic',
+    name: 'Anthropic Claude',
+    models: [
+      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5 — Cheapest & Recommended' },
+    ],
+    description: 'Well-known brand, cheapest Claude tier. Not free, no daily cap. Costs more than the others above at this volume.',
+    recommended: false,
+    estimatedCostPerCall: '~$0.002–$0.02',
   },
 ]
 
