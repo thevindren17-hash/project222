@@ -1,7 +1,7 @@
 'use client'
 
 import { useTheme } from 'next-themes'
-import { Bell, Sun, Moon, Settings, LogOut } from 'lucide-react'
+import { Bell, Sun, Moon, Settings, LogOut, Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -10,7 +10,11 @@ import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useQuery } from '@tanstack/react-query'
 
-export default function Navbar() {
+interface NavbarProps {
+  onMenuClick?: () => void
+}
+
+export default function Navbar({ onMenuClick }: NavbarProps) {
   const router = useRouter()
   const { theme, setTheme } = useTheme()
 
@@ -32,8 +36,12 @@ export default function Navbar() {
   const initials = email ? email[0].toUpperCase() : '?'
 
   return (
-    <header className="h-16 border-b border-border bg-card flex items-center justify-between px-6 shrink-0">
-      <div className="flex-1" />
+    <header className="h-16 border-b border-border bg-card flex items-center justify-between px-4 md:px-6 shrink-0">
+      <div className="flex-1 flex items-center">
+        <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick}>
+          <Menu className="h-5 w-5" />
+        </Button>
+      </div>
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" className="relative">
           <Bell className="h-5 w-5" />
