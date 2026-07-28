@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException, Response, Backgr
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.tenant_config import get_tenant_by_wa_phone_id, get_tenant_by_id, get_supabase_client, _db
-from shared.providers import load_llm_client
+from shared.providers import load_llm_client, load_fallback_llm_client
 from shared.security import require_internal_secret
 from shared.tools import (
     book_appointment,
@@ -384,6 +384,65 @@ def _parse_embedded_tool_calls(text: str):
         r"<function=([^>]+)>(.*?)</function>", _replacer, text, flags=re.DOTALL
     ).strip()
     return cleaned, tool_calls
+
+
+async def _run_with_fallback(
+    tenant,
+    llm_client,
+    messages_payload: list,
+    enabled_tools: Optional[list],
+    all_tools: list,
+    execute_tool,
+) -> dict:
+    """
+    Runs the primary LLM's tool-calling loop (with the existing "tool not in
+    this turn's filtered set" retry against the tenant's full tool list). If
+    the primary provider fails outright -- invalid/expired key, provider
+    outage, an unsupported-parameter bug like the ones already hit with
+    Gemini/Kimi/OpenAI, a rate limit -- and the tenant has a fallback
+    provider configured (Settings -> Agent Config -> Fallback LLM), retries
+    the SAME turn against that fallback provider before giving up. Without
+    this, any primary-provider failure meant every patient got the generic
+    "having trouble responding" message regardless of whether a second,
+    working provider was one config field away.
+    """
+    async def _attempt(client) -> dict:
+        try:
+            return await client.run_with_tools(
+                messages=messages_payload, tools=enabled_tools or None,
+                execute_tool=execute_tool, parse_embedded_tool_calls=_parse_embedded_tool_calls,
+            )
+        except Exception as tool_err:
+            if "not in request.tools" in str(tool_err).lower():
+                return await client.run_with_tools(
+                    messages=messages_payload, tools=all_tools or None,
+                    execute_tool=execute_tool, parse_embedded_tool_calls=_parse_embedded_tool_calls,
+                )
+            raise
+
+    try:
+        return await _attempt(llm_client)
+    except Exception as primary_err:
+        fallback_client = load_fallback_llm_client(tenant)
+        if not fallback_client:
+            raise
+        logger.warning(
+            f"Primary LLM failed, retrying with fallback | tenant={tenant.tenant_id} | "
+            f"primary={getattr(tenant, 'llm_config', {}).get('provider')} | "
+            f"fallback={fallback_client.provider} | error={primary_err}"
+        )
+        try:
+            return await _attempt(fallback_client)
+        except Exception as fallback_err:
+            logger.error(
+                f"Fallback LLM also failed | tenant={tenant.tenant_id} | "
+                f"fallback={fallback_client.provider} | error={fallback_err}"
+            )
+            # Surface the primary's error for escalation, not the fallback's --
+            # the primary is the one the clinic actually configured and needs
+            # to go fix; the fallback failing too is secondary context, not
+            # the root cause.
+            raise primary_err
 
 
 def _build_date_context(
@@ -1049,33 +1108,9 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         async def _execute(fn_name: str, args: dict) -> str:
             return await _execute_wa_tool(fn_name, args, tenant, contact, language, has_date_mention)
 
-        try:
-            result = await llm_client.run_with_tools(
-                messages=messages_payload,
-                tools=enabled_tools or None,
-                execute_tool=_execute,
-                parse_embedded_tool_calls=_parse_embedded_tool_calls,
-            )
-        except Exception as tool_err:
-            # Confirmed live (escalations table): _select_tools' relevance
-            # filtering is a best-effort heuristic (e.g. "check_slots already
-            # shown, exclude it"), not a hard guarantee of what the model
-            # will actually try to call. When it calls something outside
-            # that turn's filtered set anyway, Groq's strict schema
-            # validation rejects the ENTIRE request with a 400 -- previously
-            # that meant total failure (the patient-facing "having trouble
-            # responding" fallback) instead of just the one stray call being
-            # ignored. Retry once with the tenant's full, unfiltered tool
-            # set so a legitimate call that got filtered out still succeeds.
-            if "not in request.tools" in str(tool_err).lower():
-                result = await llm_client.run_with_tools(
-                    messages=messages_payload,
-                    tools=all_tools or None,
-                    execute_tool=_execute,
-                    parse_embedded_tool_calls=_parse_embedded_tool_calls,
-                )
-            else:
-                raise
+        result = await _run_with_fallback(
+            tenant, llm_client, messages_payload, enabled_tools, all_tools, _execute,
+        )
         reply_text = result.get("content") or "I'm sorry, I couldn't process that. Please try again or call us directly."
     except Exception as llm_err:
         logger.error(
@@ -1237,11 +1272,8 @@ async def _handle_voice_message(tenant, message: dict, from_number: str, media_i
         async def _execute(fn_name: str, args: dict) -> str:
             return await _execute_wa_tool(fn_name, args, tenant, contact, language, has_date_mention)
 
-        result = await llm_client.run_with_tools(
-            messages=messages_payload,
-            tools=enabled_tools or None,
-            execute_tool=_execute,
-            parse_embedded_tool_calls=_parse_embedded_tool_calls,
+        result = await _run_with_fallback(
+            tenant, llm_client, messages_payload, enabled_tools, all_tools, _execute,
         )
         reply_text = result.get("content") or "I'm sorry, I couldn't process that. Please try again."
     except Exception as llm_err:

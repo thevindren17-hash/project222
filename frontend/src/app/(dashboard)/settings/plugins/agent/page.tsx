@@ -163,6 +163,15 @@ export default function AgentPluginPage() {
   const [llmModel, setLlmModel] = useState('openai/gpt-oss-120b')
   const [newApiKey, setNewApiKey] = useState('')
 
+  // Optional second provider -- empty string means "no fallback configured".
+  // Used when the primary provider fails outright (bad key, outage, rate
+  // limit) so the patient gets answered by the backup instead of the
+  // generic "having trouble responding" message. Requires its own saved
+  // API key, same as the primary.
+  const [fallbackProvider, setFallbackProvider] = useState('')
+  const [fallbackModel, setFallbackModel] = useState('')
+  const [newFallbackApiKey, setNewFallbackApiKey] = useState('')
+
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false)
   const [voiceTtsProvider, setVoiceTtsProvider] = useState('openai')
   const [voiceTtsVoiceMap, setVoiceTtsVoiceMap] = useState<Record<string, string>>({})
@@ -189,6 +198,8 @@ export default function AgentPluginPage() {
       setPromptSeeded(true)
       setLlmProvider(settings.llm_config?.provider || 'groq')
       setLlmModel(settings.llm_config?.model || 'openai/gpt-oss-120b')
+      setFallbackProvider(settings.llm_config?.fallback?.provider || '')
+      setFallbackModel(settings.llm_config?.fallback?.model || '')
       setTemperature(settings.llm_config?.temperature ?? 0.3)
       setMaxTokens(settings.llm_config?.max_tokens ?? 300)
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
@@ -247,7 +258,10 @@ export default function AgentPluginPage() {
         tenant_id: tenant.id,
         agent_name: agentName,
         custom_instructions: prompt,
-        llm_config: { provider: llmProvider, model: llmModel, temperature, max_tokens: maxTokens },
+        llm_config: {
+          provider: llmProvider, model: llmModel, temperature, max_tokens: maxTokens,
+          fallback: fallbackProvider && fallbackModel ? { provider: fallbackProvider, model: fallbackModel } : null,
+        },
         tool_config: { ...toolConfig, escalate: humanTakeover },
         faq,
         custom_booking_fields: customFields.filter((f) => f.key && f.label),
@@ -285,6 +299,15 @@ export default function AgentPluginPage() {
         })
         if (!res.ok) throw new Error('Failed to save API key')
         setNewApiKey('')
+      }
+      if (newFallbackApiKey.trim() && fallbackProvider) {
+        const res = await fetch('/api/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: fallbackProvider, api_key: newFallbackApiKey.trim(), type: 'agent' }),
+        })
+        if (!res.ok) throw new Error('Failed to save fallback API key')
+        setNewFallbackApiKey('')
       }
       if (newVoiceSttKey.trim()) {
         const res = await fetch('/api/credentials', {
@@ -765,6 +788,80 @@ export default function AgentPluginPage() {
                               placeholder={credExistence?.[llmProvider] ? 'Enter new key to replace…' : LLM_CRED_FIELDS[llmProvider].placeholder}
                               value={newApiKey}
                               onChange={(e) => setNewApiKey(e.target.value)}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </CardContent>
+              </Card>
+
+              {/* Fallback LLM */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-primary" />Fallback LLM (optional)
+                  </CardTitle>
+                  <CardDescription>
+                    Used automatically if the main provider above fails (bad key, outage, rate limit) — so patients
+                    get answered by the backup instead of an error message. Needs its own saved API key.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-1.5 max-w-sm">
+                    <Label className="text-xs font-medium text-muted-foreground">Provider</Label>
+                    <Select
+                      value={fallbackProvider || 'none'}
+                      onValueChange={(v) => {
+                        if (!v || v === 'none') { setFallbackProvider(''); setFallbackModel(''); return }
+                        setFallbackProvider(v)
+                        const p = LLM_PROVIDERS.find((p) => p.provider === v)
+                        setFallbackModel(p?.models?.[0]?.id || '')
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">None</SelectItem>
+                        {LLM_PROVIDERS.filter((p) => p.provider !== llmProvider).map((p) => (
+                          <SelectItem key={p.provider} value={p.provider}>{p.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {fallbackProvider && (() => {
+                    const selectedFallback = LLM_PROVIDERS.find((p) => p.provider === fallbackProvider)
+                    if (!selectedFallback) return null
+                    const hasKey = !!LLM_CRED_FIELDS[fallbackProvider]
+                    return (
+                      <div className={cn('grid gap-3 pt-3 border-t', hasKey ? 'grid-cols-2' : 'grid-cols-1 max-w-sm')}>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs font-medium text-muted-foreground">Model</Label>
+                          <Select value={fallbackModel} onValueChange={(v) => v && setFallbackModel(v)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {selectedFallback.models.map((m) => (
+                                <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {hasKey && (
+                          <div className="space-y-1.5">
+                            <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                              <Key className="h-3 w-3" />API Key
+                              {credExistence?.[fallbackProvider] && !newFallbackApiKey && (
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                                  <Check className="h-2.5 w-2.5" />Key saved
+                                </Badge>
+                              )}
+                            </Label>
+                            <Input
+                              type="password"
+                              placeholder={credExistence?.[fallbackProvider] ? 'Enter new key to replace…' : LLM_CRED_FIELDS[fallbackProvider].placeholder}
+                              value={newFallbackApiKey}
+                              onChange={(e) => setNewFallbackApiKey(e.target.value)}
                             />
                           </div>
                         )}

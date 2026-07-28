@@ -537,3 +537,21 @@ def load_llm_client(tenant) -> LLMClient:
     provider = tenant.llm_config.get("provider", "groq")
     model    = tenant.llm_config.get("model", "openai/gpt-oss-120b")
     return LLMClient(provider=provider, model=model, tenant=tenant)
+
+
+def load_fallback_llm_client(tenant) -> Optional[LLMClient]:
+    """
+    Optional second provider a clinic can configure (llm_config.fallback =
+    {provider, model}) so an outage or misconfiguration on the primary
+    provider (rate limit exhausted, invalid/expired key, provider-side
+    incident) degrades to "answered by the backup" instead of the patient
+    getting the generic "having trouble responding" message. Returns None
+    if the tenant hasn't set one up -- callers must handle that case, not
+    assume a fallback always exists.
+    """
+    fallback = (getattr(tenant, "llm_config", None) or {}).get("fallback") or {}
+    provider = fallback.get("provider")
+    model = fallback.get("model")
+    if not provider or not model:
+        return None
+    return LLMClient(provider=provider, model=model, tenant=tenant)
