@@ -359,24 +359,36 @@ class LLMClient:
         # stop a bug in those two from rambling unbounded, so 300 -- a bit
         # more headroom than the original 200 for a genuinely longer reply
         # -- is fine.
-        # Kimi's K-series models (k2.6, k3 -- the only ones offered in the
-        # dashboard) use a different request schema than the older
-        # moonshot-v1 family: max_tokens is deprecated in favor of
-        # max_completion_tokens, and temperature/frequency_penalty/
-        # presence_penalty aren't accepted on K-series requests at all.
-        # Sending them risks the exact "unknown field -> hard 400 on every
-        # single call" failure already hit once with Gemini -- so K-series
-        # gets its own token-limit key and skips the sampling params below
-        # entirely, rather than gambling on ambiguous docs about whether
-        # they're silently ignored.
-        is_kimi = self.provider == "kimi"
+        # Kimi's K-series models (k2.6, k3) use a different request schema
+        # than the older moonshot-v1 family: max_tokens is deprecated in
+        # favor of max_completion_tokens, and temperature/frequency_penalty/
+        # presence_penalty aren't accepted at all. gpt-5.4-nano (the only
+        # OpenAI model offered in the dashboard) hit the exact same
+        # max_tokens rejection live in production -- confirmed via a real
+        # 400 in the escalations table ("Unsupported parameter: 'max_tokens'
+        # ... Use 'max_completion_tokens' instead"). OpenAI's own docs
+        # wouldn't confirm or deny the sampling params for this model either
+        # way, but this is the same newer/reasoning-tier model family that
+        # has historically rejected temperature/frequency_penalty/
+        # presence_penalty (o1/o3) -- given sending them risks the exact
+        # "unknown field -> hard 400 on every single call" failure already
+        # hit with Gemini AND Kimi AND now OpenAI's max_tokens, gpt-5.4-nano
+        # gets the same defensive treatment as Kimi rather than gambling a
+        # third time on ambiguous docs. If OpenAI adds a non-reasoning model
+        # to this dashboard later, it'll need its own branch -- this flag is
+        # deliberately provider-scoped, not model-scoped, because right now
+        # there's exactly one OpenAI model offered and it needs this.
+        needs_completion_tokens_and_no_sampling = self.provider in ("kimi", "openai")
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
         }
         token_limit = llm_config.get("max_tokens") or 300
-        if is_kimi:
+        if needs_completion_tokens_and_no_sampling:
             kwargs["max_completion_tokens"] = token_limit
+        else:
+            kwargs["max_tokens"] = token_limit
+        if self.provider == "kimi":
             # Hints to Kimi that requests carrying this key share a common
             # prefix (this tenant's system prompt) worth reusing between
             # calls -- without it there's nothing telling their cache to
@@ -388,9 +400,7 @@ class LLMClient:
             tenant_id = getattr(self._tenant, "tenant_id", None)
             if tenant_id:
                 kwargs["prompt_cache_key"] = f"tenant-{tenant_id}"
-        else:
-            kwargs["max_tokens"] = token_limit
-        if llm_config.get("temperature") is not None and not is_kimi:
+        if llm_config.get("temperature") is not None and not needs_completion_tokens_and_no_sampling:
             kwargs["temperature"] = llm_config["temperature"]
         # Some models (esp. Groq's gpt-oss family) fall into degenerate
         # repetition loops under tool-heavy conversations -- re-asking the
@@ -403,7 +413,7 @@ class LLMClient:
         # ("Unknown name 'frequency_penalty': Cannot find field") -- this
         # was breaking every single call for a tenant on Gemini, not just
         # this one feature, until caught live.
-        if self.provider not in ("gemini", "google") and not is_kimi:
+        if self.provider not in ("gemini", "google") and not needs_completion_tokens_and_no_sampling:
             kwargs["frequency_penalty"] = llm_config.get("frequency_penalty", 0.4)
             kwargs["presence_penalty"] = llm_config.get("presence_penalty", 0.2)
         if tools:
