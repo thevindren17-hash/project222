@@ -135,6 +135,66 @@ class GoogleCalendarIntegration:
             logger.error(f"Error listing calendar events: {e}")
             return []
 
+    async def _get_busy_blocks(self, window_start: datetime, window_end: datetime) -> List[tuple]:
+        """
+        Raw Google Calendar busy blocks (as clinic-local naive datetimes)
+        for the given window. Shared by find_free_slots (used by check_slots
+        to show a day's options) and is_time_busy (used by book_appointment
+        to verify one specific candidate before committing) -- both need to
+        see the SAME calendar reality, including events the clinic added
+        manually or that predate connecting this system, not just bookings
+        this system itself created in Supabase.
+        """
+        token = await self._get_token()
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    f"{GCAL_API}/freeBusy",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        # window_start/window_end are naive clinic-local
+                        # wall-clock digits (same convention as scheduled_at
+                        # everywhere else in this codebase) -- appending a
+                        # bare "Z" here previously mislabeled them as UTC,
+                        # shifting the entire freeBusy query window by the
+                        # clinic's UTC offset (+8h for Asia/Kuala_Lumpur).
+                        # to_db_timestamp attaches the correct offset
+                        # instead, matching how create_appointment already
+                        # sends start/end.
+                        "timeMin": to_db_timestamp(window_start),
+                        "timeMax": to_db_timestamp(window_end),
+                        "items": [{"id": self.calendar_id}],
+                    },
+                )
+            if r.status_code != 200:
+                return []
+            cal_data = r.json().get("calendars", {}).get(self.calendar_id, {})
+            # Google returns busy blocks in UTC ("...Z"). Stripping the
+            # timezone marker without converting first would leave
+            # UTC-valued digits being compared against clinic-local
+            # candidates -- the same +8h mismatch as the request above, just
+            # on the response side. from_db_timestamp converts to
+            # clinic-local before dropping tzinfo, so the digits line up.
+            return [
+                (from_db_timestamp(b["start"]), from_db_timestamp(b["end"]))
+                for b in cal_data.get("busy", [])
+            ]
+        except Exception as e:
+            logger.error(f"Error fetching freebusy: {e}")
+            return []
+
+    async def is_time_busy(self, start: datetime, end: datetime) -> bool:
+        """
+        Does ANY calendar event (created by this system or not -- a walk-in
+        the clinic added by hand, a pre-existing appointment from before
+        they connected this system, anything) overlap [start, end)? This is
+        what book_appointment's own conflict check calls before committing
+        a booking, so a clinic's real calendar is always respected -- not
+        just what this system already knows about in Supabase.
+        """
+        busy_blocks = await self._get_busy_blocks(start, end)
+        return any(not (end <= b_start or start >= b_end) for b_start, b_end in busy_blocks)
+
     async def find_free_slots(
         self,
         date: datetime,
@@ -147,49 +207,9 @@ class GoogleCalendarIntegration:
         if business_hours.get("closed"):
             return []
 
-        token = await self._get_token()
         day_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = date.replace(hour=23, minute=59, second=59, microsecond=0)
-
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(
-                    f"{GCAL_API}/freeBusy",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={
-                        # day_start/day_end are naive clinic-local wall-clock
-                        # digits (same convention as scheduled_at everywhere
-                        # else in this codebase) -- appending a bare "Z" here
-                        # previously mislabeled them as UTC, shifting the
-                        # entire freeBusy query window by the clinic's UTC
-                        # offset (+8h for Asia/Kuala_Lumpur). to_db_timestamp
-                        # attaches the correct offset instead, matching how
-                        # create_appointment already sends start/end below.
-                        "timeMin": to_db_timestamp(day_start),
-                        "timeMax": to_db_timestamp(day_end),
-                        "items": [{"id": self.calendar_id}],
-                    },
-                )
-            busy_blocks = []
-            if r.status_code == 200:
-                cal_data = r.json().get("calendars", {}).get(self.calendar_id, {})
-                # Google returns busy blocks in UTC ("...Z"). The old code
-                # stripped the timezone marker without converting first,
-                # leaving UTC-valued digits being compared against the
-                # clinic-local slot candidates below -- the same +8h
-                # mismatch as the request above, just on the response side.
-                # from_db_timestamp converts to clinic-local before
-                # dropping tzinfo, so the digits actually line up.
-                busy_blocks = [
-                    (
-                        from_db_timestamp(b["start"]),
-                        from_db_timestamp(b["end"]),
-                    )
-                    for b in cal_data.get("busy", [])
-                ]
-        except Exception as e:
-            logger.error(f"Error fetching freebusy: {e}")
-            busy_blocks = []
+        busy_blocks = await self._get_busy_blocks(day_start, day_end)
 
         # Generate slots within business hours, skipping busy blocks
         open_h, open_m = map(int, business_hours["open"].split(":"))

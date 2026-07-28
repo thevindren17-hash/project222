@@ -117,6 +117,26 @@ async def book_appointment(
             "message": f"That time slot is already taken (appointment at {conflict_time}). Would you like to try another time?",
         }
 
+    # The Supabase check above only sees bookings THIS system created. A
+    # clinic's real calendar can hold events it never created -- a walk-in
+    # added by hand, an appointment from before they connected this system,
+    # anything -- and none of those have a row in `bookings` to catch here.
+    # check_slots already consults the live calendar for exactly this
+    # reason; book_appointment must check the SAME source before committing,
+    # or a slot check_slots correctly showed as free-turned-busy in the
+    # meantime (or was never Supabase-tracked to begin with) can still slip
+    # through and double-book over a real, pre-existing appointment.
+    gcal = await get_google_calendar(tenant_id)
+    if gcal and await gcal.is_time_busy(
+        scheduled_at - timedelta(minutes=buffer_min),
+        scheduled_at + timedelta(minutes=duration + buffer_min),
+    ):
+        return {
+            "success": False,
+            "error": "double_booking",
+            "message": "That time slot is already taken on the calendar. Would you like to try another time?",
+        }
+
     # The check above is a fast, friendly pre-flight — it is NOT atomic with
     # the insert below, so two near-simultaneous bookings for the same slot
     # could both pass it. The `bookings_no_overlap` exclusion constraint
@@ -156,7 +176,8 @@ async def book_appointment(
     booking_id = result.data[0]["id"]
     calendar_event_id = None
 
-    gcal = await get_google_calendar(tenant_id)
+    # Reuses the same `gcal` fetched above for the pre-flight busy check --
+    # no need to look it up twice.
     if gcal:
         try:
             cal_result = await gcal.create_appointment(

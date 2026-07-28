@@ -17,6 +17,17 @@ import { BOOKING_STATUS } from '@/lib/booking-status'
 import { parseClinicLocal } from '@/lib/utils'
 import type { Booking } from '@/lib/types'
 
+// Supabase's PostgrestError is a plain {message, details, hint, code}
+// object -- it does NOT extend the native Error class, so `e instanceof
+// Error` silently fails on it and every catch block below was falling
+// through to its generic fallback text, hiding the real reason (RLS
+// denial, bad column, etc.) from both the clinic and from debugging.
+function getErrorMessage(e: unknown, fallback: string): string {
+  if (e instanceof Error) return e.message
+  if (typeof e === 'object' && e !== null && 'message' in e) return String((e as { message: unknown }).message)
+  return fallback
+}
+
 const CLEAR_OLDER_THAN_OPTIONS: { value: string; label: string; cutoff: () => Date }[] = [
   { value: '2w', label: '2 weeks', cutoff: () => subWeeks(new Date(), 2) },
   { value: '3w', label: '3 weeks', cutoff: () => subWeeks(new Date(), 3) },
@@ -111,7 +122,7 @@ export default function AppointmentsPage() {
       else toast.error(data.details?.[0]?.reason || 'Send failed')
       queryClient.invalidateQueries({ queryKey: ['bookings'] })
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Send failed')
+      toast.error(getErrorMessage(e, 'Send failed'))
     } finally {
       setSendingId(null)
     }
@@ -127,7 +138,7 @@ export default function AppointmentsPage() {
       toast.success(showArchived ? 'Appointment restored' : 'Appointment archived')
       queryClient.invalidateQueries({ queryKey: ['bookings'] })
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Action failed')
+      toast.error(getErrorMessage(e, 'Action failed'))
     } finally {
       setArchivingId(null)
     }
@@ -163,7 +174,7 @@ export default function AppointmentsPage() {
       toast.success(`Archived ${data?.length || 0} old appointment${data?.length === 1 ? '' : 's'}`)
       queryClient.invalidateQueries({ queryKey: ['bookings'] })
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Action failed')
+      toast.error(getErrorMessage(e, 'Action failed'))
     } finally {
       setClearing(false)
     }
