@@ -79,7 +79,7 @@ export default function AnalyticsPage() {
         <p className="text-muted-foreground">Last 30 days performance</p>
       </div>
 
-      <div className="grid gap-6 max-w-md grid-cols-2">
+      <div className="grid gap-3 sm:gap-6 max-w-md grid-cols-2">
         <StatCard title="Total Bookings" value={stats?.totalBookings ?? '—'} icon="calendar" />
         <StatCard title="No-Show Rate" value={stats ? `${stats.noShowRate}%` : '—'} icon="alert" />
       </div>
@@ -92,9 +92,9 @@ export default function AnalyticsPage() {
             const widthPct = maxCount > 0 ? Math.max((step.count / maxCount) * 100, step.count > 0 ? 4 : 0) : 0
             return (
               <div key={step.stage} className="space-y-1.5">
-                <div className="flex items-center justify-between text-sm">
+                <div className="flex items-center justify-between flex-wrap gap-x-2 gap-y-0.5 text-sm">
                   <span className="font-medium">{step.stage}</span>
-                  <span className="text-muted-foreground">
+                  <span className="text-muted-foreground whitespace-nowrap">
                     {step.count}
                     {step.pct !== null && <span className="ml-2 text-xs">({step.pct}% of {stats.funnel[i - 1]?.stage.toLowerCase()})</span>}
                   </span>

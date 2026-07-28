@@ -49,7 +49,7 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
           <DialogTitle>Booking Details</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
             <div>
               <p className="text-muted-foreground">Patient</p>
               <p className="font-medium">{(booking as any).contact?.name || 'Unknown'}</p>
@@ -91,7 +91,7 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
               <Separator />
               <div className="space-y-2">
                 <p className="text-muted-foreground text-sm">Additional Details</p>
-                <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                   {customFieldEntries.map(([key, value]) => (
                     <div key={key}>
                       <p className="text-muted-foreground text-xs">{humanizeFieldKey(key)}</p>
@@ -103,7 +103,7 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
             </>
           )}
           <Separator />
-          <div className="flex gap-2 justify-end">
+          <div className="flex gap-2 flex-wrap justify-end">
             {booking.status === 'pending' && (
               <Button size="sm" onClick={() => updateStatus.mutate('confirmed')}>Confirm</Button>
             )}

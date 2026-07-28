@@ -171,12 +171,12 @@ export default function AppointmentsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold">Appointments</h1>
           <p className="text-muted-foreground">{visibleBookings?.length || 0} of {bookings?.length || 0} appointments</p>
         </div>
-        <div className="flex items-center gap-4 flex-wrap justify-end">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:flex-wrap md:justify-end">
           {!showArchived && (
             <div className="flex items-center gap-1.5">
               <Select value={clearOlderThan} onValueChange={(v) => v && setClearOlderThan(v)}>
@@ -202,7 +202,7 @@ export default function AppointmentsPage() {
             <span className="text-sm text-muted-foreground whitespace-nowrap">Awaiting reply only</span>
           </div>
           <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
-            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-full md:w-40"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
@@ -215,7 +215,91 @@ export default function AppointmentsPage() {
         </div>
       </div>
 
-      <Card>
+      {/* Mobile card list — the 7-column table below is unreadable on a
+          phone even with horizontal scroll, so under md we show one card
+          per booking instead, with the same data and actions. */}
+      <div className="space-y-3 md:hidden">
+        {visibleBookings?.length === 0 && (
+          <Card>
+            <CardContent className="py-8 text-center text-muted-foreground text-sm">
+              {awaitingReplyOnly ? 'No patients awaiting reply' : 'No appointments found'}
+            </CardContent>
+          </Card>
+        )}
+        {visibleBookings?.map((b: any) => {
+          const isCancelled = b.status === 'cancelled'
+          const isPast = new Date(b.scheduled_at) < new Date()
+          const reminderKey = `${b.id}:reminder`
+          const feedbackKey = `${b.id}:feedback`
+          const awaitingReply = isAwaitingReply(b)
+          return (
+            <Card key={b.id} className="cursor-pointer" onClick={() => setSelectedBooking(b)}>
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-medium truncate">{b.contact?.name || 'Unknown'}</p>
+                      {awaitingReply && (
+                        <span title="Patient hasn't replied since our last message">
+                          <MessageCircleWarning className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">{b.contact?.phone}</p>
+                  </div>
+                  <Badge variant="outline" className={`shrink-0 ${BOOKING_STATUS[b.status as keyof typeof BOOKING_STATUS]?.badgeClass}`}>
+                    {BOOKING_STATUS[b.status as keyof typeof BOOKING_STATUS]?.label || b.status}
+                  </Badge>
+                </div>
+                <div className="text-sm text-muted-foreground space-y-0.5">
+                  <p>{b.service_type}</p>
+                  <p>{format(parseClinicLocal(b.scheduled_at), 'MMM d, yyyy h:mm a')}</p>
+                  <p className="capitalize">{b.source}</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                  {!isCancelled && !isPast && (
+                    <Button
+                      variant="outline" size="sm" className="text-xs gap-1.5"
+                      disabled={sendingId === reminderKey || !b.contact?.phone}
+                      onClick={() => sendOneOff(b, 'reminder')}
+                    >
+                      {sendingId === reminderKey ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bell className="h-3.5 w-3.5" />}
+                      Reminder
+                    </Button>
+                  )}
+                  {!isCancelled && isPast && (
+                    <Button
+                      variant="outline" size="sm" className="text-xs gap-1.5"
+                      disabled={sendingId === feedbackKey || !b.contact?.phone}
+                      onClick={() => sendOneOff(b, 'feedback')}
+                    >
+                      {sendingId === feedbackKey ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />}
+                      Feedback
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={() => setSelectedBooking(b)}>View</Button>
+                  <Button
+                    variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                    disabled={archivingId === b.id}
+                    onClick={() => toggleArchive(b)}
+                  >
+                    {archivingId === b.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : showArchived ? (
+                      <ArchiveRestore className="h-3.5 w-3.5" />
+                    ) : (
+                      <Archive className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+
+      {/* Desktop table */}
+      <Card className="hidden md:block">
         <CardContent className="p-0">
           <Table>
             <TableHeader>
