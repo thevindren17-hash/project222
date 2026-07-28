@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
 import { format, subWeeks, subMonths } from 'date-fns'
-import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore } from 'lucide-react'
+import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { BOOKING_STATUS } from '@/lib/booking-status'
 import { parseClinicLocal } from '@/lib/utils'
@@ -42,6 +42,7 @@ export default function AppointmentsPage() {
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [archivingId, setArchivingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [clearing, setClearing] = useState(false)
   const queryClient = useQueryClient()
 
@@ -141,6 +142,27 @@ export default function AppointmentsPage() {
       toast.error(getErrorMessage(e, 'Action failed'))
     } finally {
       setArchivingId(null)
+    }
+  }
+
+  async function deleteAppointment(booking: any) {
+    // Permanent, unlike Archive -- confirm with the actual patient/date so
+    // there's no doubt which row is about to be gone for good.
+    const label = `${booking.contact?.name || booking.patient_name || 'this appointment'} — ${
+      booking.scheduled_at ? format(parseClinicLocal(booking.scheduled_at), 'MMM d, yyyy h:mm a') : ''
+    }`
+    if (!confirm(`Permanently delete ${label}? This cannot be undone — use Archive instead if you just want to hide it.`)) return
+
+    setDeletingId(booking.id)
+    try {
+      const { error } = await supabase.from('bookings').delete().eq('id', booking.id)
+      if (error) throw error
+      toast.success('Appointment deleted')
+      queryClient.invalidateQueries({ queryKey: ['bookings'] })
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e, 'Delete failed'))
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -302,6 +324,13 @@ export default function AppointmentsPage() {
                       <Archive className="h-3.5 w-3.5" />
                     )}
                   </Button>
+                  <Button
+                    variant="ghost" size="sm" className="gap-1.5 text-destructive hover:text-destructive"
+                    disabled={deletingId === b.id}
+                    onClick={() => deleteAppointment(b)}
+                  >
+                    {deletingId === b.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -396,6 +425,14 @@ export default function AppointmentsPage() {
                       ) : (
                         <Archive className="h-3.5 w-3.5" />
                       )}
+                    </Button>
+                    <Button
+                      variant="ghost" size="sm" className="gap-1.5 text-destructive hover:text-destructive"
+                      disabled={deletingId === b.id}
+                      onClick={() => deleteAppointment(b)}
+                      title="Permanently delete"
+                    >
+                      {deletingId === b.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                     </Button>
                   </TableCell>
                 </TableRow>
