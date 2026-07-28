@@ -211,7 +211,7 @@ async def book_appointment(
             # reschedule_appointment below update this SAME row's Status
             # cell in place using this exact value as their starting point,
             # so the casing has to agree across all three.
-            await gsheets.log_lead(
+            _log_result = await gsheets.log_lead(
                 name=contact_name,
                 phone=contact_phone,
                 source=source,
@@ -222,6 +222,8 @@ async def book_appointment(
                 + (f" — {notes}" if notes else ""),
                 custom_fields=custom_fields,
             )
+            if not _log_result.get("success"):
+                logger.warning(f"Sheets sync failed (non-fatal) for tenant {tenant_id}: {_log_result.get('error')}")
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
@@ -393,7 +395,7 @@ async def cancel_appointment(
                 phone=_phone, appointment_time=_orig_time, new_status="CANCELLED",
             )
             if not _update_result.get("success"):
-                await gsheets.log_lead(
+                _log_result = await gsheets.log_lead(
                     name=contact_data.get("name") or "Unknown",
                     phone=_phone,
                     source="whatsapp",
@@ -402,6 +404,8 @@ async def cancel_appointment(
                     notes=f"Cancelled appointment originally at {_orig_time}",
                     custom_fields=custom_fields,
                 )
+                if not _log_result.get("success"):
+                    logger.warning(f"Sheets sync failed (non-fatal) for tenant {tenant_id}: {_log_result.get('error')}")
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
@@ -538,7 +542,7 @@ async def reschedule_appointment(
                 new_appointment_time=_new_time_str,
             )
             if not _update_result.get("success"):
-                await gsheets.log_lead(
+                _log_result = await gsheets.log_lead(
                     name=contact_data.get("name") or "Unknown",
                     phone=_phone,
                     source="whatsapp",
@@ -547,6 +551,8 @@ async def reschedule_appointment(
                     notes=f"Rescheduled from {_old_time_str} to {_new_time_str}",
                     custom_fields=custom_fields,
                 )
+                if not _log_result.get("success"):
+                    logger.warning(f"Sheets sync failed (non-fatal) for tenant {tenant_id}: {_log_result.get('error')}")
         except Exception as e:
             logger.warning(f"Sheets sync failed (non-fatal): {e}")
 
@@ -596,13 +602,15 @@ async def get_or_create_contact(
     gsheets = await get_google_sheets(tenant_id)
     if gsheets:
         try:
-            await gsheets.log_lead(
+            _log_result = await gsheets.log_lead(
                 name=name or "Unknown",
                 phone=phone,
                 source=source,
                 status="new",
                 notes="First contact",
             )
+            if not _log_result.get("success"):
+                logger.warning(f"Failed to log new lead to Sheets (non-fatal) for tenant {tenant_id}: {_log_result.get('error')}")
         except Exception as e:
             logger.warning(f"Failed to log new lead to Sheets (non-fatal): {e}")
 
@@ -896,7 +904,7 @@ async def run_custom_tool(tenant_id: str, contact: Dict[str, Any], tool_def: Dic
     gsheets = await get_google_sheets(tenant_id)
     if gsheets:
         try:
-            await gsheets.log_lead(
+            _log_result = await gsheets.log_lead(
                 name=contact.get("name") or "Unknown",
                 phone=contact.get("phone") or "",
                 source="whatsapp",
@@ -904,6 +912,8 @@ async def run_custom_tool(tenant_id: str, contact: Dict[str, Any], tool_def: Dic
                 notes=tool_name,
                 custom_fields=fields,
             )
+            if not _log_result.get("success"):
+                logger.warning(f"Failed to log custom tool submission to Sheets (non-fatal) for tenant {tenant_id}: {_log_result.get('error')}")
         except Exception as e:
             logger.warning(f"Failed to log custom tool submission to Sheets (non-fatal): {e}")
 
