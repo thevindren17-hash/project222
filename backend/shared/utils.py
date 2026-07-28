@@ -114,7 +114,7 @@ def mentions_a_date(text: str) -> bool:
         return True
     words = re.findall(r"[a-z]+", (text or "").lower())
     return any(
-        len(w) >= 4 and difflib.get_close_matches(w, _DATE_WORDS, n=1, cutoff=0.8)
+        len(w) >= 4 and difflib.get_close_matches(w, _DATE_WORDS, n=1, cutoff=0.7)
         for w in words
     )
 
