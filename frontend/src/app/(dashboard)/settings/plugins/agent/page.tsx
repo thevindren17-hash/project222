@@ -26,6 +26,14 @@ const SERVICES = [
   'Braces & Orthodontics', 'Root Canal', 'Dental Crown', 'Dental Implant', 'Other',
 ]
 
+const BASE_FIELD_KEYS: { key: string; label: string; placeholder: string }[] = [
+  { key: 'contact_name', label: 'Name', placeholder: 'Name' },
+  { key: 'contact_phone', label: 'Phone Number', placeholder: 'Phone Number' },
+  { key: 'service_type', label: 'Service', placeholder: 'Service' },
+  { key: 'date', label: 'Date', placeholder: 'Date' },
+  { key: 'time', label: 'Time', placeholder: 'Time' },
+]
+
 const SECTIONS = [
   { id: 'instructions', label: 'Instructions', icon: Code },
   { id: 'model', label: 'Model Settings', icon: Brain },
@@ -933,6 +941,30 @@ export default function AgentPluginPage() {
                   with the booking and, if connected, mirrored to your Google Sheet.
                 </p>
               </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Rename the Built-in Fields</CardTitle>
+                  <CardDescription>
+                    Use your own clinic&apos;s wording for the fields every booking already collects — e.g.
+                    &quot;Case Type&quot; instead of &quot;Service&quot;, or &quot;Client Name&quot; instead of
+                    &quot;Name&quot;. This only changes the words the AI uses when talking to patients; leave any
+                    of these blank to keep the default.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {BASE_FIELD_KEYS.map((f) => (
+                    <div key={f.key} className="space-y-1.5">
+                      <Label className="text-xs">{f.label}</Label>
+                      <Input
+                        placeholder={f.placeholder}
+                        value={baseFieldLabels[f.key] || ''}
+                        onChange={(e) => setBaseFieldLabels({ ...baseFieldLabels, [f.key]: e.target.value })}
+                      />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
 
               {CUSTOM_FIELD_ACTIONS.map((actionDef) => {
                 // Original array indexes preserved through the filter, since
