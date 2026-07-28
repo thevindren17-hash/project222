@@ -11,6 +11,12 @@
 // stable equivalent exists, since those are the ones providers retire
 // fastest (no Gemini Pro-tier option is listed below for exactly this
 // reason -- only a "-preview" Pro build currently exists).
+// Trimmed to two options deliberately (2026-07-28): OpenAI/Anthropic/Gemini/
+// Mistral were removed at the clinic's request. Groq is free but its daily
+// token cap has already caused a real outage for a live tenant (hit the
+// 200k/day limit three times in one afternoon -- see escalations table,
+// 2026-07-25) -- Kimi is here specifically as the non-quota-capped backup a
+// clinic can switch to if Groq's free tier runs dry, not just a cost option.
 export const LLM_PROVIDERS = [
   {
     provider: 'groq',
@@ -19,59 +25,20 @@ export const LLM_PROVIDERS = [
       { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B — Cheapest & Fastest (Free)' },
       { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B — Recommended (Free)' },
     ],
-    description: 'Free and fast. Best for real-time conversations.',
+    description: 'Free and fast. Best for real-time conversations. Has a daily token cap -- once hit, the bot stops responding until it resets.',
     recommended: true,
     estimatedCostPerCall: 'Free',
   },
   {
-    provider: 'openai',
-    name: 'OpenAI',
+    provider: 'kimi',
+    name: 'Kimi (Moonshot AI)',
     models: [
-      { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano — Cheapest' },
-      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini — Fast & Affordable' },
-      { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna — Latest' },
-      { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol — Most Powerful' },
+      { id: 'kimi-k2.6', name: 'Kimi K2.6 — Recommended (general-purpose)' },
+      { id: 'kimi-k3', name: 'Kimi K3 — Most Powerful' },
     ],
-    description: 'Most accurate, best for complex conversations.',
+    description: 'Not free, but cheap and reliable with no daily cap -- good backup if Groq is rate-limited or down.',
     recommended: false,
-    estimatedCostPerCall: '$0.001–$0.02',
-  },
-  {
-    provider: 'anthropic',
-    name: 'Anthropic Claude',
-    models: [
-      { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5 — Cheapest & Fastest' },
-      { id: 'claude-sonnet-5', name: 'Claude Sonnet 5 — Latest & Balanced' },
-      { id: 'claude-opus-4-8', name: 'Claude Opus 4.8 — Most Powerful' },
-    ],
-    description: 'Excellent at following instructions and nuanced conversations.',
-    recommended: false,
-    estimatedCostPerCall: '$0.001–$0.02',
-  },
-  {
-    provider: 'google',
-    name: 'Google Gemini',
-    models: [
-      { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite — Recommended (cheap & stable)' },
-      { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite — Latest Budget Tier' },
-      { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash — Fast & Capable' },
-      { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash — Latest & Most Capable' },
-    ],
-    description: 'Best for multilingual support. Free tier on Flash/Flash-Lite models. (The entire Gemini 2.5 line — Flash, Flash-Lite, and Pro — is currently blocked for brand-new API keys, so it is intentionally not offered here even though Google\'s docs still list it.)',
-    recommended: false,
-    estimatedCostPerCall: 'Free–$0.01',
-  },
-  {
-    provider: 'mistral',
-    name: 'Mistral AI',
-    models: [
-      { id: 'mistral-small-latest', name: 'Mistral Small — Affordable' },
-      { id: 'mistral-large-latest', name: 'Mistral Large — Latest & Best' },
-      { id: 'codestral-latest', name: 'Codestral — Specialized (Code)' },
-    ],
-    description: 'European AI, strong multilingual capabilities. "-latest" aliases auto-track the current model generation.',
-    recommended: false,
-    estimatedCostPerCall: 'Free–$0.003',
+    estimatedCostPerCall: '~$0.001–$0.005',
   },
 ]
 

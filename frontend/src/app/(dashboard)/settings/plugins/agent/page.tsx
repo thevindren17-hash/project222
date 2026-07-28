@@ -37,10 +37,7 @@ const SECTIONS = [
 
 const LLM_CRED_FIELDS: Record<string, { placeholder: string }> = {
   groq: { placeholder: 'gsk_...' },
-  openai: { placeholder: 'sk-...' },
-  anthropic: { placeholder: 'sk-ant-...' },
-  google: { placeholder: 'AIza...' },
-  mistral: { placeholder: 'your-mistral-key' },
+  kimi: { placeholder: 'sk-...' },
 }
 
 interface FaqItem { q: string; a: string }
@@ -149,8 +146,8 @@ export default function AgentPluginPage() {
   const [specialInstructions, setSpecialInstructions] = useState('')
   const [neverSay, setNeverSay] = useState('')
 
-  const [temperature, setTemperature] = useState(0.7)
-  const [maxTokens, setMaxTokens] = useState(200)
+  const [temperature, setTemperature] = useState(0.3)
+  const [maxTokens, setMaxTokens] = useState(300)
   const [toolConfig, setToolConfig] = useState<Record<string, boolean>>({
     book_appointment: true, check_slots: true, get_faq: true, escalate: true,
   })
@@ -190,8 +187,8 @@ export default function AgentPluginPage() {
       setPromptSeeded(true)
       setLlmProvider(settings.llm_config?.provider || 'groq')
       setLlmModel(settings.llm_config?.model || 'openai/gpt-oss-120b')
-      setTemperature(settings.llm_config?.temperature ?? 0.7)
-      setMaxTokens(settings.llm_config?.max_tokens ?? 200)
+      setTemperature(settings.llm_config?.temperature ?? 0.3)
+      setMaxTokens(settings.llm_config?.max_tokens ?? 300)
       setToolConfig(settings.tool_config || { book_appointment: true, check_slots: true, get_faq: true, escalate: true })
       setHumanTakeover(settings.tool_config?.escalate ?? true)
       setFaq(settings.faq || [])
@@ -701,7 +698,7 @@ export default function AgentPluginPage() {
                 <CardContent className="space-y-4">
 
                   {/* Compact provider grid */}
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {LLM_PROVIDERS.map((p) => {
                       const active = llmProvider === p.provider
                       return (
@@ -808,13 +805,14 @@ export default function AgentPluginPage() {
                   <div className="space-y-2">
                     <Label htmlFor="max-tokens">Max Tokens per Response</Label>
                     <p className="text-xs text-muted-foreground">
-                      Limits how long each AI reply can be (128–4096). Keep this low (around 200) for a WhatsApp
-                      receptionist — it&apos;s a hard backstop against the AI rambling or repeating itself, not just a
-                      length preference.
+                      Limits how long each AI reply can be (128–4096). Keep this low (around 300) for a WhatsApp
+                      receptionist — it&apos;s a backstop against the AI rambling or repeating itself, not just a
+                      length preference. There are separate safeguards that catch rambling directly, so this doesn&apos;t
+                      need to be as tight as possible — just tight enough that a runaway reply can&apos;t go far.
                     </p>
                     <div className="flex items-center gap-3">
                       <Input id="max-tokens" type="number" min={128} max={4096} step={128} value={maxTokens}
-                        onChange={(e) => setMaxTokens(parseInt(e.target.value) || 200)}
+                        onChange={(e) => setMaxTokens(parseInt(e.target.value) || 300)}
                         className="w-36"
                       />
                       <span className="text-xs text-muted-foreground">tokens ≈ {Math.round(maxTokens * 0.75)} words</span>

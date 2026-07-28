@@ -317,6 +317,12 @@ class LLMClient:
                 base_url="https://api.mistral.ai/v1",
                 api_key=_cred(self._tenant, "mistral", "api_key"),
             )
+        if self.provider == "kimi":
+            return await self._call_openai(
+                messages, tools,
+                base_url="https://api.moonshot.ai/v1",
+                api_key=_cred(self._tenant, "kimi", "api_key"),
+            )
         return await self._call_openai(messages, tools)
 
     async def _call_openai(
@@ -346,16 +352,45 @@ class LLMClient:
         # tool) could ramble for hundreds of tokens before hitting any
         # ceiling at all -- frequency/presence_penalty only discourage exact
         # token repeats, not a differently-worded restatement of the same
-        # question, so they didn't catch this pattern. A real WhatsApp reply
-        # (even a detailed confirmation with name/date/time) or a tool call's
-        # JSON arguments comfortably fits under 200 -- this is a hard,
-        # can't-be-talked-around backstop, not just a lower suggestion.
+        # question, so they didn't catch this pattern on their own.
+        # _collapse_repeated_sentences() and _cap_to_first_question() below
+        # are the real defense against that now (they catch it directly,
+        # including the differently-worded case); this cap only needs to
+        # stop a bug in those two from rambling unbounded, so 300 -- a bit
+        # more headroom than the original 200 for a genuinely longer reply
+        # -- is fine.
+        # Kimi's K-series models (k2.6, k3 -- the only ones offered in the
+        # dashboard) use a different request schema than the older
+        # moonshot-v1 family: max_tokens is deprecated in favor of
+        # max_completion_tokens, and temperature/frequency_penalty/
+        # presence_penalty aren't accepted on K-series requests at all.
+        # Sending them risks the exact "unknown field -> hard 400 on every
+        # single call" failure already hit once with Gemini -- so K-series
+        # gets its own token-limit key and skips the sampling params below
+        # entirely, rather than gambling on ambiguous docs about whether
+        # they're silently ignored.
+        is_kimi = self.provider == "kimi"
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": llm_config.get("max_tokens") or 200,
         }
-        if llm_config.get("temperature") is not None:
+        token_limit = llm_config.get("max_tokens") or 300
+        if is_kimi:
+            kwargs["max_completion_tokens"] = token_limit
+            # Hints to Kimi that requests carrying this key share a common
+            # prefix (this tenant's system prompt) worth reusing between
+            # calls -- without it there's nothing telling their cache to
+            # even attempt matching this tenant's requests against each
+            # other. Scoped per-tenant, not per-conversation: the whole
+            # point is that every conversation for this clinic shares the
+            # same clinic-info/instructions prefix, so they should all be
+            # eligible to hit the same cache entry.
+            tenant_id = getattr(self._tenant, "tenant_id", None)
+            if tenant_id:
+                kwargs["prompt_cache_key"] = f"tenant-{tenant_id}"
+        else:
+            kwargs["max_tokens"] = token_limit
+        if llm_config.get("temperature") is not None and not is_kimi:
             kwargs["temperature"] = llm_config["temperature"]
         # Some models (esp. Groq's gpt-oss family) fall into degenerate
         # repetition loops under tool-heavy conversations -- re-asking the
@@ -368,7 +403,7 @@ class LLMClient:
         # ("Unknown name 'frequency_penalty': Cannot find field") -- this
         # was breaking every single call for a tenant on Gemini, not just
         # this one feature, until caught live.
-        if self.provider not in ("gemini", "google"):
+        if self.provider not in ("gemini", "google") and not is_kimi:
             kwargs["frequency_penalty"] = llm_config.get("frequency_penalty", 0.4)
             kwargs["presence_penalty"] = llm_config.get("presence_penalty", 0.2)
         if tools:
