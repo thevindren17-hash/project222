@@ -99,15 +99,20 @@ async def book_appointment(
         }
 
     # Pre-flight conflict window: does any existing booking's start time fall
-    # within [this booking's start - buffer, this booking's end + buffer]?
-    # Not atomic with the insert below -- see the exclusion-constraint note.
+    # within [this booking's start - buffer, this booking's end + buffer)?
+    # Upper bound is EXCLUSIVE (.lt, not .lte) -- confirmed live: a 12:00 PM
+    # candidate (60-min duration, ending exactly 1:00 PM) was being rejected
+    # as conflicting with an existing 1:00 PM booking, even though the two
+    # are back-to-back, not overlapping. .lte treated "starts exactly when
+    # this one ends" as a conflict; .lt correctly doesn't. Not atomic with
+    # the insert below -- see the exclusion-constraint note.
     time_start = to_db_timestamp(scheduled_at - timedelta(minutes=buffer_min))
     time_end = to_db_timestamp(scheduled_at + timedelta(minutes=duration + buffer_min))
     existing = await _db(lambda: supabase.table("bookings").select("id, scheduled_at").eq(
         "tenant_id", tenant_id
     ).in_("status", ["pending", "confirmed"]).gte(
         "scheduled_at", time_start
-    ).lte("scheduled_at", time_end).execute())
+    ).lt("scheduled_at", time_end).execute())
 
     if existing.data:
         conflict_time = from_db_timestamp(existing.data[0]["scheduled_at"]).strftime("%I:%M %p")
