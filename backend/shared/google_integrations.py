@@ -19,6 +19,8 @@ import httpx
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 
+from shared.utils import to_db_timestamp, from_db_timestamp
+
 logger = logging.getLogger(__name__)
 
 GCAL_API = "https://www.googleapis.com/calendar/v3"
@@ -155,18 +157,33 @@ class GoogleCalendarIntegration:
                     f"{GCAL_API}/freeBusy",
                     headers={"Authorization": f"Bearer {token}"},
                     json={
-                        "timeMin": day_start.isoformat() + "Z",
-                        "timeMax": day_end.isoformat() + "Z",
+                        # day_start/day_end are naive clinic-local wall-clock
+                        # digits (same convention as scheduled_at everywhere
+                        # else in this codebase) -- appending a bare "Z" here
+                        # previously mislabeled them as UTC, shifting the
+                        # entire freeBusy query window by the clinic's UTC
+                        # offset (+8h for Asia/Kuala_Lumpur). to_db_timestamp
+                        # attaches the correct offset instead, matching how
+                        # create_appointment already sends start/end below.
+                        "timeMin": to_db_timestamp(day_start),
+                        "timeMax": to_db_timestamp(day_end),
                         "items": [{"id": self.calendar_id}],
                     },
                 )
             busy_blocks = []
             if r.status_code == 200:
                 cal_data = r.json().get("calendars", {}).get(self.calendar_id, {})
+                # Google returns busy blocks in UTC ("...Z"). The old code
+                # stripped the timezone marker without converting first,
+                # leaving UTC-valued digits being compared against the
+                # clinic-local slot candidates below -- the same +8h
+                # mismatch as the request above, just on the response side.
+                # from_db_timestamp converts to clinic-local before
+                # dropping tzinfo, so the digits actually line up.
                 busy_blocks = [
                     (
-                        datetime.fromisoformat(b["start"].replace("Z", "+00:00")).replace(tzinfo=None),
-                        datetime.fromisoformat(b["end"].replace("Z", "+00:00")).replace(tzinfo=None),
+                        from_db_timestamp(b["start"]),
+                        from_db_timestamp(b["end"]),
                     )
                     for b in cal_data.get("busy", [])
                 ]
