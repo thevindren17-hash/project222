@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException, Response, Backgr
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.tenant_config import get_tenant_by_wa_phone_id, get_tenant_by_id, get_supabase_client, _db
+from shared.tenant_config import get_tenant_by_wa_phone_id, get_tenant_by_id, get_supabase_client, _db, _db_optional
 from shared.providers import load_llm_client, load_fallback_llm_client
 from shared.security import require_internal_secret
 from shared.tools import (
@@ -50,6 +50,7 @@ from shared.utils import (
     check_emergency,
     check_escalation_request,
     conversation_mentions_a_date,
+    to_db_timestamp,
     logger,
 )
 
@@ -1504,6 +1505,35 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
                 return "Saya tidak faham tarikh/masa. Boleh nyatakan semula?"
             else:
                 return "I couldn't understand the date and time. Please clarify."
+
+        # Defensive, code-enforced duplicate guard -- a weak model doesn't
+        # always reliably follow the "don't re-call book_appointment for an
+        # already-succeeded booking" prompt rule below. Confirmed live: an
+        # ambiguously-worded confirmation reply ("...yes? You're all set.")
+        # can read as a still-open question, the patient says "yes" again,
+        # and the model calls book_appointment a SECOND time for the exact
+        # same slot -- which then self-rejects as a double-booking against
+        # the booking it just created a moment earlier, confusing the
+        # patient into thinking nothing was booked at all. book_appointment
+        # must always stay in the tool list (see _select_tools above), so
+        # this can't be prevented by removing the tool -- catch it here
+        # instead, before ever reaching the real booking logic.
+        supabase = get_supabase_client()
+        _dup = await _db_optional(lambda: supabase.table("bookings").select("id").eq(
+            "tenant_id", tenant.tenant_id
+        ).eq("contact_id", contact.get("id")).eq(
+            "scheduled_at", to_db_timestamp(scheduled_dt)
+        ).in_("status", ["pending", "confirmed"]).maybe_single().execute())
+        if _dup and _dup.data:
+            svc = args.get("service_type", "")
+            date_ = args.get("date", "")
+            time_ = args.get("time", "")
+            if language == "ms":
+                return f"Anda sudah pun ditempahkan untuk {svc} pada {date_} jam {time_}. Tiada tindakan lanjut diperlukan."
+            elif language == "zh":
+                return f"您已经预约了{svc}，时间是{date_} {time_}，无需再次预约。"
+            else:
+                return f"You're already booked for {svc} on {date_} at {time_} — no need to book again, you're all set."
 
         custom_fields = {
             f["key"]: args[f["key"]]
