@@ -72,6 +72,10 @@ const sections: Section[] = [
   },
 ]
 
+// On the mobile drawer, the clinic only wants a lean 3-item menu
+// (everything else is still there at md+ — desktop is unchanged).
+const MOBILE_NAV_HREFS = new Set(['/appointments', '/whatsapp', '/analytics'])
+
 function usePluginStatus() {
   return useQuery({
     queryKey: ['plugin-status'],
@@ -154,42 +158,47 @@ export default function Sidebar({ open = false, onClose }: SidebarProps) {
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-5">
-          {sections.map((section, i) => (
-            <div key={i}>
-              {section.label && (
-                <p className="px-2 mb-1 text-[10px] font-semibold tracking-widest text-muted-foreground/70 uppercase select-none">
-                  {section.label}
-                </p>
-              )}
-              <div className="space-y-0.5">
-                {section.items.map((item) => {
-                  const isActive =
-                    pathname === item.href ||
-                    (item.href.length > 1 && pathname.startsWith(item.href))
-                  const connected = item.statusKey
-                    ? status?.[item.statusKey as keyof typeof status]
-                    : undefined
+          {sections.map((section, i) => {
+            const hasMobileItem = section.items.some((item) => MOBILE_NAV_HREFS.has(item.href))
+            return (
+              <div key={i} className={cn(!hasMobileItem && 'hidden md:block')}>
+                {section.label && (
+                  <p className="px-2 mb-1 text-[10px] font-semibold tracking-widest text-muted-foreground/70 uppercase select-none">
+                    {section.label}
+                  </p>
+                )}
+                <div className="space-y-0.5">
+                  {section.items.map((item) => {
+                    const isActive =
+                      pathname === item.href ||
+                      (item.href.length > 1 && pathname.startsWith(item.href))
+                    const connected = item.statusKey
+                      ? status?.[item.statusKey as keyof typeof status]
+                      : undefined
+                    const mobileVisible = MOBILE_NAV_HREFS.has(item.href)
 
-                  return (
-                    <Link
-                      key={item.href + item.name}
-                      href={item.href}
-                      className={cn(
-                        'flex items-center gap-3 px-2 py-2 text-sm font-medium rounded-lg transition-colors',
-                        isActive
-                          ? 'bg-primary/10 text-primary'
-                          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                      )}
-                    >
-                      <item.icon className="h-4 w-4 shrink-0" />
-                      <span className="flex-1 truncate">{item.name}</span>
-                      <StatusDot connected={connected} />
-                    </Link>
-                  )
-                })}
+                    return (
+                      <Link
+                        key={item.href + item.name}
+                        href={item.href}
+                        className={cn(
+                          'items-center gap-3 px-2 py-2 text-sm font-medium rounded-lg transition-colors',
+                          mobileVisible ? 'flex' : 'hidden md:flex',
+                          isActive
+                            ? 'bg-primary/10 text-primary'
+                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                        )}
+                      >
+                        <item.icon className="h-4 w-4 shrink-0" />
+                        <span className="flex-1 truncate">{item.name}</span>
+                        <StatusDot connected={connected} />
+                      </Link>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </nav>
 
         <div className="p-4 border-t border-border">
