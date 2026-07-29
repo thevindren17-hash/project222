@@ -150,7 +150,7 @@ export default function AppointmentsPage() {
   async function deleteAppointment(booking: any) {
     // Permanent, unlike Archive -- confirm with the actual patient/date so
     // there's no doubt which row is about to be gone for good.
-    const label = `${booking.contact?.name || booking.patient_name || 'this appointment'} — ${
+    const label = `${booking.patient_name || booking.contact?.name || 'this appointment'} — ${
       booking.scheduled_at ? format(parseClinicLocal(booking.scheduled_at), 'MMM d, yyyy h:mm a') : ''
     }`
     if (!confirm(`Permanently delete ${label}? This cannot be undone — use Archive instead if you just want to hide it.`)) return
@@ -287,7 +287,7 @@ export default function AppointmentsPage() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="font-medium truncate">{b.contact?.name || 'Unknown'}</p>
+                      <p className="font-medium truncate">{b.patient_name || b.contact?.name || 'Unknown'}</p>
                       {awaitingReply && (
                         <span title="Patient hasn't replied since our last message">
                           <MessageCircleWarning className="h-3.5 w-3.5 text-amber-500 shrink-0" />
@@ -395,7 +395,7 @@ export default function AppointmentsPage() {
                 <TableRow key={b.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedBooking(b)}>
                   <TableCell>
                     <div className="flex items-center gap-1.5">
-                      <p className="font-medium">{b.contact?.name || 'Unknown'}</p>
+                      <p className="font-medium">{b.patient_name || b.contact?.name || 'Unknown'}</p>
                       {awaitingReply && (
                         <span title="Patient hasn't replied since our last message">
                           <MessageCircleWarning className="h-3.5 w-3.5 text-amber-500" />

@@ -60,6 +60,10 @@ export interface Booking {
   calendar_event_id?: string
   created_at: string
   contact?: Contact
+  // Who THIS booking is for -- independent of contacts.name, which is the
+  // shared identity for the phone number and only ever gets set once. Falls
+  // back to contact?.name in the UI for rows created before this existed.
+  patient_name?: string | null
 }
 
 export interface Contact {

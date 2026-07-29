@@ -107,7 +107,7 @@ export default function OverviewPage() {
             {recentBookings?.map((b: any) => (
               <div key={b.id} className="flex items-center justify-between text-sm">
                 <div>
-                  <p className="font-medium">{b.contact?.name || 'Unknown'}</p>
+                  <p className="font-medium">{b.patient_name || b.contact?.name || 'Unknown'}</p>
                   <p className="text-muted-foreground">{b.service_type}</p>
                 </div>
                 <div className="text-right">

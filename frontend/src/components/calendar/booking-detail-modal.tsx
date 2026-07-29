@@ -52,7 +52,7 @@ export default function BookingDetailModal({ booking, open, onClose }: Props) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
             <div>
               <p className="text-muted-foreground">Patient</p>
-              <p className="font-medium">{(booking as any).contact?.name || 'Unknown'}</p>
+              <p className="font-medium">{(booking as any).patient_name || (booking as any).contact?.name || 'Unknown'}</p>
             </div>
             <div>
               <p className="text-muted-foreground">Phone</p>

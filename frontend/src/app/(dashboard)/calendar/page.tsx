@@ -82,7 +82,9 @@ export default function CalendarPage() {
     const style = STATUS[b.status as keyof typeof STATUS] ?? STATUS.completed
     return ({
     id: b.id,
-    title: b.contact?.name ? `${b.service_type} · ${b.contact.name}` : b.service_type,
+    title: (b.patient_name || b.contact?.name)
+      ? `${b.service_type} · ${b.patient_name || b.contact?.name}`
+      : b.service_type,
     start: startLocal,
     end: endLocal,
     backgroundColor: style.bg,

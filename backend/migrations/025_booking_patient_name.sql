@@ -1,0 +1,15 @@
+-- The dashboard's "Patient" column was reading contacts.name -- the shared
+-- identity attached to a PHONE NUMBER, not to any specific booking. That's
+-- wrong whenever one phone books for more than one person (a parent booking
+-- for a spouse or child, or the same test number used across multiple
+-- conversations): contacts.name only ever gets set once (see the
+-- existing/unknown guard in whatsapp.py) and every later booking under that
+-- same phone silently shows that first name, even if the patient clearly
+-- gave a different name for this specific appointment.
+--
+-- This column stores the name actually given for THIS booking, independent
+-- of whatever the shared contact record's own name is. Existing rows are
+-- left NULL on purpose -- the frontend falls back to contact.name for those,
+-- so nothing regresses for bookings made before this migration.
+-- Run once in Supabase Dashboard → SQL Editor
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS patient_name TEXT;

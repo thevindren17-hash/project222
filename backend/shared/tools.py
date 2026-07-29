@@ -173,6 +173,13 @@ async def book_appointment(
             "notes": notes,
             "source": source,
             "status": "pending",
+            # Independent of contacts.name (the shared identity for this
+            # PHONE NUMBER, which only ever gets set once) -- this is who
+            # THIS specific booking is for, so one phone booking for
+            # multiple different people (a parent booking for a spouse or
+            # child) shows the right name per appointment, not just whoever
+            # was first ever booked under this number.
+            "patient_name": contact_name or None,
         }).execute())
     except Exception as e:
         if "23P01" in str(e) or "exclusion" in str(e).lower() or "bookings_no_overlap" in str(e):
