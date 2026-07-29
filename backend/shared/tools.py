@@ -46,9 +46,17 @@ def validate_booking_time(
 
     time_str = scheduled_at.strftime("%H:%M")
     if not (day_hours["open"] <= time_str <= day_hours["close"]):
+        # Spell out the exact resolved day/date/time here, not just the raw
+        # hours range -- if the date argument the model actually sent ever
+        # doesn't match the day it just told the patient (e.g. it says
+        # "Friday" but the argument resolved to Saturday), this is the only
+        # place that mismatch becomes visible instead of silently producing
+        # a reply that quotes the wrong day's hours.
         return {"valid": False, "error": (
-            f"That time is outside our hours. "
-            f"We're open {day_hours['open']} to {day_hours['close']}."
+            f"That's outside our hours for {scheduled_at.strftime('%A, %d %b')} "
+            f"({scheduled_at.strftime('%H:%M')}) — "
+            f"we're open {day_hours['open']} to {day_hours['close']} that day. "
+            f"Double-check you resolved the date the patient actually asked for."
         )}
     return {"valid": True}
 

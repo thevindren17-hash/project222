@@ -690,6 +690,11 @@ def _build_date_context(
         "same reply — do NOT re-ask for the date, time, or any other already-confirmed detail, and do NOT show the "
         "available-times list again. A confirmed 'yes' means book it now, not restart the question.\n"
         "- Date/time: 'esok'/'tomorrow' → exact date above, '3pm'/'3 petang' → 15:00, '9am' → 09:00, '10' after seeing slots → 10:00.\n"
+        "- When you call book_appointment or reschedule_appointment, the 'date'/'new_date' argument MUST be the "
+        "EXACT SAME calendar date you just showed the patient via check_slots or already confirmed with them earlier "
+        "in this conversation — copy it exactly (e.g. as YYYY-MM-DD), never re-derive it from memory or restate it "
+        "as a bare weekday name like 'friday'. Re-deriving it risks landing on the wrong day, which then gets "
+        "checked against a DIFFERENT day's business hours than the one you told the patient.\n"
         "- Always pass real values to tools — never pass placeholder text.\n"
         f"{custom_fields_rule}"
         f"{cancel_reschedule_rule}"
@@ -1460,7 +1465,7 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
     # still produces a normal-looking YYYY-MM-DD argument, so the tool call
     # itself can't be distinguished from a legitimate one — check the actual
     # conversation text for a date-shaped mention instead of trusting the arg.
-    if fn_name in ("book_appointment", "check_slots") and not has_date_mention:
+    if fn_name in ("book_appointment", "check_slots", "reschedule_appointment") and not has_date_mention:
         if language == "ms":
             return "Tarikh berapa yang anda mahu untuk temujanji ini?"
         elif language == "zh":
@@ -1490,7 +1495,10 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
             else:
                 return f"I still need: {missing_str}."
 
-        scheduled_dt = _resolve_datetime(args.get("date", ""), args.get("time", ""))
+        scheduled_dt = _resolve_datetime(
+            args.get("date", ""), args.get("time", ""),
+            getattr(tenant, "timezone", None) or "Asia/Kuala_Lumpur",
+        )
         if not scheduled_dt:
             if language == "ms":
                 return "Saya tidak faham tarikh/masa. Boleh nyatakan semula?"
@@ -1615,6 +1623,22 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
                 return msg or "I couldn't find that appointment."
 
     elif fn_name == "reschedule_appointment":
+        # reschedule_appointment() itself only accepts strict YYYY-MM-DD /
+        # HH:MM (see parse_datetime in shared/utils.py) -- it has no natural-
+        # language support at all, unlike book_appointment above. Resolving
+        # here first (same helper, same tenant timezone) means "next monday"
+        # or "esok" works for a reschedule exactly as it does for a new
+        # booking, instead of failing with a confusing parse error.
+        new_dt = _resolve_datetime(
+            args.get("new_date", ""), args.get("new_time", ""),
+            getattr(tenant, "timezone", None) or "Asia/Kuala_Lumpur",
+        )
+        if not new_dt:
+            if language == "ms":
+                return "Saya tidak faham tarikh/masa baharu. Boleh nyatakan semula?"
+            else:
+                return "I couldn't understand the new date and time. Please clarify."
+
         reschedule_custom_fields = {
             f["key"]: args[f["key"]]
             for f in (getattr(tenant, "custom_booking_fields", None) or [])
@@ -1623,8 +1647,8 @@ async def _execute_wa_tool(fn_name: str, args: dict, tenant, contact: dict, lang
         result = await reschedule_appointment(
             tenant_id=tenant.tenant_id,
             contact_id=contact.get("id"),
-            new_date=args.get("new_date", ""),
-            new_time=args.get("new_time", ""),
+            new_date=new_dt.strftime("%Y-%m-%d"),
+            new_time=new_dt.strftime("%H:%M"),
             booking_id=args.get("booking_id"),
             custom_fields=reschedule_custom_fields or None,
             tenant_config=tenant,

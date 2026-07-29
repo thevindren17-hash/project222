@@ -72,16 +72,21 @@ def _next_weekday(today: datetime, weekday: int, allow_today: bool = False) -> d
     return today + timedelta(days=days_ahead)
 
 
-def _resolve_date(date_str: str) -> Optional[datetime]:
+def _resolve_date(date_str: str, timezone: str = "Asia/Kuala_Lumpur") -> Optional[datetime]:
     """
     Parse a date string that may be:
       - ISO format: 2026-05-14
       - English relative: today, tomorrow, next friday, in 3 days, next week
       - Malay relative: esok, lusa, hari ini, isnin depan, minggu depan, selasa ini
     Returns a datetime at midnight, or None on failure.
+
+    `timezone` anchors what "today" means for relative phrases — always pass
+    the tenant's own configured timezone, not the hardcoded default, or a
+    clinic outside Asia/Kuala_Lumpur gets "today"/"tomorrow"/"this friday"
+    resolved against the wrong clock.
     """
     s = date_str.lower().strip()
-    today = now_local().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = now_local(timezone).replace(hour=0, minute=0, second=0, microsecond=0)
 
     # ── Hard-coded placeholder guard ──────────────────────────────────────────
     if s in ("yyyy-mm-dd", "date", "[date]", "dd/mm/yyyy", "mm/dd/yyyy", ""):
@@ -225,9 +230,9 @@ def _resolve_time(time_str: str) -> Optional[tuple[int, int]]:
     return None
 
 
-def _resolve_datetime(date_str: str, time_str: str) -> Optional[datetime]:
+def _resolve_datetime(date_str: str, time_str: str, timezone: str = "Asia/Kuala_Lumpur") -> Optional[datetime]:
     """Combine a natural-language date and time into a datetime."""
-    date = _resolve_date(date_str)
+    date = _resolve_date(date_str, timezone)
     if not date:
         return None
     parsed = _resolve_time(time_str)
@@ -241,6 +246,7 @@ def _resolve_datetime(date_str: str, time_str: str) -> Optional[datetime]:
 
 async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_history: Optional[list] = None) -> str:
     """Execute a single tool and return a human-readable result string."""
+    tz = getattr(tenant, "timezone", None) or "Asia/Kuala_Lumpur"
 
     if fn == "get_faq":
         res = await get_faq(tenant, args.get("question", ""))
@@ -268,7 +274,7 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_hi
 
     if fn == "check_slots":
         from shared.tools import check_slots
-        date = _resolve_date(args.get("date", ""))
+        date = _resolve_date(args.get("date", ""), tz)
         if not date:
             return (
                 f"I couldn't understand the date '{args.get('date')}'. "
@@ -288,7 +294,7 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_hi
 
     if fn == "book_appointment":
         from shared.tools import book_appointment, get_or_create_contact
-        scheduled_at = _resolve_datetime(args.get("date", ""), args.get("time", ""))
+        scheduled_at = _resolve_datetime(args.get("date", ""), args.get("time", ""), tz)
         if not scheduled_at:
             date_val = args.get("date", "")
             time_val = args.get("time", "")
@@ -342,7 +348,7 @@ async def _run_tool(fn: str, args: dict, tenant_id: str, tenant, conversation_hi
 
     if fn == "reschedule_appointment":
         from shared.tools import reschedule_appointment, get_or_create_contact
-        new_dt = _resolve_datetime(args.get("new_date", ""), args.get("new_time", ""))
+        new_dt = _resolve_datetime(args.get("new_date", ""), args.get("new_time", ""), tz)
         if not new_dt:
             return (
                 f"Couldn't parse new date/time (date='{args.get('new_date')}', "
