@@ -11,10 +11,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
 import { format, subWeeks, subMonths } from 'date-fns'
-import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
+import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore, Trash2, Sheet } from 'lucide-react'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { BOOKING_STATUS } from '@/lib/booking-status'
 import { parseClinicLocal } from '@/lib/utils'
+import { syncBookingToSheet } from '@/lib/api'
 import type { Booking } from '@/lib/types'
 
 // Supabase's PostgrestError is a plain {message, details, hint, code}
@@ -43,6 +44,7 @@ export default function AppointmentsPage() {
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [archivingId, setArchivingId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [syncingSheetId, setSyncingSheetId] = useState<string | null>(null)
   const [clearing, setClearing] = useState(false)
   const queryClient = useQueryClient()
 
@@ -163,6 +165,20 @@ export default function AppointmentsPage() {
       toast.error(getErrorMessage(e, 'Delete failed'))
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  async function syncToSheet(booking: any) {
+    const tenant = await getCurrentTenant()
+    if (!tenant) return
+    setSyncingSheetId(booking.id)
+    try {
+      await syncBookingToSheet(tenant.id, booking.id)
+      toast.success('Synced to Google Sheet')
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e, 'Sheet sync failed'))
+    } finally {
+      setSyncingSheetId(null)
     }
   }
 
@@ -313,6 +329,14 @@ export default function AppointmentsPage() {
                   <Button variant="ghost" size="sm" onClick={() => setSelectedBooking(b)}>View</Button>
                   <Button
                     variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                    disabled={syncingSheetId === b.id}
+                    onClick={() => syncToSheet(b)}
+                    title="Sync to Google Sheet"
+                  >
+                    {syncingSheetId === b.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sheet className="h-3.5 w-3.5" />}
+                  </Button>
+                  <Button
+                    variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
                     disabled={archivingId === b.id}
                     onClick={() => toggleArchive(b)}
                   >
@@ -412,6 +436,14 @@ export default function AppointmentsPage() {
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
                     <Button variant="ghost" size="sm" onClick={() => setSelectedBooking(b)}>View</Button>
+                    <Button
+                      variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                      disabled={syncingSheetId === b.id}
+                      onClick={() => syncToSheet(b)}
+                      title="Sync to Google Sheet"
+                    >
+                      {syncingSheetId === b.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sheet className="h-3.5 w-3.5" />}
+                    </Button>
                     <Button
                       variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
                       disabled={archivingId === b.id}

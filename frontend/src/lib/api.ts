@@ -41,3 +41,17 @@ export async function disconnectGoogle(tenantId: string) {
   if (!res.ok) throw new Error('Disconnect failed')
   return res.json()
 }
+
+// Manually (re-)mirror one booking into the clinic's Google Sheet — for when
+// the automatic sync at booking time silently failed and the row never made
+// it in.
+export async function syncBookingToSheet(tenantId: string, bookingId: string) {
+  const res = await fetch(`/api/integrations/google/sync-booking-sheet`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenant_id: tenantId, booking_id: bookingId }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || 'Sheet sync failed')
+  return data
+}

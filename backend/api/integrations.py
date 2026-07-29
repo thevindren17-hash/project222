@@ -174,6 +174,11 @@ class SelectSheetRequest(BaseModel):
     sheet_link: str
 
 
+class SyncBookingSheetRequest(BaseModel):
+    tenant_id: str
+    booking_id: str
+
+
 @router.post("/google/select-sheet", dependencies=[Depends(require_internal_secret)])
 async def google_select_sheet(req: SelectSheetRequest):
     """
@@ -221,6 +226,54 @@ async def google_select_sheet(req: SelectSheetRequest):
     ).eq("tenant_id", req.tenant_id).execute())
 
     return {"success": True, "spreadsheet_id": spreadsheet_id, "title": info["title"], "tab_name": tab_name}
+
+
+@router.post("/google/sync-booking-sheet", dependencies=[Depends(require_internal_secret)])
+async def google_sync_booking_sheet(req: SyncBookingSheetRequest):
+    """
+    Manually (re-)mirror one booking into the clinic's Google Sheet, for
+    when the automatic sync at booking time silently failed (sheet wasn't
+    linked yet, header row was missing, token expired) and the row never
+    made it in. Reuses the exact same log_lead() call book_appointment
+    makes, so the written row looks identical to one logged live.
+    """
+    from shared.google_integrations import get_google_sheets
+    from shared.tenant_config import get_supabase_client, _db_optional
+    from shared.utils import from_db_timestamp
+
+    supabase = get_supabase_client()
+    booking_res = await _db_optional(lambda: supabase.table("bookings").select(
+        "id, scheduled_at, service_type, status, notes, contact_id"
+    ).eq("id", req.booking_id).eq("tenant_id", req.tenant_id).maybe_single().execute())
+    if not booking_res.data:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    booking = booking_res.data
+
+    contact_res = await _db_optional(lambda: supabase.table("contacts").select(
+        "name, phone"
+    ).eq("id", booking["contact_id"]).maybe_single().execute())
+    contact = contact_res.data or {}
+
+    gsheets = await get_google_sheets(req.tenant_id)
+    if not gsheets:
+        raise HTTPException(status_code=400, detail="Google Sheets isn't connected for this clinic yet")
+
+    scheduled_str = from_db_timestamp(booking["scheduled_at"]).strftime("%Y-%m-%d %H:%M")
+    status_label = "CANCELLED" if booking["status"] == "cancelled" else "BOOKED"
+
+    result = await gsheets.log_lead(
+        name=contact.get("name") or "Unknown",
+        phone=contact.get("phone") or "",
+        source="whatsapp",
+        status=status_label,
+        service_interest=booking.get("service_type"),
+        appointment_time=scheduled_str,
+        notes=booking.get("notes") or f"Manually synced for {scheduled_str}",
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Sheets sync failed")
+
+    return {"success": True}
 
 
 async def _exchange_google_code(tenant_id: str, code: str):
