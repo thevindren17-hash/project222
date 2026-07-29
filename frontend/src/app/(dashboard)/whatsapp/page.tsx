@@ -12,6 +12,7 @@ import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns'
 import {
   Send, Bot, User, Phone, MessageSquare, Mic,
   Search, Copy, Check, Pencil, X, Tag, Plus, Wifi, WifiOff, Trash2,
+  ChevronLeft, Info,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { WhatsAppThread } from '@/lib/types'
@@ -60,6 +61,10 @@ export default function WhatsAppPage() {
   const [tagInput, setTagInput] = useState('')
   const [showTagInput, setShowTagInput] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  // Mobile-only: which single panel is showing (desktop always shows all 3
+  // via md: breakpoints below) and whether the contact-info slide-over is open.
+  const [mobileView, setMobileView] = useState<'list' | 'chat'>('list')
+  const [infoOpen, setInfoOpen] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
@@ -275,6 +280,239 @@ export default function WhatsAppPage() {
   const aiCount = threads.filter((t) => t.status === 'ai').length
   const humanCount = threads.filter((t) => t.status === 'human_takeover').length
 
+  // Shared between the always-visible desktop info column and the
+  // mobile-only slide-over — same content, two different wrappers.
+  const infoPanelInner = selected ? (
+    <div className="flex-1 overflow-y-auto">
+      {/* Contact header */}
+      <div className="px-4 pt-5 pb-4 flex flex-col items-center text-center border-b">
+        <div className="flex items-center justify-center gap-2 mb-3">
+          <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center ring-2 ring-primary/20">
+            <Bot className="h-5 w-5 text-primary" />
+          </div>
+          <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center ring-2 ring-border text-sm font-semibold -ml-2">
+            {displayName(selected).charAt(0).toUpperCase()}
+          </div>
+        </div>
+        <p className="text-[10px] text-muted-foreground mb-1">Conversation between</p>
+        <p className="text-xs font-semibold">AI Agent &amp; {displayName(selected)}</p>
+      </div>
+
+      <div className="px-3 py-3 space-y-3">
+        {/* Contact name edit */}
+        {editingName ? (
+          <div className="flex gap-1.5">
+            <Input
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') saveNameMutation.mutate() }}
+              placeholder="Contact name..."
+              className="h-7 text-xs flex-1"
+              autoFocus
+            />
+            <Button size="icon" className="h-7 w-7 shrink-0" onClick={() => saveNameMutation.mutate()} disabled={saveNameMutation.isPending}>
+              <Check className="h-3 w-3" />
+            </Button>
+            <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => setEditingName(false)}>
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        ) : contactName(selected) ? (
+          <button onClick={startEditName} className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-muted/50 transition-colors group text-left">
+            <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <span className="text-xs flex-1 truncate">{contactName(selected)}</span>
+            <Pencil className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+          </button>
+        ) : (
+          <button onClick={startEditName} className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed text-xs text-muted-foreground hover:border-primary hover:text-primary transition-colors">
+            <Plus className="h-3 w-3" />Add User Name
+          </button>
+        )}
+
+        {/* Phone */}
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-muted/30">
+          <Phone className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <span className="text-xs flex-1 truncate font-mono">{contactPhone(selected)}</span>
+          <CopyButton text={contactPhone(selected)} />
+        </div>
+
+        {/* Transcript URL */}
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-muted/30">
+          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <span className="text-xs flex-1 truncate text-muted-foreground">Transcript URL</span>
+          <CopyButton text={`${typeof window !== 'undefined' ? window.location.origin : ''}/whatsapp/transcript/${selected.id}`} />
+        </div>
+
+        <Separator />
+
+        {/* AI / Human status + takeover */}
+        {selected.status === 'ai' && (
+          <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2.5">
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-green-400 shrink-0" />
+              <p className="text-xs font-semibold">Chat is being handled by AI</p>
+            </div>
+            <Button
+              size="sm"
+              className="w-full bg-primary hover:bg-primary/90 text-primary-foreground text-xs h-8"
+              onClick={() => takeoverMutation.mutate(selected.id)}
+              disabled={takeoverMutation.isPending}
+            >
+              {takeoverMutation.isPending
+                ? <span className="h-3 w-3 mr-1.5 animate-spin rounded-full border-2 border-white border-t-transparent inline-block" />
+                : <User className="h-3.5 w-3.5 mr-1.5" />}
+              Continue Chat Yourself
+            </Button>
+            <p className="text-[10px] text-muted-foreground text-center">You can pass the chat back to AI.</p>
+          </div>
+        )}
+
+        {selected.status === 'human_takeover' && (
+          <div className="rounded-xl border border-orange-300 dark:border-orange-700 bg-orange-50 dark:bg-orange-950/30 p-3 space-y-2.5">
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
+              <p className="text-xs font-semibold text-orange-800 dark:text-orange-300">You are handling this chat</p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full text-xs h-8"
+              onClick={() => handbackMutation.mutate(selected.id)}
+              disabled={handbackMutation.isPending}
+            >
+              {handbackMutation.isPending
+                ? <span className="h-3 w-3 mr-1.5 animate-spin rounded-full border-2 border-current border-t-transparent inline-block" />
+                : <Bot className="h-3.5 w-3.5 mr-1.5" />}
+              Pass Back to AI
+            </Button>
+          </div>
+        )}
+
+        {selected.status === 'resolved' && (
+          <div className="rounded-xl border bg-muted/40 p-3 text-center">
+            <p className="text-xs text-muted-foreground">Conversation resolved</p>
+          </div>
+        )}
+
+        {/* Last activity */}
+        <p className="text-[10px] text-muted-foreground text-center">
+          Last message{' '}
+          {formatDistanceToNow(new Date(selected.last_message_at), { addSuffix: true })}
+        </p>
+
+        <Separator />
+
+        {/* Tags */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold flex items-center gap-1.5">
+              <Tag className="h-3.5 w-3.5 text-muted-foreground" />
+              Tags {(selected.tags || []).length > 0 && <span className="text-muted-foreground font-normal">({(selected.tags || []).length})</span>}
+            </p>
+            <button
+              onClick={() => setShowTagInput((v) => !v)}
+              className="text-[10px] text-primary hover:underline"
+            >
+              + Add
+            </button>
+          </div>
+
+          {showTagInput && (
+            <div className="space-y-1.5">
+              <div className="flex gap-1">
+                <Input
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') addTag(tagInput) }}
+                  placeholder="Tag name..."
+                  className="h-6 text-xs flex-1"
+                  autoFocus
+                />
+                <Button size="icon" className="h-6 w-6 shrink-0" onClick={() => addTag(tagInput)}>
+                  <Check className="h-3 w-3" />
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {PRESET_TAGS.filter((pt) => !(selected.tags || []).includes(pt)).map((pt) => (
+                  <button
+                    key={pt}
+                    onClick={() => addTag(pt)}
+                    className="text-[9px] px-1.5 py-0.5 rounded border hover:bg-primary hover:text-primary-foreground hover:border-primary transition-colors text-muted-foreground"
+                  >
+                    {pt}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(selected.tags || []).length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {(selected.tags || []).map((tag) => (
+                <div key={tag} className="flex items-center gap-0.5 bg-muted rounded-md px-2 py-0.5">
+                  <span className="text-[10px]">{tag}</span>
+                  <button onClick={() => removeTag(tag)} className="ml-0.5 text-muted-foreground hover:text-destructive transition-colors leading-none">
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!showTagInput && (selected.tags || []).length === 0 && (
+            <p className="text-[10px] text-muted-foreground">Add or remove tags associated with this conversation.</p>
+          )}
+        </div>
+
+        <Separator />
+
+        {/* Delete conversation */}
+        {showDeleteConfirm ? (
+          <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3 space-y-2">
+            <p className="text-xs font-semibold text-destructive">Delete this conversation?</p>
+            <p className="text-[10px] text-muted-foreground">All messages will be permanently removed. This cannot be undone.</p>
+            <div className="flex gap-1.5">
+              <Button
+                size="sm"
+                variant="destructive"
+                className="flex-1 h-7 text-xs"
+                onClick={() => deleteConversationMutation.mutate()}
+                disabled={deleteConversationMutation.isPending}
+              >
+                {deleteConversationMutation.isPending
+                  ? <span className="h-3 w-3 mr-1 animate-spin rounded-full border-2 border-white border-t-transparent inline-block" />
+                  : null}
+                Yes, delete
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 h-7 text-xs"
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleteConversationMutation.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-destructive hover:bg-destructive/10 transition-colors"
+          >
+            <Trash2 className="h-3.5 w-3.5 shrink-0" />
+            Delete conversation
+          </button>
+        )}
+      </div>
+    </div>
+  ) : (
+    <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground px-4 text-center">
+      <MessageSquare className="h-8 w-8 opacity-15" />
+      <p className="text-xs">Select a conversation to see details</p>
+    </div>
+  )
+
   return (
     <div className="flex flex-col h-[calc(100vh-7rem)]">
       {/* Page header */}
@@ -311,11 +549,15 @@ export default function WhatsAppPage() {
         </div>
       </div>
 
-      {/* Three-panel layout */}
-      <div className="flex gap-3 flex-1 min-h-0">
+      {/* Three-panel layout — on mobile only one panel shows at a time
+          (list -> chat -> info slide-over); md: and up shows all 3 like before */}
+      <div className="flex gap-0 md:gap-3 flex-1 min-h-0">
 
         {/* ── Left: Thread list ── */}
-        <div className="w-64 shrink-0 flex flex-col border rounded-xl bg-card overflow-hidden">
+        <div className={cn(
+          'w-full md:w-64 shrink-0 flex-col border rounded-xl bg-card overflow-hidden',
+          mobileView === 'chat' ? 'hidden md:flex' : 'flex'
+        )}>
           <div className="px-3 py-2.5 border-b">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Conversations</p>
             <div className="relative">
@@ -345,7 +587,7 @@ export default function WhatsAppPage() {
               return (
                 <button
                   key={t.id}
-                  onClick={() => setSelected(t)}
+                  onClick={() => { setSelected(t); setMobileView('chat') }}
                   className={cn(
                     'w-full text-left px-3 py-3 border-b transition-colors hover:bg-muted/40 group',
                     isSelected ? 'bg-primary/8 border-l-2 border-l-primary' : ''
@@ -388,11 +630,22 @@ export default function WhatsAppPage() {
         </div>
 
         {/* ── Middle: Chat ── */}
-        <div className="flex-1 flex flex-col border rounded-xl bg-card overflow-hidden min-w-0">
+        <div className={cn(
+          'flex-1 flex-col border md:border rounded-xl bg-card overflow-hidden min-w-0',
+          mobileView === 'chat' ? 'flex' : 'hidden md:flex'
+        )}>
           {selected ? (
             <>
               {/* Compact header */}
-              <div className="px-4 py-2.5 border-b bg-muted/20 flex items-center gap-3 shrink-0">
+              <div className="px-3 md:px-4 py-2.5 border-b bg-muted/20 flex items-center gap-2 md:gap-3 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="md:hidden -ml-1 shrink-0"
+                  onClick={() => setMobileView('list')}
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </Button>
                 <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-semibold shrink-0">
                   {displayName(selected).charAt(0).toUpperCase()}
                 </div>
@@ -401,15 +654,23 @@ export default function WhatsAppPage() {
                   <p className="text-xs text-muted-foreground">{contactPhone(selected)}</p>
                 </div>
                 {selected.status === 'ai' && (
-                  <Badge variant="default" className="gap-1 shrink-0 text-xs">
+                  <Badge variant="default" className="gap-1 shrink-0 text-xs hidden sm:flex">
                     <Bot className="h-3 w-3" />AI Handling
                   </Badge>
                 )}
                 {selected.status === 'human_takeover' && (
-                  <Badge variant="secondary" className="gap-1 shrink-0 text-xs">
+                  <Badge variant="secondary" className="gap-1 shrink-0 text-xs hidden sm:flex">
                     <User className="h-3 w-3" />Staff Handling
                   </Badge>
                 )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="md:hidden shrink-0"
+                  onClick={() => setInfoOpen(true)}
+                >
+                  <Info className="h-4 w-4" />
+                </Button>
               </div>
 
               {/* Messages */}
@@ -487,9 +748,14 @@ export default function WhatsAppPage() {
               ) : (
                 <div className="px-4 py-2.5 border-t bg-muted/10 shrink-0">
                   <p className="text-xs text-center text-muted-foreground">
-                    {selected.status === 'ai'
-                      ? 'AI is handling this conversation — click "Continue Chat Yourself" in the panel →'
-                      : 'This conversation is resolved'}
+                    {selected.status === 'ai' ? (
+                      <>
+                        <span className="hidden md:inline">AI is handling this conversation — click &quot;Continue Chat Yourself&quot; in the panel →</span>
+                        <span className="md:hidden">AI is handling this conversation — tap the ⓘ icon above to continue it yourself</span>
+                      </>
+                    ) : (
+                      'This conversation is resolved'
+                    )}
                   </p>
                 </div>
               )}
@@ -503,241 +769,27 @@ export default function WhatsAppPage() {
           )}
         </div>
 
-        {/* ── Right: Info panel ── */}
-        <div className="w-64 shrink-0 flex flex-col border rounded-xl bg-card overflow-hidden">
-          {selected ? (
-            <div className="flex-1 overflow-y-auto">
-              {/* Contact header */}
-              <div className="px-4 pt-5 pb-4 flex flex-col items-center text-center border-b">
-                <div className="flex items-center justify-center gap-2 mb-3">
-                  <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center ring-2 ring-primary/20">
-                    <Bot className="h-5 w-5 text-primary" />
-                  </div>
-                  <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center ring-2 ring-border text-sm font-semibold -ml-2">
-                    {displayName(selected).charAt(0).toUpperCase()}
-                  </div>
-                </div>
-                <p className="text-[10px] text-muted-foreground mb-1">Conversation between</p>
-                <p className="text-xs font-semibold">AI Agent &amp; {displayName(selected)}</p>
-              </div>
-
-              <div className="px-3 py-3 space-y-3">
-                {/* Contact name edit */}
-                {editingName ? (
-                  <div className="flex gap-1.5">
-                    <Input
-                      value={nameInput}
-                      onChange={(e) => setNameInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveNameMutation.mutate() }}
-                      placeholder="Contact name..."
-                      className="h-7 text-xs flex-1"
-                      autoFocus
-                    />
-                    <Button size="icon" className="h-7 w-7 shrink-0" onClick={() => saveNameMutation.mutate()} disabled={saveNameMutation.isPending}>
-                      <Check className="h-3 w-3" />
-                    </Button>
-                    <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => setEditingName(false)}>
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </div>
-                ) : contactName(selected) ? (
-                  <button onClick={startEditName} className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-muted/50 transition-colors group text-left">
-                    <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span className="text-xs flex-1 truncate">{contactName(selected)}</span>
-                    <Pencil className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                  </button>
-                ) : (
-                  <button onClick={startEditName} className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed text-xs text-muted-foreground hover:border-primary hover:text-primary transition-colors">
-                    <Plus className="h-3 w-3" />Add User Name
-                  </button>
-                )}
-
-                {/* Phone */}
-                <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-muted/30">
-                  <Phone className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <span className="text-xs flex-1 truncate font-mono">{contactPhone(selected)}</span>
-                  <CopyButton text={contactPhone(selected)} />
-                </div>
-
-                {/* Transcript URL */}
-                <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-muted/30">
-                  <MessageSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <span className="text-xs flex-1 truncate text-muted-foreground">Transcript URL</span>
-                  <CopyButton text={`${typeof window !== 'undefined' ? window.location.origin : ''}/whatsapp/transcript/${selected.id}`} />
-                </div>
-
-                <Separator />
-
-                {/* AI / Human status + takeover */}
-                {selected.status === 'ai' && (
-                  <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2.5">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-2 rounded-full bg-green-400 shrink-0" />
-                      <p className="text-xs font-semibold">Chat is being handled by AI</p>
-                    </div>
-                    <Button
-                      size="sm"
-                      className="w-full bg-primary hover:bg-primary/90 text-primary-foreground text-xs h-8"
-                      onClick={() => takeoverMutation.mutate(selected.id)}
-                      disabled={takeoverMutation.isPending}
-                    >
-                      {takeoverMutation.isPending
-                        ? <span className="h-3 w-3 mr-1.5 animate-spin rounded-full border-2 border-white border-t-transparent inline-block" />
-                        : <User className="h-3.5 w-3.5 mr-1.5" />}
-                      Continue Chat Yourself
-                    </Button>
-                    <p className="text-[10px] text-muted-foreground text-center">You can pass the chat back to AI.</p>
-                  </div>
-                )}
-
-                {selected.status === 'human_takeover' && (
-                  <div className="rounded-xl border border-orange-300 dark:border-orange-700 bg-orange-50 dark:bg-orange-950/30 p-3 space-y-2.5">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
-                      <p className="text-xs font-semibold text-orange-800 dark:text-orange-300">You are handling this chat</p>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="w-full text-xs h-8"
-                      onClick={() => handbackMutation.mutate(selected.id)}
-                      disabled={handbackMutation.isPending}
-                    >
-                      {handbackMutation.isPending
-                        ? <span className="h-3 w-3 mr-1.5 animate-spin rounded-full border-2 border-current border-t-transparent inline-block" />
-                        : <Bot className="h-3.5 w-3.5 mr-1.5" />}
-                      Pass Back to AI
-                    </Button>
-                  </div>
-                )}
-
-                {selected.status === 'resolved' && (
-                  <div className="rounded-xl border bg-muted/40 p-3 text-center">
-                    <p className="text-xs text-muted-foreground">Conversation resolved</p>
-                  </div>
-                )}
-
-                {/* Last activity */}
-                <p className="text-[10px] text-muted-foreground text-center">
-                  Last message{' '}
-                  {formatDistanceToNow(new Date(selected.last_message_at), { addSuffix: true })}
-                </p>
-
-                <Separator />
-
-                {/* Tags */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold flex items-center gap-1.5">
-                      <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-                      Tags {(selected.tags || []).length > 0 && <span className="text-muted-foreground font-normal">({(selected.tags || []).length})</span>}
-                    </p>
-                    <button
-                      onClick={() => setShowTagInput((v) => !v)}
-                      className="text-[10px] text-primary hover:underline"
-                    >
-                      + Add
-                    </button>
-                  </div>
-
-                  {showTagInput && (
-                    <div className="space-y-1.5">
-                      <div className="flex gap-1">
-                        <Input
-                          value={tagInput}
-                          onChange={(e) => setTagInput(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') addTag(tagInput) }}
-                          placeholder="Tag name..."
-                          className="h-6 text-xs flex-1"
-                          autoFocus
-                        />
-                        <Button size="icon" className="h-6 w-6 shrink-0" onClick={() => addTag(tagInput)}>
-                          <Check className="h-3 w-3" />
-                        </Button>
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {PRESET_TAGS.filter((pt) => !(selected.tags || []).includes(pt)).map((pt) => (
-                          <button
-                            key={pt}
-                            onClick={() => addTag(pt)}
-                            className="text-[9px] px-1.5 py-0.5 rounded border hover:bg-primary hover:text-primary-foreground hover:border-primary transition-colors text-muted-foreground"
-                          >
-                            {pt}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {(selected.tags || []).length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {(selected.tags || []).map((tag) => (
-                        <div key={tag} className="flex items-center gap-0.5 bg-muted rounded-md px-2 py-0.5">
-                          <span className="text-[10px]">{tag}</span>
-                          <button onClick={() => removeTag(tag)} className="ml-0.5 text-muted-foreground hover:text-destructive transition-colors leading-none">
-                            <X className="h-2.5 w-2.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {!showTagInput && (selected.tags || []).length === 0 && (
-                    <p className="text-[10px] text-muted-foreground">Add or remove tags associated with this conversation.</p>
-                  )}
-                </div>
-
-                <Separator />
-
-                {/* Delete conversation */}
-                {showDeleteConfirm ? (
-                  <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3 space-y-2">
-                    <p className="text-xs font-semibold text-destructive">Delete this conversation?</p>
-                    <p className="text-[10px] text-muted-foreground">All messages will be permanently removed. This cannot be undone.</p>
-                    <div className="flex gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        className="flex-1 h-7 text-xs"
-                        onClick={() => deleteConversationMutation.mutate()}
-                        disabled={deleteConversationMutation.isPending}
-                      >
-                        {deleteConversationMutation.isPending
-                          ? <span className="h-3 w-3 mr-1 animate-spin rounded-full border-2 border-white border-t-transparent inline-block" />
-                          : null}
-                        Yes, delete
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="flex-1 h-7 text-xs"
-                        onClick={() => setShowDeleteConfirm(false)}
-                        disabled={deleteConversationMutation.isPending}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setShowDeleteConfirm(true)}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-destructive hover:bg-destructive/10 transition-colors"
-                  >
-                    <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                    Delete conversation
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground px-4 text-center">
-              <MessageSquare className="h-8 w-8 opacity-15" />
-              <p className="text-xs">Select a conversation to see details</p>
-            </div>
-          )}
+        {/* ── Right: Info panel (desktop only — mobile uses the slide-over below) ── */}
+        <div className="hidden md:flex w-64 shrink-0 flex-col border rounded-xl bg-card overflow-hidden">
+          {infoPanelInner}
         </div>
-
       </div>
+
+      {/* ── Mobile: info slide-over ── */}
+      {infoOpen && selected && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setInfoOpen(false)} />
+          <div className="absolute inset-y-0 right-0 w-[85%] max-w-sm bg-card border-l flex flex-col">
+            <div className="h-12 flex items-center justify-between px-3 border-b shrink-0">
+              <p className="text-sm font-semibold">Contact details</p>
+              <Button variant="ghost" size="icon" onClick={() => setInfoOpen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            {infoPanelInner}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
