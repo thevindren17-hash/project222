@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase, getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,12 +19,38 @@ export default function WhatsAppPluginPage() {
   const [accessToken, setAccessToken] = useState('')
   const [credError, setCredError] = useState<string | null>(null)
   const [credValid, setCredValid] = useState<{ phone: string; name: string } | null>(null)
+  const [escalationNumber, setEscalationNumber] = useState('')
 
   const { data: tenant, isLoading, error, refetch } = useQuery({
     queryKey: ['tenant'],
     queryFn: getCurrentTenant,
     retry: 2,
     staleTime: 0,
+  })
+
+  // Only overwrite the field from the loaded record while the user hasn't
+  // started typing a change of their own -- otherwise a background refetch
+  // would stomp on an in-progress edit.
+  const [escalationTouched, setEscalationTouched] = useState(false)
+  useEffect(() => {
+    if (tenant && !escalationTouched) setEscalationNumber(tenant.escalation_number || '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant?.escalation_number])
+
+  const saveEscalationMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenant) throw new Error('No tenant')
+      const { error } = await supabase.from('tenants')
+        .update({ escalation_number: escalationNumber.trim() || null })
+        .eq('id', tenant.id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      toast.success('Escalation number saved')
+      setEscalationTouched(false)
+      queryClient.invalidateQueries({ queryKey: ['tenant'] })
+    },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const { data: agentSettings } = useQuery({
@@ -268,6 +294,36 @@ export default function WhatsAppPluginPage() {
               </span>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Escalation contact — where "connect me to a staff member" alerts get sent */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Escalation Alerts</CardTitle>
+          <CardDescription>
+            When {agentName} hands a conversation off to a human, we send a WhatsApp alert to this number.
+            It also always shows up as a live alert (sound + badge) in this dashboard, whether or not you set a number here.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Label>Staff WhatsApp Number</Label>
+          <div className="flex gap-2 max-w-sm">
+            <Input
+              autoComplete="off"
+              placeholder="+60123456789"
+              value={escalationNumber}
+              onChange={(e) => { setEscalationNumber(e.target.value); setEscalationTouched(true) }}
+            />
+            <Button onClick={() => saveEscalationMutation.mutate()} disabled={saveEscalationMutation.isPending}>
+              {saveEscalationMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A staff member's own number, not this clinic's connected WhatsApp number — a business number can't
+            message itself, so leaving this blank means no WhatsApp alert goes out (the dashboard alert still will).
+          </p>
         </CardContent>
       </Card>
 

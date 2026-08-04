@@ -100,3 +100,13 @@ export interface WhatsAppMessage {
   body: string
   created_at: string
 }
+
+export interface Escalation {
+  id: string
+  tenant_id: string
+  reason: string
+  context?: string
+  source: string
+  resolved: boolean
+  created_at: string
+}
