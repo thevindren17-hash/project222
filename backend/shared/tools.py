@@ -140,15 +140,25 @@ async def book_appointment(
     # meantime (or was never Supabase-tracked to begin with) can still slip
     # through and double-book over a real, pre-existing appointment.
     gcal = await get_google_calendar(tenant_id)
-    if gcal and await gcal.is_time_busy(
-        scheduled_at - timedelta(minutes=buffer_min),
-        scheduled_at + timedelta(minutes=duration + buffer_min),
-    ):
-        return {
-            "success": False,
-            "error": "double_booking",
-            "message": "That time slot is already taken on the calendar. Would you like to try another time?",
-        }
+    if gcal:
+        try:
+            if await gcal.is_time_busy(
+                scheduled_at - timedelta(minutes=buffer_min),
+                scheduled_at + timedelta(minutes=duration + buffer_min),
+            ):
+                return {
+                    "success": False,
+                    "error": "double_booking",
+                    "message": "That time slot is already taken on the calendar. Would you like to try another time?",
+                }
+        except Exception as e:
+            # A broken Google connection must not block booking outright --
+            # the Supabase pre-flight check above already caught anything
+            # this system itself tracks; this just means we can't also
+            # cross-check events the clinic added directly in Google
+            # Calendar until the connection is fixed. Same reasoning as
+            # check_slots' fallback above.
+            logger.warning(f"Google Calendar is_time_busy check failed for tenant {tenant_id}, proceeding without it: {e}")
 
     # The check above is a fast, friendly pre-flight — it is NOT atomic with
     # the insert below, so two near-simultaneous bookings for the same slot
@@ -261,23 +271,33 @@ async def check_slots(
 
     gcal = await get_google_calendar(tenant_id)
     if gcal:
-        day_name = date.strftime("%a").lower()
-        business_hours = tenant_config.business_hours.get(
-            day_name, {"open": "09:00", "close": "18:00"}
-        )
-        free_slots = await gcal.find_free_slots(
-            date=date, duration_minutes=duration, business_hours=business_hours,
-            buffer_minutes=buffer_min,
-        )
-        return {
-            "success": True,
-            "date": date.date().isoformat(),
-            "available_slots": [
-                {"time": s["start"].strftime("%H:%M"), "datetime": s["start"].isoformat()}
-                for s in free_slots[:10]
-            ],
-            "source": "google_calendar",
-        }
+        try:
+            day_name = date.strftime("%a").lower()
+            business_hours = tenant_config.business_hours.get(
+                day_name, {"open": "09:00", "close": "18:00"}
+            )
+            free_slots = await gcal.find_free_slots(
+                date=date, duration_minutes=duration, business_hours=business_hours,
+                buffer_minutes=buffer_min,
+            )
+            return {
+                "success": True,
+                "date": date.date().isoformat(),
+                "available_slots": [
+                    {"time": s["start"].strftime("%H:%M"), "datetime": s["start"].isoformat()}
+                    for s in free_slots[:10]
+                ],
+                "source": "google_calendar",
+            }
+        except Exception as e:
+            # A broken Google connection (expired/revoked refresh token,
+            # regenerated OAuth client secret, etc.) shouldn't fully block
+            # booking -- fall through to the Supabase-only slot calculation
+            # below instead of erroring the whole tool call. This won't see
+            # events the clinic added directly in Google Calendar until the
+            # connection is fixed, but the AI stays able to book/check
+            # against every appointment this system itself knows about.
+            logger.warning(f"Google Calendar check_slots failed for tenant {tenant_id}, falling back to Supabase: {e}")
 
     supabase = get_supabase_client()
     date_start = date.replace(hour=0, minute=0, second=0)
@@ -388,7 +408,14 @@ async def cancel_appointment(
     if calendar_event_id:
         gcal = await get_google_calendar(tenant_id)
         if gcal:
-            await gcal.delete_appointment(calendar_event_id)
+            try:
+                await gcal.delete_appointment(calendar_event_id)
+            except Exception as e:
+                # The cancellation itself already succeeded in Supabase
+                # above -- a broken Google connection shouldn't turn a real
+                # cancellation into a reported failure, just leave a stale
+                # event on the clinic's calendar until reconnected.
+                logger.warning(f"Calendar event delete failed (non-fatal) for tenant {tenant_id}: {e}")
 
     gsheets = await get_google_sheets(tenant_id)
     if gsheets:
@@ -525,14 +552,20 @@ async def reschedule_appointment(
     if calendar_event_id:
         gcal = await get_google_calendar(tenant_id)
         if gcal:
-            end_time = new_scheduled_at + timedelta(minutes=duration)
-            await gcal.update_appointment(
-                event_id=calendar_event_id,
-                updates={
-                    "start": {"dateTime": new_scheduled_at.isoformat(), "timeZone": "Asia/Kuala_Lumpur"},
-                    "end": {"dateTime": end_time.isoformat(), "timeZone": "Asia/Kuala_Lumpur"},
-                },
-            )
+            try:
+                end_time = new_scheduled_at + timedelta(minutes=duration)
+                await gcal.update_appointment(
+                    event_id=calendar_event_id,
+                    updates={
+                        "start": {"dateTime": new_scheduled_at.isoformat(), "timeZone": "Asia/Kuala_Lumpur"},
+                        "end": {"dateTime": end_time.isoformat(), "timeZone": "Asia/Kuala_Lumpur"},
+                    },
+                )
+            except Exception as e:
+                # Same reasoning as cancel_appointment's delete above -- the
+                # reschedule already succeeded in Supabase; don't turn a
+                # broken Google connection into a reported failure for it.
+                logger.warning(f"Calendar event update failed (non-fatal) for tenant {tenant_id}: {e}")
 
     gsheets = await get_google_sheets(tenant_id)
     if gsheets:
