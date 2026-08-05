@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { decryptCredential } from '@/lib/server/verify-tenant-access'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -107,6 +108,10 @@ export async function POST(req: NextRequest) {
     if (!tenant?.wa_phone_number_id || !tenant?.wa_access_token) {
       return NextResponse.json({ error: 'WhatsApp credentials not configured on this tenant' }, { status: 400 })
     }
+    const accessToken = await decryptCredential(tenant.wa_access_token)
+    if (!accessToken) {
+      return NextResponse.json({ error: 'Could not decrypt WhatsApp credentials' }, { status: 500 })
+    }
 
     // reminder/feedback resolve to a specific clinic-created, Meta-approved
     // whatsapp_templates row (same one the real scheduled job uses) rather
@@ -200,7 +205,7 @@ export async function POST(req: NextRequest) {
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${tenant.wa_access_token}`,
+          Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(waBody),

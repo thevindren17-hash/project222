@@ -21,12 +21,23 @@ router = APIRouter()
 
 
 @router.get("/google/auth")
-async def google_auth_start(tenant_id: str):
+async def google_auth_start(tenant_id: str, exp: int, sig: str):
+    """
+    exp/sig prove the Next.js server already verified the logged-in user
+    owns/staffs tenant_id (see frontend's /api/integrations/google/auth
+    proxy) — this endpoint is reachable directly over the internet with
+    nothing but a URL, so tenant_id alone can't be trusted as proof of
+    ownership. See shared.security.verify_tenant_action.
+    """
+    from shared.security import verify_tenant_action
+    frontend_url = (os.getenv("FRONTEND_URL") or "https://project222-livid.vercel.app").strip().rstrip("/")
+    if not verify_tenant_action(tenant_id, exp, sig):
+        return RedirectResponse(url=f"{frontend_url}/settings/plugins/google?error=unauthorized")
+
     from shared.google_integrations import get_google_oauth_url
     try:
-        oauth_url = await get_google_oauth_url(tenant_id)
+        oauth_url = await get_google_oauth_url(tenant_id, exp, sig)
     except RuntimeError as e:
-        frontend_url = (os.getenv("FRONTEND_URL") or "https://project222-livid.vercel.app").strip().rstrip("/")
         return RedirectResponse(url=f"{frontend_url}/settings/plugins/google?error={e}")
     return RedirectResponse(url=oauth_url)
 
@@ -53,8 +64,14 @@ async def google_oauth_callback(request: Request):
     try:
         state_data = json.loads(state)
         tenant_id = state_data["tenant_id"]
+        state_exp = state_data["exp"]
+        state_sig = state_data["sig"]
     except Exception:
         return RedirectResponse(url=f"{google_page}?error=invalid_state")
+
+    from shared.security import verify_tenant_action
+    if not verify_tenant_action(tenant_id, state_exp, state_sig):
+        return RedirectResponse(url=f"{google_page}?error=unauthorized")
 
     try:
         access_token, refresh_token = await _exchange_google_code(tenant_id, code)

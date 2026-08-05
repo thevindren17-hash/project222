@@ -377,6 +377,29 @@ async def _decrypt_provider_credentials(raw: Dict[str, Any]) -> Dict[str, Any]:
     return decrypted
 
 
+async def _encrypt_value(value: Optional[str]) -> Optional[str]:
+    """
+    Single-value counterpart to _decrypt_value, for writing a plain column
+    (e.g. tenant_settings.google_access_token / google_refresh_token) as
+    'enc:v1:'-prefixed ciphertext instead of plaintext. Returns the value
+    unchanged if no encryption key is configured, so local/dev environments
+    without CREDENTIAL_ENCRYPTION_KEY keep working (same fallback behavior
+    as the BYOK provider-credentials save path).
+    """
+    if not value or not os.getenv("CREDENTIAL_ENCRYPTION_KEY"):
+        return value
+    enc_key = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
+    supabase = get_supabase_client()
+    try:
+        result = await _db(lambda: supabase.rpc(
+            "encrypt_credential", {"plaintext": value, "key": enc_key}
+        ).execute())
+        return f"{_ENC_PREFIX}{result.data}"
+    except Exception as exc:
+        _logger.error(f"Failed to encrypt value: {exc}")
+        return value
+
+
 async def _decrypt_value(value: Optional[str]) -> Optional[str]:
     """
     Single-value counterpart to _decrypt_provider_credentials, for plain

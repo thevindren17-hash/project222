@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { decryptCredential } from '@/lib/server/verify-tenant-access'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -83,9 +84,13 @@ export async function POST(req: NextRequest) {
       .eq('tenant_id', tenant_id)
       .maybeSingle()
 
-    const apiKey: string | undefined = settings?.provider_credentials?.[provider]?.api_key
-    if (!apiKey) {
+    const rawApiKey: string | undefined = settings?.provider_credentials?.[provider]?.api_key
+    if (!rawApiKey) {
       return NextResponse.json({ error: `No ${provider} API key saved yet` }, { status: 400 })
+    }
+    const apiKey = await decryptCredential(rawApiKey)
+    if (!apiKey) {
+      return NextResponse.json({ error: 'Could not decrypt saved API key' }, { status: 500 })
     }
 
     const text = DEMO_PHRASE[language] || DEMO_PHRASE.en

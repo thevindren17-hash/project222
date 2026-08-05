@@ -29,16 +29,14 @@ export default function CalendarPage() {
 
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
 
-  const { data: settings } = useQuery({
-    queryKey: ['tenant-settings'],
+  // Whether Google is connected — see /api/integrations/connection-status,
+  // which answers that without the actual tokens ever reaching the browser.
+  const { data: connStatus } = useQuery({
+    queryKey: ['connection-status', tenant?.id],
     queryFn: async () => {
-      if (!tenant) return null
-      const { data } = await supabase
-        .from('tenant_settings')
-        .select('google_access_token,google_refresh_token,google_calendar_id')
-        .eq('tenant_id', tenant.id)
-        .maybeSingle()
-      return data
+      if (!tenant) return { google: false, agent: false }
+      const res = await fetch(`/api/integrations/connection-status?tenant_id=${tenant.id}`)
+      return res.ok ? await res.json() : { google: false, agent: false }
     },
     enabled: !!tenant,
   })
@@ -58,7 +56,7 @@ export default function CalendarPage() {
     },
   })
 
-  const isConnected = !!(settings?.google_access_token || settings?.google_refresh_token)
+  const isConnected = !!connStatus?.google
 
   const { data: googleEvents } = useQuery({
     queryKey: ['google-calendar-events', tenant?.id],

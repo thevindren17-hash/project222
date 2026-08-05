@@ -37,16 +37,28 @@ export default function TestAgentPage() {
 
   const queryClient = useQueryClient()
   const { data: tenant, isLoading: tenantLoading } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
+  // No provider_credentials here — see /api/integrations/connection-status,
+  // which answers "is a key saved for this tenant's provider" without the
+  // actual key ever reaching the browser.
   const { data: settings, isLoading: settingsLoading } = useQuery({
     queryKey: ['tenant-settings'],
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await (await import('@/lib/supabase')).supabase
         .from('tenant_settings')
-        .select('custom_instructions,agent_name,llm_config,provider_credentials')
+        .select('custom_instructions,agent_name,llm_config')
         .eq('tenant_id', tenant.id)
         .maybeSingle()
       return data
+    },
+    enabled: !!tenant,
+  })
+  const { data: connStatus } = useQuery({
+    queryKey: ['connection-status', tenant?.id],
+    queryFn: async () => {
+      if (!tenant) return { google: false, agent: false }
+      const res = await fetch(`/api/integrations/connection-status?tenant_id=${tenant.id}`)
+      return res.ok ? await res.json() : { google: false, agent: false }
     },
     enabled: !!tenant,
   })
@@ -138,7 +150,7 @@ export default function TestAgentPage() {
   const customInstructions = settings?.custom_instructions || ''
   const activeProvider = settings?.llm_config?.provider || 'groq'
   const activeModel = settings?.llm_config?.model || ''
-  const hasApiKey = !!(settings?.provider_credentials as Record<string, Record<string, string>> | null)?.[activeProvider]?.api_key
+  const hasApiKey = !!connStatus?.agent
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] -mx-6 -mt-6 -mb-6">

@@ -23,11 +23,17 @@ export default function OverviewPage() {
       const start30d = new Date()
       start30d.setDate(start30d.getDate() - 30)
 
-      const [bookingsRes, threadsRes, feedbackRes, recallRes] = await Promise.all([
+      // Counts only (never fetch-all) for anything that grows unboundedly
+      // with patient volume -- a busy clinic can have thousands of
+      // all-time WhatsApp threads, and PostgREST's default row cap would
+      // silently under-count a plain .select() long before that.
+      const [bookingsRes, threadsTotalRes, threadsAiRes, feedbackRes, recallRes] = await Promise.all([
         supabase.from('bookings').select('*', { count: 'exact', head: true })
           .eq('tenant_id', tenant.id).gte('created_at', startOfWeek.toISOString()),
-        supabase.from('whatsapp_threads').select('status')
+        supabase.from('whatsapp_threads').select('*', { count: 'exact', head: true })
           .eq('tenant_id', tenant.id),
+        supabase.from('whatsapp_threads').select('*', { count: 'exact', head: true })
+          .eq('tenant_id', tenant.id).eq('status', 'ai'),
         supabase.from('campaigns').select('rating,status')
           .eq('tenant_id', tenant.id).eq('type', 'feedback')
           .gte('sent_at', start30d.toISOString())
@@ -37,9 +43,9 @@ export default function OverviewPage() {
           .gte('sent_at', start30d.toISOString()),
       ])
 
-      const threads = threadsRes.data || []
       const feedback = feedbackRes.data || []
-      const aiThreads = threads.filter((t) => t.status === 'ai').length
+      const totalThreads = threadsTotalRes.count || 0
+      const aiThreads = threadsAiRes.count || 0
       const avgRating = feedback.length > 0
         ? (feedback.reduce((s, f) => s + (f.rating || 0), 0) / feedback.length).toFixed(1)
         : null
@@ -48,8 +54,8 @@ export default function OverviewPage() {
 
       return {
         bookingsThisWeek: bookingsRes.count || 0,
-        aiHandleRate: threads.length > 0 ? Math.round((aiThreads / threads.length) * 100) : 0,
-        waMessages: threads.length,
+        aiHandleRate: totalThreads > 0 ? Math.round((aiThreads / totalThreads) * 100) : 0,
+        waMessages: totalThreads,
         avgRating,
         fiveStarCount,
         reviewsRequested,

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { supabaseAdmin, verifyTenantAccess } from '@/lib/server/verify-tenant-access'
+import { supabaseAdmin, verifyTenantAccess, decryptCredential } from '@/lib/server/verify-tenant-access'
 
 export async function POST(req: Request) {
   try {
@@ -32,6 +32,10 @@ export async function POST(req: Request) {
     if (tenantErr || !tenant?.wa_phone_number_id || !tenant?.wa_access_token) {
       return NextResponse.json({ error: 'WhatsApp credentials not configured' }, { status: 400 })
     }
+    const accessToken = await decryptCredential(tenant.wa_access_token)
+    if (!accessToken) {
+      return NextResponse.json({ error: 'Could not decrypt WhatsApp credentials' }, { status: 500 })
+    }
 
     // Send via Meta API
     const to = thread.contact_number.replace(/^\+/, '') // digits only
@@ -40,7 +44,7 @@ export async function POST(req: Request) {
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${tenant.wa_access_token}`,
+          Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({

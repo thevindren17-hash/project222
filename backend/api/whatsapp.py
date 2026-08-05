@@ -19,7 +19,7 @@ import time
 import asyncio
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import httpx
 from fastapi import APIRouter, Depends, Request, HTTPException, Response, BackgroundTasks
@@ -240,7 +240,10 @@ async def whatsapp_webhook(tenant_id: str, request: Request, background_tasks: B
 
     except Exception as e:
         logger.error(f"WhatsApp webhook error: {e}", exc_info=True)
-        return {"status": "error", "detail": str(e)}
+        # The full exception is logged above for our own debugging -- Meta
+        # only needs a non-2xx-shaped acknowledgement, not the internal
+        # exception text.
+        return {"status": "error"}
 
 
 # ── Message handler ────────────────────────────────────────────────────────────
@@ -407,18 +410,28 @@ async def _run_with_fallback(
     "having trouble responding" message regardless of whether a second,
     working provider was one config field away.
     """
+    # BYOK provider clients are created with no explicit request timeout, so
+    # a provider that hangs rather than errors (rather than a clean
+    # exception) would otherwise stall this one patient's turn indefinitely
+    # -- wrapping in wait_for turns a hang into a plain TimeoutError, which
+    # the except below treats the same as any other primary-provider
+    # failure and retries against the fallback provider.
+    _LLM_CALL_TIMEOUT_SECONDS = 45
+
     async def _attempt(client) -> dict:
         try:
-            return await client.run_with_tools(
+            return await asyncio.wait_for(client.run_with_tools(
                 messages=messages_payload, tools=enabled_tools or None,
                 execute_tool=execute_tool, parse_embedded_tool_calls=_parse_embedded_tool_calls,
-            )
+            ), timeout=_LLM_CALL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            raise
         except Exception as tool_err:
             if "not in request.tools" in str(tool_err).lower():
-                return await client.run_with_tools(
+                return await asyncio.wait_for(client.run_with_tools(
                     messages=messages_payload, tools=all_tools or None,
                     execute_tool=execute_tool, parse_embedded_tool_calls=_parse_embedded_tool_calls,
-                )
+                ), timeout=_LLM_CALL_TIMEOUT_SECONDS)
             raise
 
     try:
@@ -1118,6 +1131,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     # provider outage, etc.) would silently die with no reply ever sent and
     # nothing visible anywhere in the dashboard. Fail loud into a fallback
     # reply + escalation instead of failing silent.
+    result: Dict[str, Any] = {}
     try:
         has_date_mention = conversation_mentions_a_date(conversation_history)
 
@@ -1156,10 +1170,34 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
     if contact.get("name"):
         thread_update["contact_name"] = contact["name"]
 
-    # The patient only cares about the reply landing — neither DB write below
-    # is needed to send it, so send it at the same time instead of making
-    # them wait through two more round trips first.
-    send_result, insert_result, update_result = await asyncio.gather(
+    # One row per LLM provider call made while producing this reply (see
+    # LLMClient.run_with_tools) -- lets the dashboard show token consumption
+    # per week/month, broken down by booking/reschedule/cancellation/plain
+    # chat via each row's `tools` list.
+    usage_rows = [
+        {
+            "tenant_id": tenant.tenant_id,
+            "thread_id": thread["id"],
+            "contact_id": contact.get("id"),
+            "provider": u.get("provider"),
+            "model": u.get("model"),
+            "prompt_tokens": u.get("prompt_tokens", 0),
+            "completion_tokens": u.get("completion_tokens", 0),
+            "total_tokens": u.get("total_tokens", 0),
+            "tools": u.get("tools") or [],
+        }
+        for u in (result.get("usage") or [])
+    ]
+
+    async def _log_llm_usage():
+        if not usage_rows:
+            return
+        await _db(lambda: supabase.table("llm_usage").insert(usage_rows).execute())
+
+    # The patient only cares about the reply landing — none of the DB writes
+    # below are needed to send it, so send it at the same time instead of
+    # making them wait through several more round trips first.
+    send_result, insert_result, update_result, usage_result = await asyncio.gather(
         send_whatsapp_message(
             to=from_number,
             text=reply_text,
@@ -1178,6 +1216,7 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         _db(lambda: supabase.table("whatsapp_threads").update(thread_update).eq(
             "id", thread["id"]
         ).execute()),
+        _log_llm_usage(),
         return_exceptions=True,
     )
     if isinstance(send_result, Exception):
@@ -1191,6 +1230,8 @@ async def handle_whatsapp_message(tenant, message: dict, value: dict):
         logger.warning(f"Failed to save assistant message (non-fatal): {insert_result}")
     if isinstance(update_result, Exception):
         logger.warning(f"Failed to update thread (non-fatal): {update_result}")
+    if isinstance(usage_result, Exception):
+        logger.warning(f"Failed to log LLM usage (non-fatal): {usage_result}")
 
 
 async def _handle_voice_message(tenant, message: dict, from_number: str, media_id: str, supabase):

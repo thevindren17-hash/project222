@@ -3,6 +3,7 @@ FastAPI Server
 Handles WhatsApp webhooks, Google OAuth callbacks, and health checks.
 """
 
+import hmac
 import os
 import time
 from collections import defaultdict, deque
@@ -145,7 +146,7 @@ def _trigger_rate_limited(secret_key: str) -> bool:
 @app.post("/admin/trigger/{job}")
 async def trigger_job(job: str, x_trigger_secret: str = Header(default="")):
     secret = os.getenv("TRIGGER_SECRET", "")
-    if not secret or x_trigger_secret != secret:
+    if not secret or not hmac.compare_digest(x_trigger_secret, secret):
         raise HTTPException(status_code=403, detail="Invalid or missing X-Trigger-Secret header")
     if _trigger_rate_limited(secret):
         raise HTTPException(status_code=429, detail="Rate limit: max 10 trigger calls per minute")

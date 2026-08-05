@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { supabase, getCurrentTenant } from '@/lib/supabase'
+import { getCurrentTenant } from '@/lib/supabase'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -20,18 +20,15 @@ export default function PluginStatusBar() {
     queryFn: async () => {
       const tenant = await getCurrentTenant()
       if (!tenant) return null
-      const { data: settings } = await supabase
-        .from('tenant_settings')
-        .select('llm_config,google_access_token,google_refresh_token,provider_credentials')
-        .eq('tenant_id', tenant.id)
-        .single()
-      // Booking flow & safety rules are always active — the agent is only
-      // blocked on having a working LLM provider key, not a saved prompt.
-      const llmProvider = settings?.llm_config?.provider
+      // Booleans only, computed server-side — see
+      // /api/integrations/connection-status for why this isn't a direct
+      // client-side select of tenant_settings anymore.
+      const res = await fetch(`/api/integrations/connection-status?tenant_id=${tenant.id}`)
+      const conn = res.ok ? await res.json() : { google: false, agent: false }
       return {
         whatsapp: !!tenant.wa_phone_number_id,
-        google:   !!(settings?.google_access_token || settings?.google_refresh_token),
-        agent:    !!(llmProvider && (settings?.provider_credentials as Record<string, Record<string, string>> | undefined)?.[llmProvider]?.api_key),
+        google:   !!conn.google,
+        agent:    !!conn.agent,
       }
     },
   })

@@ -34,7 +34,7 @@ class GoogleCalendarIntegration:
         self.calendar_id = calendar_id or "primary"
 
     async def _get_token(self) -> str:
-        from shared.tenant_config import get_supabase_client, _db_optional
+        from shared.tenant_config import get_supabase_client, _db_optional, _decrypt_value
         supabase = get_supabase_client()
         result = await _db_optional(lambda: supabase.table("tenant_settings")
             .select("google_access_token,google_refresh_token")
@@ -45,8 +45,8 @@ class GoogleCalendarIntegration:
         if not result.data:
             raise RuntimeError("No Google credentials found")
 
-        token = result.data.get("google_access_token")
-        refresh = result.data.get("google_refresh_token")
+        token = await _decrypt_value(result.data.get("google_access_token"))
+        refresh = await _decrypt_value(result.data.get("google_refresh_token"))
 
         if not token and not refresh:
             raise RuntimeError("Google not connected")
@@ -362,7 +362,7 @@ class GoogleSheetsIntegration:
         self.tab_name = tab_name or SHEETS_TAB_NAME
 
     async def _get_token(self) -> str:
-        from shared.tenant_config import get_supabase_client, _db_optional
+        from shared.tenant_config import get_supabase_client, _db_optional, _decrypt_value
         supabase = get_supabase_client()
         result = await _db_optional(lambda: supabase.table("tenant_settings")
             .select("google_access_token,google_refresh_token")
@@ -373,8 +373,8 @@ class GoogleSheetsIntegration:
         if not result.data:
             raise RuntimeError("No Google credentials found")
 
-        token = result.data.get("google_access_token")
-        refresh = result.data.get("google_refresh_token")
+        token = await _decrypt_value(result.data.get("google_access_token"))
+        refresh = await _decrypt_value(result.data.get("google_refresh_token"))
 
         if not token and not refresh:
             raise RuntimeError("Google not connected")
@@ -553,12 +553,19 @@ GOOGLE_OAUTH_SCOPE = (
 )
 
 
-async def get_google_oauth_url(tenant_id: str) -> str:
+async def get_google_oauth_url(tenant_id: str, exp: int, sig: str) -> str:
     """
     Generate the OAuth URL for a clinic to authorize Google access — using
     THAT CLINIC's own OAuth client (BYOK), not a platform-wide shared app.
     Raises if the clinic hasn't saved their client_id yet, so the caller can
     show a clear "set up your Google Client ID first" error.
+
+    exp/sig come from shared.security.sign_tenant_action, already verified
+    by the caller (google_auth_start) before this runs. They're carried
+    through Google's opaque `state` round-trip so google_oauth_callback can
+    re-verify them too — otherwise anyone who learns a tenant_id could
+    complete the consent screen with their own Google account and have the
+    resulting tokens attached to a clinic they don't own.
     """
     from shared.tenant_config import get_tenant_by_id
     from shared.providers import _cred
@@ -570,7 +577,7 @@ async def get_google_oauth_url(tenant_id: str) -> str:
 
     backend_url = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
     redirect_uri = f"{backend_url}/api/integrations/google/callback"
-    state = json.dumps({"tenant_id": tenant_id})
+    state = json.dumps({"tenant_id": tenant_id, "exp": exp, "sig": sig})
     import urllib.parse
     params = urllib.parse.urlencode({
         "client_id": client_id,
@@ -611,9 +618,11 @@ async def _refresh_google_token(tenant_id: str, refresh_token: str) -> str:
     if not new_token:
         raise RuntimeError("Token refresh returned no access_token")
 
+    from shared.tenant_config import _encrypt_value
     supabase = get_supabase_client()
+    stored_token = await _encrypt_value(new_token)
     await _db(lambda: supabase.table("tenant_settings").update(
-        {"google_access_token": new_token}
+        {"google_access_token": stored_token}
     ).eq("tenant_id", tenant_id).execute())
 
     return new_token
@@ -627,13 +636,15 @@ async def store_google_tokens(
     spreadsheet_id: Optional[str] = None,
     sheets_tab: Optional[str] = None,
 ):
-    """Store the (single, unified) Google OAuth tokens in tenant_settings."""
-    from shared.tenant_config import get_supabase_client, _db
+    """Store the (single, unified) Google OAuth tokens in tenant_settings,
+    encrypted at rest the same way wa_access_token / BYOK provider keys are
+    (see shared.tenant_config._encrypt_value)."""
+    from shared.tenant_config import get_supabase_client, _db, _encrypt_value
 
     supabase = get_supabase_client()
-    update_data: Dict[str, Any] = {"google_access_token": access_token}
+    update_data: Dict[str, Any] = {"google_access_token": await _encrypt_value(access_token)}
     if refresh_token:  # never overwrite an existing refresh_token with None
-        update_data["google_refresh_token"] = refresh_token
+        update_data["google_refresh_token"] = await _encrypt_value(refresh_token)
     if calendar_id:
         update_data["google_calendar_id"] = calendar_id
     if spreadsheet_id:
@@ -702,7 +713,7 @@ async def get_valid_access_token(tenant_id: str) -> str:
     """Get a live access token for this tenant, refreshing if needed — for
     operations not tied to a specific GoogleCalendarIntegration/GoogleSheetsIntegration
     instance (e.g. validating a pasted spreadsheet link before saving it)."""
-    from shared.tenant_config import get_supabase_client, _db_optional
+    from shared.tenant_config import get_supabase_client, _db_optional, _decrypt_value
     supabase = get_supabase_client()
     result = await _db_optional(lambda: supabase.table("tenant_settings")
         .select("google_access_token,google_refresh_token")
@@ -712,8 +723,8 @@ async def get_valid_access_token(tenant_id: str) -> str:
     )
     if not result.data:
         raise RuntimeError("Google not connected")
-    token = result.data.get("google_access_token")
-    refresh = result.data.get("google_refresh_token")
+    token = await _decrypt_value(result.data.get("google_access_token"))
+    refresh = await _decrypt_value(result.data.get("google_refresh_token"))
     if not token and not refresh:
         raise RuntimeError("Google not connected")
     if refresh:

@@ -2,6 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { decryptCredential } from '@/lib/server/verify-tenant-access'
+
+// A batch of up to MAX_CONTACTS_PER_UPLOAD contacts, each needing several
+// sequential Supabase round trips plus a Meta API call, can run well past
+// Vercel's default function duration. 60 is the actual hard ceiling on the
+// Hobby plan (not just the default) -- raising this number does nothing
+// until the project is on Pro or higher, which also raises the ceiling
+// itself (up to 300s, more with Fluid Compute). MAX_CONTACTS_PER_UPLOAD
+// below is sized to reliably finish within Hobby's 60s, not this number.
+export const maxDuration = 60
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -27,7 +37,15 @@ const DEDUP_HOURS: Record<Exclude<CampaignType, 'recall'>, number> = {
 // clinic's Meta message quota fast enough to get the WABA flagged for spam.
 // Best-effort per-tenant limiter (in-memory — resets on cold start / across
 // instances, but still blocks the obvious "spam the button" abuse case).
-const MAX_CONTACTS_PER_UPLOAD = 300
+//
+// Sized against Hobby's 60s hard function-duration ceiling, not chosen for
+// campaign-size reasons: each contact does ~6-7 sequential Supabase round
+// trips + 1 Meta call, sent 5-at-a-time (CHUNK below). At a conservative
+// ~2s per chunk that's 100 contacts in ~40s, leaving headroom for slower
+// responses -- 300 would very likely get killed mid-batch on this plan,
+// silently messaging some contacts and not others. Raise this only after
+// moving off Hobby (see maxDuration above).
+const MAX_CONTACTS_PER_UPLOAD = 100
 const _bulkSendCalls = new Map<string, number[]>()
 const _BULK_SEND_WINDOW_MS = 15 * 60_000
 const _BULK_SEND_MAX_CALLS = 5
@@ -340,6 +358,14 @@ export async function POST(req: NextRequest) {
     if (!tenant?.wa_phone_number_id || !tenant?.wa_access_token) {
       return NextResponse.json({ error: 'WhatsApp credentials not configured' }, { status: 400 })
     }
+    // Decrypt once here, not per-contact -- wa_access_token is ciphertext
+    // ("enc:v1:...") for any tenant who saved/reconnected WhatsApp after
+    // encryption-at-rest was added; sending it straight to Meta as the
+    // bearer token gets every send in the batch rejected with a 401.
+    const accessToken = await decryptCredential(tenant.wa_access_token)
+    if (!accessToken) {
+      return NextResponse.json({ error: 'Could not decrypt WhatsApp credentials' }, { status: 500 })
+    }
 
     // Reminder/feedback are always sent as approved Meta templates (outside
     // the 24h window). Recall stays on free text until its template name is set.
@@ -411,7 +437,7 @@ export async function POST(req: NextRequest) {
             type,
             contact: c,
             phone_number_id: tenant.wa_phone_number_id!,
-            access_token: tenant.wa_access_token!,
+            access_token: accessToken,
             clinic_name: tenant.name,
             message_template: message_template || (type === 'marketing' ? '' : DEFAULT_TEMPLATES[type]),
             interval_months: interval_months || 6,

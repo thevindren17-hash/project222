@@ -28,12 +28,14 @@ function OAuthResultHandler() {
     if (success === 'true') {
       toast.success('Google connected — Calendar sync and a new Sheets spreadsheet are ready')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'google'] })
+      queryClient.invalidateQueries({ queryKey: ['connection-status'] })
       window.history.replaceState({}, '', window.location.pathname)
     } else if (error) {
       const messages: Record<string, string> = {
         access_denied: 'Access was denied. Please try again and allow access.',
         storage_failed: 'Connected but failed to save. Please try again.',
         missing_params: 'Something went wrong. Please try again.',
+        unauthorized: "Couldn't verify you own this clinic — please refresh and try again.",
         google_client_not_configured: 'Save your Google Client ID and Secret below first, then connect.',
       }
       toast.error(messages[error] || `Connection failed: ${decodeURIComponent(error)}`)
@@ -49,13 +51,16 @@ export default function GoogleIntegrationPage() {
 
   const { data: tenant } = useQuery({ queryKey: ['tenant'], queryFn: getCurrentTenant })
 
+  // Non-sensitive metadata only — no token columns. Whether a connection is
+  // actually live comes from /api/integrations/connection-status instead
+  // (see that route for why: token columns don't belong in browser memory).
   const { data: settings, isLoading } = useQuery({
     queryKey: ['tenant-settings', 'google'],
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase
         .from('tenant_settings')
-        .select('google_access_token, google_refresh_token, google_calendar_id, google_sheets_id, google_sheets_tab, updated_at')
+        .select('google_calendar_id, google_sheets_id, google_sheets_tab, updated_at')
         .eq('tenant_id', tenant.id)
         .maybeSingle()
       return data
@@ -73,8 +78,18 @@ export default function GoogleIntegrationPage() {
     staleTime: 30_000,
   })
 
+  const { data: connStatus } = useQuery({
+    queryKey: ['connection-status', tenant?.id],
+    queryFn: async () => {
+      if (!tenant) return { google: false, agent: false }
+      const res = await fetch(`/api/integrations/connection-status?tenant_id=${tenant.id}`)
+      return res.ok ? await res.json() : { google: false, agent: false }
+    },
+    enabled: !!tenant,
+  })
+
   const hasOwnClient = !!credExistence?.google
-  const isConnected = !!(settings?.google_access_token || settings?.google_refresh_token)
+  const isConnected = !!connStatus?.google
   const spreadsheetUrl = settings?.google_sheets_id
     ? `https://docs.google.com/spreadsheets/d/${settings.google_sheets_id}/edit`
     : null
@@ -112,6 +127,7 @@ export default function GoogleIntegrationPage() {
     onSuccess: () => {
       toast.success('Google disconnected')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'google'] })
+      queryClient.invalidateQueries({ queryKey: ['connection-status'] })
     },
     onError: (e: Error) => toast.error(e.message),
   })

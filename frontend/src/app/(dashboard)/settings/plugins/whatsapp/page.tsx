@@ -53,14 +53,28 @@ export default function WhatsAppPluginPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  // No provider_credentials in this select — that's the BYOK key blob, and
+  // this page only ever needs a yes/no "is a key saved" answer, which
+  // /api/integrations/connection-status now provides without putting the
+  // actual (possibly still-plaintext-for-legacy-rows) keys in the browser.
   const { data: agentSettings } = useQuery({
     queryKey: ['tenant-settings'],
     queryFn: async () => {
       if (!tenant) return null
       const { data } = await supabase.from('tenant_settings').select(
-        'llm_config,agent_name,custom_instructions,provider_credentials'
+        'llm_config,agent_name,custom_instructions'
       ).eq('tenant_id', tenant.id).maybeSingle()
       return data
+    },
+    enabled: !!tenant,
+  })
+
+  const { data: connStatus } = useQuery({
+    queryKey: ['connection-status', tenant?.id],
+    queryFn: async () => {
+      if (!tenant) return { google: false, agent: false }
+      const res = await fetch(`/api/integrations/connection-status?tenant_id=${tenant.id}`)
+      return res.ok ? await res.json() : { google: false, agent: false }
     },
     enabled: !!tenant,
   })
@@ -74,7 +88,7 @@ export default function WhatsAppPluginPage() {
   // Booking flow, escalation, and safety rules are always active by
   // default — this just reflects whether the clinic added optional notes.
   const hasCustomInstructions = !!agentSettings?.custom_instructions
-  const hasLlmKey = !!(agentSettings?.provider_credentials?.[llmProvider]?.api_key)
+  const hasLlmKey = !!connStatus?.agent
   const agentReady = !!(llmProvider && hasLlmKey)
 
   const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || '').trim().replace(/\/+$/, '')

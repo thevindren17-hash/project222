@@ -65,9 +65,10 @@ export default function CsvCampaignUploader({
 
     // Reject oversized files before handing them to Papa.parse/XLSX.read —
     // both parse entirely on the main thread, so a huge or malformed file
-    // (accidental or malicious) can freeze the tab before the 300-contact
-    // cap ever gets a chance to apply (that cap only kicks in server-side,
-    // after parsing already completed).
+    // (accidental or malicious) can freeze the tab before the per-upload
+    // contact cap ever gets a chance to apply (that cap only kicks in
+    // server-side, after parsing already completed — see
+    // MAX_CONTACTS_PER_UPLOAD in api/campaigns/send-csv/route.ts).
     const MAX_FILE_BYTES = 8 * 1024 * 1024 // 8 MB — generous for a few hundred contact rows
     if (file.size > MAX_FILE_BYTES) {
       toast.error('File is too large (max 8MB) — please split it into smaller batches')

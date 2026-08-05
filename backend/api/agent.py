@@ -637,7 +637,9 @@ async def extract_faq_from_document(tenant_id: str = Form(...), file: UploadFile
         ])
     except Exception as e:
         logger.error(f"FAQ extraction LLM call failed | tenant={tenant_id} | {e}")
-        raise HTTPException(status_code=502, detail=f"AI extraction failed: {e}")
+        # Full exception logged above -- provider SDK exceptions can
+        # occasionally embed request metadata, so don't echo str(e) back.
+        raise HTTPException(status_code=502, detail="AI extraction failed -- try again in a moment")
 
     content = _strip_json_fences(result.get("content") or "")
     try:

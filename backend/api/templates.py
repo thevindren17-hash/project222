@@ -64,6 +64,20 @@ _ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png"}
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
+def _sniff_image_mime(data: bytes) -> Optional[str]:
+    """
+    Identify the file type from its actual magic-number bytes rather than
+    the client-supplied multipart Content-Type header, which a malicious
+    (or just misconfigured) uploader can set to anything regardless of what
+    the file actually contains.
+    """
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    return None
+
+
 def _slugify_template_name(name: str) -> str:
     """Meta template names may only contain lowercase letters, digits, and underscores."""
     slug = re.sub(r"[^a-z0-9_]+", "_", (name or "").lower().strip())
@@ -278,13 +292,16 @@ async def attach_template_media(template_id: str, tenant_id: str = Form(...), fi
     if not tenant or not tenant.wa_access_token or not tenant.wa_phone_number_id:
         raise HTTPException(status_code=400, detail="WhatsApp is not connected for this clinic yet")
 
-    mime_type = file.content_type or ""
-    if mime_type not in _ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status_code=400, detail="Only JPEG or PNG images are allowed for a template header")
-
     file_bytes = await file.read()
     if len(file_bytes) > _MAX_IMAGE_BYTES:
         raise HTTPException(status_code=400, detail="Image is too large -- WhatsApp allows up to 5MB for a template header")
+
+    # Trust the actual file bytes, not the client-supplied Content-Type
+    # header -- a multipart upload can claim to be image/jpeg regardless of
+    # what's actually in the file.
+    mime_type = _sniff_image_mime(file_bytes)
+    if mime_type not in _ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG or PNG images are allowed for a template header")
     filename = file.filename or "header.jpg"
 
     try:

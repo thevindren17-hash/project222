@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import crypto from 'crypto'
 
 /**
  * Service-role Supabase client — bypasses RLS entirely. Only ever use this
@@ -44,4 +45,48 @@ export async function verifyTenantAccess(tenantId: string): Promise<boolean> {
 export function internalSecretHeader(): Record<string, string> {
   const secret = process.env.INTERNAL_API_SECRET || ''
   return secret ? { 'X-Internal-Secret': secret } : {}
+}
+
+/**
+ * Stamps a short-lived, tenant-bound proof that verifyTenantAccess already
+ * passed for tenantId — for flows (Google OAuth) that redirect the browser
+ * through a third party and land back on a backend endpoint with nothing
+ * but a URL, so the backend can't otherwise tell a legitimate request from
+ * anyone who just knows/guesses a tenant_id. Mirrored in
+ * backend/shared/security.py (sign_tenant_action / verify_tenant_action)
+ * using the same INTERNAL_API_SECRET.
+ */
+export function signTenantAction(tenantId: string, ttlSeconds = 300): { exp: number; sig: string } {
+  const secret = process.env.INTERNAL_API_SECRET || ''
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds
+  const sig = crypto.createHmac('sha256', secret).update(`${tenantId}:${exp}`).digest('hex')
+  return { exp, sig }
+}
+
+const _ENC_PREFIX = 'enc:v1:'
+
+/**
+ * Decrypts a credential column written by /api/whatsapp/save-credentials or
+ * /api/credentials (both prefix ciphertext with "enc:v1:" -- see
+ * backend/migrations/005_encrypt_credentials.sql for the pgcrypto RPCs).
+ * Any route that reads wa_access_token (or another encrypted column)
+ * straight off the tenants/tenant_settings row to actually call an outside
+ * API (Meta, etc.) MUST decrypt it first with this -- using the raw column
+ * value directly sends ciphertext as the bearer token and gets a 401 from
+ * Meta for every tenant whose token was saved after encryption was turned
+ * on. Values with no prefix are legacy plaintext and pass through
+ * unchanged, same fallback behavior as the Python-side _decrypt_value.
+ */
+export async function decryptCredential(value: string | null | undefined): Promise<string | null> {
+  if (!value) return value ?? null
+  if (!value.startsWith(_ENC_PREFIX)) return value
+  const encKey = process.env.CREDENTIAL_ENCRYPTION_KEY || ''
+  if (!encKey) return value
+  const ciphertext = value.slice(_ENC_PREFIX.length)
+  const { data, error } = await supabaseAdmin.rpc('decrypt_credential', { ciphertext, key: encKey })
+  if (error) {
+    console.error('Failed to decrypt credential:', error.message)
+    return null
+  }
+  return data as string
 }
