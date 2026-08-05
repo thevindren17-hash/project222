@@ -21,7 +21,7 @@ async def send_whatsapp_template(
     phone_number_id: str,
     access_token: str,
     header_image_id: Optional[str] = None,
-) -> None:
+) -> Optional[dict]:
     """
     header_image_id: a media_id from the regular /{phone_number_id}/media
     upload endpoint (NOT the resumable-upload "header_handle" used only at
