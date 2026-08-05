@@ -241,18 +241,34 @@ class LLMClient:
         """
         local_messages = list(messages)
         tool_log: List[Dict[str, Any]] = []
+        # One entry per LLM provider call made in this loop (not per
+        # WhatsApp message -- a single message can span several of these),
+        # tagged with which tool(s) that specific call triggered so
+        # consumption can later be broken down by booking/reschedule/
+        # cancellation/plain-chat on the dashboard. See _call_openai/
+        # _call_anthropic for where `usage` actually comes from.
+        usage_log: List[Dict[str, Any]] = []
         content = ""
 
         for _ in range(max_steps):
             response = await self.generate(messages=local_messages, tools=tools)
             content = response.get("content", "")
             tool_calls = response.get("tool_calls")
+            usage = response.get("usage")
 
             if not tool_calls and parse_embedded_tool_calls and content:
                 content, tool_calls = parse_embedded_tool_calls(content)
 
+            if usage:
+                usage_log.append({
+                    **usage,
+                    "provider": self.provider,
+                    "model": self.model,
+                    "tools": [tc["function"]["name"] for tc in (tool_calls or [])],
+                })
+
             if not tool_calls:
-                return {"content": content, "tool_calls": tool_log}
+                return {"content": content, "tool_calls": tool_log, "usage": usage_log}
 
             assistant_tool_calls = []
             call_results = []
@@ -288,7 +304,7 @@ class LLMClient:
         # Ran out of steps without a final text reply — degrade gracefully
         # (e.g. a model stuck re-calling the same tool) rather than erroring.
         fallback = tool_log[-1]["result"] if tool_log else ""
-        return {"content": content or fallback, "tool_calls": tool_log}
+        return {"content": content or fallback, "tool_calls": tool_log, "usage": usage_log}
 
     async def _dispatch(
         self,
@@ -469,7 +485,16 @@ class LLMClient:
             ]
 
         content = _cap_to_first_question(_collapse_repeated_sentences(choice.content or ""))
-        return {"content": content, "tool_calls": tool_calls}
+
+        usage_obj = getattr(response, "usage", None)
+        usage = None
+        if usage_obj:
+            usage = {
+                "prompt_tokens": getattr(usage_obj, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(usage_obj, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
+            }
+        return {"content": content, "tool_calls": tool_calls, "usage": usage}
 
     async def _call_anthropic(
         self,
@@ -529,7 +554,18 @@ class LLMClient:
                 })
 
         content_text = _cap_to_first_question(_collapse_repeated_sentences(content_text))
-        return {"content": content_text, "tool_calls": tool_calls}
+
+        usage_obj = getattr(response, "usage", None)
+        usage = None
+        if usage_obj:
+            input_tok = getattr(usage_obj, "input_tokens", 0) or 0
+            output_tok = getattr(usage_obj, "output_tokens", 0) or 0
+            usage = {
+                "prompt_tokens": input_tok,
+                "completion_tokens": output_tok,
+                "total_tokens": input_tok + output_tok,
+            }
+        return {"content": content_text, "tool_calls": tool_calls, "usage": usage}
 
 
 def load_llm_client(tenant) -> LLMClient:

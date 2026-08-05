@@ -15,19 +15,25 @@ export default function AnalyticsPage() {
       if (!tenant) return null
 
       const last30 = subDays(new Date(), 30).toISOString()
+      // 8 full weeks back, so the weekly trend chart has a complete oldest
+      // bucket instead of a partial one on day one of the range.
+      const last56 = subDays(new Date(), 56).toISOString()
 
-      const [bookingsRes, threadsRes, contactsRes] = await Promise.all([
+      const [bookingsRes, threadsRes, contactsRes, usageRes] = await Promise.all([
         supabase.from('bookings').select('created_at,status,service_type,scheduled_at')
           .eq('tenant_id', tenant.id).gte('created_at', last30),
         supabase.from('whatsapp_threads').select('status')
           .eq('tenant_id', tenant.id),
         supabase.from('contacts').select('created_at')
           .eq('tenant_id', tenant.id).gte('created_at', last30),
+        supabase.from('llm_usage').select('total_tokens,tools,created_at')
+          .eq('tenant_id', tenant.id).gte('created_at', last56),
       ])
 
       const bookings = bookingsRes.data || []
       const threads = threadsRes.data || []
       const contacts = contactsRes.data || []
+      const usage = usageRes.data || []
 
       // Daily bookings chart (last 7 days)
       const dailyBookings = Array.from({ length: 7 }, (_, i) => {
@@ -66,7 +72,58 @@ export default function AnalyticsPage() {
         { stage: 'Showed', count: showed, pct: booked > 0 ? Math.round((showed / booked) * 100) : 0 },
       ]
 
-      return { dailyBookings, serviceData, aiHandleRate, totalBookings: bookings.length, noShowRate, funnel }
+      // Token consumption — this week / this month, a weekly trend, and a
+      // breakdown of where the tokens actually went. Each llm_usage row is
+      // one LLM provider call (see backend/shared/providers.py
+      // run_with_tools), tagged with whichever tool(s) that call triggered
+      // — booking/reschedule/cancellation, or none (plain chat/FAQ turns).
+      const weekAgo = subDays(new Date(), 7)
+      const monthAgo = subDays(new Date(), 30)
+      const tokensThisWeek = usage
+        .filter((u) => new Date(u.created_at) >= weekAgo)
+        .reduce((sum, u) => sum + (u.total_tokens || 0), 0)
+      const tokensThisMonth = usage
+        .filter((u) => new Date(u.created_at) >= monthAgo)
+        .reduce((sum, u) => sum + (u.total_tokens || 0), 0)
+
+      // Weekly trend, oldest to newest — 8 rolling 7-day buckets.
+      const weeklyTokens = Array.from({ length: 8 }, (_, i) => {
+        const rangeStart = subDays(new Date(), (8 - i) * 7)
+        const rangeEnd = subDays(new Date(), (7 - i) * 7)
+        const tokens = usage
+          .filter((u) => {
+            const d = new Date(u.created_at)
+            return d >= rangeStart && d < rangeEnd
+          })
+          .reduce((sum, u) => sum + (u.total_tokens || 0), 0)
+        return { week: format(rangeStart, 'MMM d'), tokens }
+      })
+
+      // Breakdown by what the conversation was actually doing (last 30
+      // days) — a row can technically carry more than one tool, so this
+      // prioritizes the booking-lifecycle action over "plain chat" rather
+      // than double-counting the same tokens into two buckets.
+      const actionTokens: Record<string, number> = {
+        Booking: 0, Reschedule: 0, Cancellation: 0, 'Chat / FAQ': 0,
+      }
+      usage
+        .filter((u) => new Date(u.created_at) >= monthAgo)
+        .forEach((u) => {
+          const tools: string[] = u.tools || []
+          const tokens = u.total_tokens || 0
+          if (tools.includes('book_appointment')) actionTokens.Booking += tokens
+          else if (tools.includes('reschedule_appointment')) actionTokens.Reschedule += tokens
+          else if (tools.includes('cancel_appointment')) actionTokens.Cancellation += tokens
+          else actionTokens['Chat / FAQ'] += tokens
+        })
+      const actionTokenData = Object.entries(actionTokens)
+        .map(([name, value]) => ({ name, value }))
+        .filter((d) => d.value > 0)
+
+      return {
+        dailyBookings, serviceData, aiHandleRate, totalBookings: bookings.length, noShowRate, funnel,
+        tokensThisWeek, tokensThisMonth, weeklyTokens, actionTokenData,
+      }
     },
   })
 
@@ -158,6 +215,51 @@ export default function AnalyticsPage() {
                 <p className="text-sm text-muted-foreground mt-1">({100 - (stats?.aiHandleRate ?? 0)}% escalated to staff)</p>
               </div>
             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold">Token Usage</h2>
+        <p className="text-sm text-muted-foreground">How much your AI provider is being used — across every conversation</p>
+      </div>
+
+      <div className="grid gap-3 sm:gap-6 max-w-md grid-cols-2">
+        <StatCard title="Tokens This Week" value={stats ? stats.tokensThisWeek.toLocaleString() : '—'} icon="bot" />
+        <StatCard title="Tokens This Month" value={stats ? stats.tokensThisMonth.toLocaleString() : '—'} icon="bot" />
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle>Weekly Token Usage (Last 8 Weeks)</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={stats?.weeklyTokens}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                <XAxis dataKey="week" className="text-xs" />
+                <YAxis className="text-xs" tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`} />
+                <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                <Bar dataKey="tokens" fill="oklch(0.58 0.22 300)" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Tokens by Conversation Type (Last 30 Days)</CardTitle></CardHeader>
+          <CardContent>
+            {stats?.actionTokenData && stats.actionTokenData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <PieChart>
+                  <Pie data={stats.actionTokenData} cx="50%" cy="50%" outerRadius={80} dataKey="value" label={(entry: { name?: string; percent?: number }) => `${entry.name ?? ''} ${Math.round((entry.percent ?? 0) * 100)}%`}>
+                    {stats.actionTokenData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[220px] flex items-center justify-center text-muted-foreground text-sm">No data yet</div>
+            )}
           </CardContent>
         </Card>
       </div>
