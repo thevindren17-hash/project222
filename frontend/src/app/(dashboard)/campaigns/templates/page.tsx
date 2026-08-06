@@ -158,7 +158,7 @@ export default function MarketingTemplatesPage() {
     form.set('file', file)
     const res = await fetch(`/api/templates/${id}/media`, { method: 'POST', body: form })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Image upload failed')
+    if (!res.ok) throw new Error(data.detail || data.error || 'Image upload failed')
   }
 
   const [imageFile, setImageFile] = useState<File | null>(null)
@@ -199,7 +199,7 @@ export default function MarketingTemplatesPage() {
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Could not create template')
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not create template')
 
       // Image upload is a separate call after the draft exists -- if it
       // fails, the draft itself is still saved (don't lose it / don't let
@@ -231,7 +231,7 @@ export default function MarketingTemplatesPage() {
     mutationFn: async (id: string) => {
       if (!tenant) throw new Error('No tenant')
       const res = await fetch(`/api/templates/${id}?tenant_id=${tenant.id}`, { method: 'DELETE' })
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Delete failed') }
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || d.error || 'Delete failed') }
     },
     onSuccess: () => {
       toast.success('Template removed')
@@ -249,7 +249,7 @@ export default function MarketingTemplatesPage() {
         body: JSON.stringify({ tenant_id: tenant.id }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Submission failed')
+      if (!res.ok) throw new Error(data.detail || data.error || 'Submission failed')
       return data
     },
     onSuccess: () => {
@@ -289,7 +289,7 @@ export default function MarketingTemplatesPage() {
       if (!tenant) return []
       const res = await fetch(`/api/templates/meta-available?tenant_id=${tenant.id}`)
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Could not reach Meta')
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not reach Meta')
       return (Array.isArray(data) ? data : []) as MetaAvailableTemplate[]
     },
     enabled: false,
@@ -309,7 +309,7 @@ export default function MarketingTemplatesPage() {
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Import failed')
+      if (!res.ok) throw new Error(data.detail || data.error || 'Import failed')
       toast.success(`Imported "${t.name}" — ready to use immediately`)
       queryClient.invalidateQueries({ queryKey: ['whatsapp-templates', tenant.id] })
       refetchMetaAvailable()

@@ -52,6 +52,6 @@ export async function syncBookingToSheet(tenantId: string, bookingId: string) {
     body: JSON.stringify({ tenant_id: tenantId, booking_id: bookingId }),
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || 'Sheet sync failed')
+  if (!res.ok) throw new Error(data.detail || data.error || 'Sheet sync failed')
   return data
 }

@@ -144,7 +144,12 @@ export default function GoogleIntegrationPage() {
         body: JSON.stringify({ tenant_id: tenant.id, sheet_link: sheetLink.trim() }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || 'Could not use that spreadsheet')
+      // FastAPI's HTTPException body shape is {detail: "..."}, not
+      // {error: "..."} -- the Next.js proxy passes the backend's response
+      // through unchanged, so this has to check both or the real reason
+      // (bad link, no header row, no access to that sheet, etc.) gets
+      // silently swallowed in favor of a useless generic message.
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not use that spreadsheet')
       return data as { title: string; tab_name: string }
     },
     onSuccess: (data) => {
