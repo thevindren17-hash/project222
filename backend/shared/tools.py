@@ -361,6 +361,44 @@ async def check_slots(
     }
 
 
+async def _resolve_pending_booking(
+    supabase, tenant_id: str, contact_id: str, booking_id: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Finds the one booking a cancel/reschedule call should act on. When the
+    caller didn't specify booking_id, this must never silently guess among
+    several pending appointments for the same patient -- a patient with two
+    upcoming bookings who just says "cancel my appointment" needs to be
+    asked which one, not have the system pick whichever is furthest out on
+    their behalf (the previous behavior: ORDER BY scheduled_at DESC LIMIT 1).
+
+    Returns {"booking": dict} on a single clear match, {"booking": None} on
+    no match, or {"ambiguous": [...]} when more than one pending booking
+    exists and the caller must ask the patient to pick one instead.
+    """
+    if booking_id:
+        res = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
+            "id", booking_id
+        ).eq("tenant_id", tenant_id).eq("contact_id", contact_id).maybe_single().execute())
+        return {"booking": res.data}
+
+    res = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
+        "tenant_id", tenant_id
+    ).eq("contact_id", contact_id).eq("status", "pending").order("scheduled_at").execute())
+    pending = res.data or []
+    if len(pending) > 1:
+        return {"ambiguous": pending}
+    return {"booking": pending[0] if pending else None}
+
+
+def _describe_bookings_for_clarification(bookings: List[Dict[str, Any]]) -> str:
+    return "; ".join(
+        f"{b.get('service_type') or 'appointment'} on "
+        f"{from_db_timestamp(b['scheduled_at']).strftime('%b %d at %I:%M %p')}"
+        for b in bookings
+    )
+
+
 async def cancel_appointment(
     tenant_id: str,
     contact_id: str,
@@ -375,22 +413,19 @@ async def cancel_appointment(
     # guessed/leaked booking UUID from another patient can't match here.
     supabase = get_supabase_client()
 
-    if booking_id:
-        _bid_lookup = booking_id
-        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
-            "id", _bid_lookup
-        ).eq("tenant_id", tenant_id).eq("contact_id", contact_id).maybe_single().execute())
-    else:
-        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
-            "tenant_id", tenant_id
-        ).eq("contact_id", contact_id).eq(
-            "status", "pending"
-        ).order("scheduled_at", desc=True).limit(1).maybe_single().execute())
-
-    if not booking.data:
+    resolved = await _resolve_pending_booking(supabase, tenant_id, contact_id, booking_id)
+    if "ambiguous" in resolved:
+        options = _describe_bookings_for_clarification(resolved["ambiguous"])
+        return {
+            "success": False,
+            "error": "multiple_bookings",
+            "message": f"This patient has {len(resolved['ambiguous'])} upcoming appointments — ask which one they mean, then call this again with that appointment's booking_id. Options: {options}",
+        }
+    booking_data = resolved.get("booking")
+    if not booking_data:
         return {"success": False, "error": "Booking not found"}
 
-    scheduled = from_db_timestamp(booking.data["scheduled_at"])
+    scheduled = from_db_timestamp(booking_data["scheduled_at"])
     if scheduled - now_local() < timedelta(hours=2):
         return {
             "success": False,
@@ -398,13 +433,13 @@ async def cancel_appointment(
             "message": "For cancellations this close to the appointment, please call us directly.",
         }
 
-    _bid = booking.data["id"]
+    _bid = booking_data["id"]
     update_data: Dict[str, Any] = {"status": "cancelled"}
     if custom_fields:
-        update_data["details"] = {**(booking.data.get("details") or {}), **custom_fields}
+        update_data["details"] = {**(booking_data.get("details") or {}), **custom_fields}
     await _db(lambda: supabase.table("bookings").update(update_data).eq("id", _bid).execute())
 
-    calendar_event_id = booking.data.get("calendar_event_id")
+    calendar_event_id = booking_data.get("calendar_event_id")
     if calendar_event_id:
         gcal = await get_google_calendar(tenant_id)
         if gcal:
@@ -489,26 +524,23 @@ async def reschedule_appointment(
         if not validation["valid"]:
             return {"success": False, "error": "invalid_time", "message": validation["error"]}
 
-    if booking_id:
-        _bid_lookup = booking_id
-        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
-            "id", _bid_lookup
-        ).eq("tenant_id", tenant_id).eq("contact_id", contact_id).maybe_single().execute())
-    else:
-        booking = await _db_optional(lambda: supabase.table("bookings").select("*").eq(
-            "tenant_id", tenant_id
-        ).eq("contact_id", contact_id).eq(
-            "status", "pending"
-        ).order("scheduled_at", desc=True).limit(1).maybe_single().execute())
-
-    if not booking.data:
+    resolved = await _resolve_pending_booking(supabase, tenant_id, contact_id, booking_id)
+    if "ambiguous" in resolved:
+        options = _describe_bookings_for_clarification(resolved["ambiguous"])
+        return {
+            "success": False,
+            "error": "multiple_bookings",
+            "message": f"This patient has {len(resolved['ambiguous'])} upcoming appointments — ask which one they mean, then call this again with that appointment's booking_id. Options: {options}",
+        }
+    booking_data = resolved.get("booking")
+    if not booking_data:
         return {
             "success": False, "error": "not_found",
             "message": "I couldn't find that appointment to reschedule. Could you confirm the details?",
         }
 
-    old_scheduled_at = booking.data["scheduled_at"]
-    _bid = booking.data["id"]
+    old_scheduled_at = booking_data["scheduled_at"]
+    _bid = booking_data["id"]
 
     # Same pre-flight conflict window book_appointment/check_slots use --
     # without this, rescheduling straight into an already-booked slot would
@@ -534,7 +566,7 @@ async def reschedule_appointment(
 
     update_data: Dict[str, Any] = {"scheduled_at": to_db_timestamp(new_scheduled_at)}
     if custom_fields:
-        update_data["details"] = {**(booking.data.get("details") or {}), **custom_fields}
+        update_data["details"] = {**(booking_data.get("details") or {}), **custom_fields}
     try:
         await _db(lambda: supabase.table("bookings").update(update_data).eq("id", _bid).execute())
     except Exception as e:
@@ -548,7 +580,7 @@ async def reschedule_appointment(
             }
         raise
 
-    calendar_event_id = booking.data.get("calendar_event_id")
+    calendar_event_id = booking_data.get("calendar_event_id")
     if calendar_event_id:
         gcal = await get_google_calendar(tenant_id)
         if gcal:
@@ -876,7 +908,7 @@ TOOL_DEFINITIONS = [
                     # of omitting this optional key entirely -- string-only
                     # rejected that outright instead of treating it the same
                     # as "not given."
-                    "booking_id": {"type": ["string", "null"], "description": "Booking ID, if already known from earlier in this conversation (optional — omit or send null to cancel the current patient's most recent pending booking)"},
+                    "booking_id": {"type": ["string", "null"], "description": "Booking ID, if already known from earlier in this conversation. Optional if the patient only has one upcoming appointment — omit or send null and it resolves automatically. If they have more than one, this call returns a list of their appointments instead of acting; ask the patient which one they mean, then call this again with that booking_id."},
                 },
                 "required": [],
             },
@@ -893,7 +925,7 @@ TOOL_DEFINITIONS = [
                     "new_date": {"type": "string", "description": "New appointment date in YYYY-MM-DD format"},
                     "new_time": {"type": "string", "description": "New appointment time in HH:MM 24-hour format"},
                     # Same null-tolerant fix as cancel_appointment above.
-                    "booking_id": {"type": ["string", "null"], "description": "Booking ID, if already known from earlier in this conversation (optional — omit or send null to reschedule the current patient's most recent pending booking)"},
+                    "booking_id": {"type": ["string", "null"], "description": "Booking ID, if already known from earlier in this conversation. Optional if the patient only has one upcoming appointment — omit or send null and it resolves automatically. If they have more than one, this call returns a list of their appointments instead of acting; ask the patient which one they mean, then call this again with that booking_id."},
                 },
                 "required": ["new_date", "new_time"],
             },
