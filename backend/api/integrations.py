@@ -241,8 +241,42 @@ async def google_select_sheet(req: SelectSheetRequest):
     await _db(lambda: supabase.table("tenant_settings").update(
         {"google_sheets_id": spreadsheet_id, "google_sheets_tab": tab_name}
     ).eq("tenant_id", req.tenant_id).execute())
-
     return {"success": True, "spreadsheet_id": spreadsheet_id, "title": info["title"], "tab_name": tab_name}
+
+
+@router.get("/google/sheet-mapping", dependencies=[Depends(require_internal_secret)])
+async def google_sheet_mapping(tenant_id: str):
+    """
+    Read-only preview of how the clinic's currently-connected spreadsheet's
+    columns map to what this system actually writes -- callable any time
+    (not just right after connecting), so a clinic can re-check after
+    adding a new custom Data Field, or after renaming a column themselves.
+    Never writes anything.
+    """
+    from shared.google_integrations import get_valid_access_token, get_tab_headers, describe_column_mapping
+    from shared.tenant_config import get_supabase_client, _db_optional
+
+    supabase = get_supabase_client()
+    settings_res = await _db_optional(lambda: supabase.table("tenant_settings").select(
+        "google_sheets_id, google_sheets_tab, custom_booking_fields"
+    ).eq("tenant_id", tenant_id).maybe_single().execute())
+    settings = settings_res.data or {}
+    spreadsheet_id = settings.get("google_sheets_id")
+    tab_name = settings.get("google_sheets_tab") or "Patients"
+    if not spreadsheet_id:
+        raise HTTPException(status_code=400, detail="No spreadsheet connected yet")
+
+    try:
+        access_token = await get_valid_access_token(tenant_id)
+        headers = await get_tab_headers(spreadsheet_id, tab_name, access_token)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not headers:
+        raise HTTPException(status_code=400, detail=f"The '{tab_name}' tab has no header row yet")
+
+    mapping = describe_column_mapping(headers, settings.get("custom_booking_fields") or [])
+    return {"tab_name": tab_name, **mapping}
 
 
 @router.post("/google/sync-booking-sheet", dependencies=[Depends(require_internal_secret)])

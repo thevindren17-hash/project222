@@ -761,13 +761,10 @@ async def get_spreadsheet_info(spreadsheet_id: str, access_token: str) -> Dict[s
     }
 
 
-async def check_tab_has_headers(spreadsheet_id: str, tab_name: str, access_token: str) -> bool:
-    """
-    We never create or rewrite a clinic's own header row (no fixed layout
-    to impose) — just confirm one already exists before saving the
-    connection, so the error surfaces now instead of on the first silent
-    failed sync later.
-    """
+async def get_tab_headers(spreadsheet_id: str, tab_name: str, access_token: str) -> List[str]:
+    """Read row 1 of a tab -- shared by check_tab_has_headers and the
+    column-mapping preview (describe_column_mapping) so both always see
+    the exact same header list."""
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(
             f"{SHEETS_API}/{spreadsheet_id}/values/{tab_name}!1:1",
@@ -776,7 +773,79 @@ async def check_tab_has_headers(spreadsheet_id: str, tab_name: str, access_token
     if r.status_code != 200:
         raise RuntimeError(f"Could not read the '{tab_name}' tab ({r.status_code}): {r.text[:200]}")
     rows = r.json().get("values") or []
-    return bool(rows and rows[0])
+    return rows[0] if rows else []
+
+
+async def check_tab_has_headers(spreadsheet_id: str, tab_name: str, access_token: str) -> bool:
+    """
+    We never create or rewrite a clinic's own header row (no fixed layout
+    to impose) — just confirm one already exists before saving the
+    connection, so the error surfaces now instead of on the first silent
+    failed sync later.
+    """
+    headers = await get_tab_headers(spreadsheet_id, tab_name, access_token)
+    return bool(headers)
+
+
+# Friendly names for the built-in fields, shown in the Column Mapping
+# preview -- _CANONICAL_FIELD_ALIASES' keys are internal, not something a
+# clinic owner should have to read directly.
+_CANONICAL_FIELD_LABELS: Dict[str, str] = {
+    "timestamp": "Log Timestamp",
+    "event": "Status",
+    "patient_name": "Patient Name",
+    "phone": "Phone",
+    "source": "Source",
+    "service": "Service",
+    "notes": "Notes",
+    "appointment_time": "Appointment Date/Time",
+}
+
+# These three are what update_status_by_match needs to find the right row
+# on a cancel/reschedule -- missing any one of them means updates silently
+# fall back to appending a new row instead of updating in place, so they
+# get a stronger warning in the mapping preview than a merely-unmatched
+# "Notes" or "Source" column would.
+_CRITICAL_FOR_UPDATES = {"phone", "appointment_time", "event"}
+
+
+def describe_column_mapping(headers: List[str], custom_fields: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Read-only preview of how a clinic's own spreadsheet columns map to what
+    this system actually writes -- for the "Column Mapping" panel in
+    Settings -> Google Integration, never used for an actual write. Checks
+    both directions:
+      - "columns": each of the clinic's own headers, and what it matched
+        (or None if nothing did -- that column will always be left blank).
+      - "unmatched_fields": built-in fields and this tenant's own custom
+        Data Fields that have NO matching column at all -- so a clinic can
+        see "we collect Insurance Provider but your sheet has nowhere to
+        put it" instead of just noticing the column is empty later.
+    """
+    custom_by_key = {f["key"]: (f.get("label") or f["key"]) for f in custom_fields if f.get("key")}
+    # _match_header_to_field only checks key presence, not the values --
+    # any placeholder works here since nothing is actually being written.
+    available = {k: k for k in _CANONICAL_FIELD_ALIASES}
+    available.update({k: k for k in custom_by_key})
+
+    columns = []
+    matched_fields: set = set()
+    for header in headers:
+        field_key = _match_header_to_field(header, available)
+        label = None
+        if field_key:
+            label = _CANONICAL_FIELD_LABELS.get(field_key) or custom_by_key.get(field_key) or field_key
+            matched_fields.add(field_key)
+        columns.append({"header": header, "matched_field": field_key, "matched_label": label})
+
+    all_field_labels = {**_CANONICAL_FIELD_LABELS, **custom_by_key}
+    unmatched_fields = [
+        {"field": key, "label": label, "critical": key in _CRITICAL_FOR_UPDATES}
+        for key, label in all_field_labels.items()
+        if key not in matched_fields
+    ]
+
+    return {"columns": columns, "unmatched_fields": unmatched_fields}
 
 
 # ── Per-tenant instance getters ────────────────────────────────────────────────

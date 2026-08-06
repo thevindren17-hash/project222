@@ -134,6 +134,29 @@ export default function GoogleIntegrationPage() {
 
   const [sheetLink, setSheetLink] = useState('')
 
+  // Read-only preview of how the connected sheet's columns map to what the
+  // sync actually writes -- both directions (their columns with no match,
+  // and fields we collect with nowhere to go). Manually triggered so it's
+  // not an extra API call on every page load, and re-triggered right after
+  // a successful connect/select-sheet below so a mismatch is visible
+  // immediately instead of discovered later as a silently-missing update.
+  const mappingQuery = useQuery({
+    queryKey: ['sheet-mapping', tenant?.id],
+    queryFn: async () => {
+      if (!tenant) return null
+      const res = await fetch(`/api/integrations/google/sheet-mapping?tenant_id=${tenant.id}`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || data.error || 'Could not check column mapping')
+      return data as {
+        tab_name: string
+        columns: { header: string; matched_field: string | null; matched_label: string | null }[]
+        unmatched_fields: { field: string; label: string; critical: boolean }[]
+      }
+    },
+    enabled: false,
+    retry: false,
+  })
+
   const selectSheetMutation = useMutation({
     mutationFn: async () => {
       if (!tenant) throw new Error('No tenant')
@@ -156,6 +179,7 @@ export default function GoogleIntegrationPage() {
       toast.success(`Now using the "${data.tab_name}" tab in "${data.title}"`)
       setSheetLink('')
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'google'] })
+      mappingQuery.refetch()
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -368,6 +392,96 @@ export default function GoogleIntegrationPage() {
               </Button>
             </div>
           </CardContent>
+        </Card>
+      )}
+
+      {/* Step 4: verify the column mapping actually worked */}
+      {isConnected && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Sheet className="h-5 w-5 text-primary" />
+                <div>
+                  <CardTitle>Column Mapping</CardTitle>
+                  <CardDescription>
+                    Every clinic names their columns differently — see exactly which of yours the sync
+                    actually fills in, and which fields you collect have nowhere to go, so a mismatched
+                    name never fails silently. Re-check any time, e.g. after adding a new Data Field.
+                  </CardDescription>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => mappingQuery.refetch()}
+                disabled={mappingQuery.isFetching}
+              >
+                {mappingQuery.isFetching
+                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  : <RefreshCw className="mr-2 h-4 w-4" />}
+                Check Mapping
+              </Button>
+            </div>
+          </CardHeader>
+          {(mappingQuery.data || mappingQuery.error) && (
+            <CardContent className="space-y-4">
+              {mappingQuery.error ? (
+                <p className="text-sm text-destructive">{(mappingQuery.error as Error).message}</p>
+              ) : mappingQuery.data ? (
+                <>
+                  <div className="rounded-md border overflow-hidden overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40">
+                        <tr>
+                          <th className="text-left font-medium px-3 py-2">Your column ({mappingQuery.data.tab_name})</th>
+                          <th className="text-left font-medium px-3 py-2">Fills in</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mappingQuery.data.columns.map((c, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{c.header}</td>
+                            <td className="px-3 py-2">
+                              {c.matched_label ? (
+                                <Badge variant="default" className="gap-1">
+                                  <CheckCircle2 className="h-3.5 w-3.5" />{c.matched_label}
+                                </Badge>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">No match — always left blank</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {mappingQuery.data.unmatched_fields.length > 0 ? (
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 space-y-2">
+                      <p className="text-sm font-medium">Fields you collect with no matching column</p>
+                      <ul className="space-y-1.5">
+                        {mappingQuery.data.unmatched_fields.map((f) => (
+                          <li key={f.field} className="text-sm flex items-start gap-2">
+                            <XCircle className={`h-3.5 w-3.5 shrink-0 mt-0.5 ${f.critical ? 'text-destructive' : 'text-muted-foreground'}`} />
+                            <span>
+                              <span className="font-medium">{f.label}</span>
+                              {f.critical
+                                ? <span className="text-destructive"> — needed to update the right row when a patient cancels or reschedules; without it, those show up as new rows instead</span>
+                                : <span className="text-muted-foreground"> — add a column named this (or similar) to capture it</span>}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Everything you collect has a matching column.</p>
+                  )}
+                </>
+              ) : null}
+            </CardContent>
+          )}
         </Card>
       )}
 
