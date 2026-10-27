@@ -767,8 +767,13 @@ async def send_campaign_followups():
                 await _stop(row_id, "batch_deleted")
                 continue
 
+            # followup_schedule_days[i] = days to wait after message i before
+            # sending message i+1 -- its length IS the number of follow-ups,
+            # letting each step have its own gap (e.g. 1 day, then 4 days)
+            # instead of one fixed interval repeated for every step.
+            schedule = batch.get("followup_schedule_days") or []
             next_sequence = (row.get("followup_sequence") or 0) + 1
-            if next_sequence > (batch.get("max_followups") or 0):
+            if next_sequence > len(schedule):
                 await _stop(row_id, "completed")
                 continue
 
@@ -874,9 +879,12 @@ async def send_campaign_followups():
                 # dropping this contact from the sequence.
                 continue
 
-            is_last = next_sequence >= (batch.get("max_followups") or 0)
+            # schedule[next_sequence] is the gap *after* the message we just
+            # sent (next_sequence, 1-based) before the one after that --
+            # schedule[next_sequence - 1] was already consumed to get here.
+            is_last = next_sequence >= len(schedule)
             new_next_due = None if is_last else (
-                datetime.now() + timedelta(days=batch.get("followup_interval_days") or 3)
+                datetime.now() + timedelta(days=schedule[next_sequence])
             ).isoformat()
 
             _new_row = {

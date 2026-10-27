@@ -23,7 +23,14 @@ interface CsvResult {
   skipped: number
   failed: number
   details?: CsvResultDetail[]
-  followup?: { interval_days: number; max_followups: number } | null
+  followup?: { schedule_days: number[] } | null
+}
+
+/** "1 day later, then 4 days later, then 7 days later" — schedule_days[i] is the gap after message i. */
+export function describeSchedule(days: number[]): string {
+  return days
+    .map((d, i) => `${i === 0 ? '' : 'then '}${d} day${d === 1 ? '' : 's'} later`)
+    .join(', ')
 }
 
 function detectCol(headers: string[], candidates: string[]): string {
@@ -45,8 +52,7 @@ export default function CsvCampaignUploader({
   templateId,
   batchName,
   followupTemplateId,
-  followupIntervalDays,
-  maxFollowups,
+  followupScheduleDays,
 }: {
   type: CampaignType
   tenantId: string
@@ -60,10 +66,8 @@ export default function CsvCampaignUploader({
   batchName?: string
   /** Template to use for automatic follow-ups -- defaults to templateId on the backend when omitted. */
   followupTemplateId?: string
-  /** Days to wait before each automatic follow-up. Ignored unless maxFollowups > 0. */
-  followupIntervalDays?: number
-  /** How many automatic follow-ups to send to non-responders. 0 (default) = one-off send, no follow-ups. */
-  maxFollowups?: number
+  /** Days to wait after message i before sending follow-up i+1 (index 0 = gap after the initial send). Omit/empty = one-off send, no follow-ups. */
+  followupScheduleDays?: number[]
 }) {
   const [csvHeaders, setCsvHeaders] = useState<string[]>([])
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([])
@@ -162,8 +166,7 @@ export default function CsvCampaignUploader({
           template_id: templateId,
           batch_name: batchName,
           followup_template_id: followupTemplateId,
-          followup_interval_days: followupIntervalDays,
-          max_followups: maxFollowups,
+          followup_schedule_days: followupScheduleDays,
         }),
       })
       const data = await res.json()
@@ -302,9 +305,7 @@ export default function CsvCampaignUploader({
         <div className="space-y-3">
           {result.followup && (
             <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-xs text-foreground">
-              Follow-up messages are scheduled: up to {result.followup.max_followups} more
-              {result.followup.max_followups === 1 ? ' message' : ' messages'}, every {result.followup.interval_days}{' '}
-              day{result.followup.interval_days === 1 ? '' : 's'}, sent automatically to anyone who hasn&apos;t replied yet.
+              Follow-ups scheduled for anyone who hasn&apos;t replied yet: {describeSchedule(result.followup.schedule_days)}.
             </div>
           )}
           <div className="grid grid-cols-3 gap-3 text-center">

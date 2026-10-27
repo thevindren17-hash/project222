@@ -13,7 +13,7 @@ import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { Loader2, Plus, Trash2, ImagePlus, Send, MessageSquareText, AlertCircle, Download } from 'lucide-react'
-import CsvCampaignUploader, { ExtraColumn } from '@/components/campaigns/csv-campaign-uploader'
+import CsvCampaignUploader, { ExtraColumn, describeSchedule } from '@/components/campaigns/csv-campaign-uploader'
 
 type TemplatePurpose = 'marketing' | 'reminder' | 'feedback'
 
@@ -630,8 +630,7 @@ interface FollowupBatch {
   name: string | null
   template_name: string | null
   followup_template_name: string | null
-  followup_interval_days: number
-  max_followups: number
+  followup_schedule_days: number[]
   contact_count: number
   pending_followups: number
   issue_count: number
@@ -689,7 +688,7 @@ function ActiveFollowupBatches({ tenantId }: { tenantId: string }) {
               <p className="text-sm font-medium">{b.name || b.template_name || 'Patient record campaign'}</p>
               <p className="text-xs text-muted-foreground">
                 {b.pending_followups} of {b.contact_count} contacts still waiting on a follow-up ·
-                {' '}up to {b.max_followups} message{b.max_followups === 1 ? '' : 's'} every {b.followup_interval_days} day{b.followup_interval_days === 1 ? '' : 's'}
+                {' '}schedule: {describeSchedule(b.followup_schedule_days)}
                 {b.followup_template_name ? ` · follow-up uses "${b.followup_template_name}"` : ''}
               </p>
               {b.issue_count > 0 && (
@@ -725,8 +724,10 @@ function SendCampaignSection({
 }) {
   const [open, setOpen] = useState(false)
   const [followupsEnabled, setFollowupsEnabled] = useState(false)
-  const [followupDays, setFollowupDays] = useState(3)
-  const [maxFollowups, setMaxFollowups] = useState(2)
+  // scheduleDays[i] = days to wait after message i before sending follow-up
+  // i+1 -- lets each step have its own gap (e.g. 1 day, then 4 days) instead
+  // of one fixed interval repeated for every follow-up.
+  const [scheduleDays, setScheduleDays] = useState<number[]>([3])
   const [followupTemplateId, setFollowupTemplateId] = useState<string>('')
   const extraColumns: ExtraColumn[] = template.variables.map((v) => ({
     key: v, label: v, candidates: [v],
@@ -757,23 +758,39 @@ function SendCampaignSection({
 
             {followupsEnabled && (
               <div className="space-y-3 pt-1">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Wait this many days between messages</Label>
-                    <Input
-                      type="number" min={1} max={90} value={followupDays}
-                      onChange={(e) => setFollowupDays(Math.min(90, Math.max(1, parseInt(e.target.value, 10) || 1)))}
-                      className="text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Number of follow-ups</Label>
-                    <Input
-                      type="number" min={1} max={10} value={maxFollowups}
-                      onChange={(e) => setMaxFollowups(Math.min(10, Math.max(1, parseInt(e.target.value, 10) || 1)))}
-                      className="text-sm"
-                    />
-                  </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Follow-up schedule — each step can wait a different number of days</Label>
+                  {scheduleDays.map((days, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground w-44 shrink-0">
+                        Follow-up {i + 1}: wait this many days after {i === 0 ? 'the first message' : `follow-up ${i}`}
+                      </span>
+                      <Input
+                        type="number" min={1} max={90} value={days}
+                        onChange={(e) => {
+                          const v = Math.min(90, Math.max(1, parseInt(e.target.value, 10) || 1))
+                          setScheduleDays((prev) => prev.map((d, j) => (j === i ? v : d)))
+                        }}
+                        className="text-sm w-20"
+                      />
+                      {scheduleDays.length > 1 && (
+                        <Button
+                          size="icon" variant="ghost" className="h-8 w-8 shrink-0"
+                          onClick={() => setScheduleDays((prev) => prev.filter((_, j) => j !== i))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  {scheduleDays.length < 10 && (
+                    <Button
+                      size="sm" variant="outline" className="gap-1.5"
+                      onClick={() => setScheduleDays((prev) => [...prev, prev[prev.length - 1] || 3])}
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Add Another Follow-Up
+                    </Button>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs">Follow-up message <span className="text-muted-foreground font-normal">(optional — reuses this template if left blank)</span></Label>
@@ -787,7 +804,7 @@ function SendCampaignSection({
                   </Select>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Stops automatically for anyone who replies, opts out, or has had {maxFollowups} follow-up{maxFollowups === 1 ? '' : 's'} sent.
+                  Stops automatically for anyone who replies, books, opts out, or has had all {scheduleDays.length} follow-up{scheduleDays.length === 1 ? '' : 's'} sent.
                 </p>
               </div>
             )}
@@ -800,8 +817,7 @@ function SendCampaignSection({
             messageTemplate={template.body_text}
             templateId={template.id}
             extraColumns={extraColumns}
-            maxFollowups={followupsEnabled ? maxFollowups : 0}
-            followupIntervalDays={followupsEnabled ? followupDays : undefined}
+            followupScheduleDays={followupsEnabled ? scheduleDays : undefined}
             followupTemplateId={followupsEnabled ? (followupTemplateId || undefined) : undefined}
           />
         </div>

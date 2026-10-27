@@ -41,15 +41,17 @@ export async function GET(req: NextRequest) {
   if (!tenantId) return NextResponse.json({ error: 'tenant_id is required' }, { status: 400 })
   if (!await verifyTenantAccess(tenantId)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
 
-  const { data: batches, error } = await supabaseAdmin
+  const { data: allBatches, error } = await supabaseAdmin
     .from('campaign_batches')
-    .select('id, name, template_id, followup_template_id, followup_interval_days, max_followups, contact_count, created_at')
+    .select('id, name, template_id, followup_template_id, followup_schedule_days, contact_count, created_at')
     .eq('tenant_id', tenantId)
-    .gt('max_followups', 0)
     .order('created_at', { ascending: false })
     .limit(20)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!batches?.length) return NextResponse.json([])
+  // Filtered in JS rather than with a Postgrest array-equality query param --
+  // simpler and avoids any array-literal encoding edge cases for '{}'.
+  const batches = (allBatches || []).filter((b) => (b.followup_schedule_days || []).length > 0)
+  if (!batches.length) return NextResponse.json([])
 
   const templateIds = Array.from(new Set(batches.flatMap((b) => [b.template_id, b.followup_template_id].filter(Boolean))))
   const { data: templates } = templateIds.length

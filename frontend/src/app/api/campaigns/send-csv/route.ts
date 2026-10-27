@@ -132,7 +132,7 @@ async function sendOneCampaignMessage(params: {
   templateName?: string | null
   templateLanguage?: string
   marketingTemplate?: MarketingTemplateInfo | null
-  followupBatch?: { id: string; interval_days: number; max_followups: number } | null
+  followupBatch?: { id: string; schedule_days: number[] } | null
 }): Promise<SendOutcome> {
   const {
     tenant_id, type, contact, phone_number_id, access_token, clinic_name,
@@ -258,7 +258,7 @@ async function sendOneCampaignMessage(params: {
     // marketing sends also store the exact personalized text in `context`
     // so a later reply can be recognized as "responding to this campaign"
     // (backend/api/campaigns.py get_pending_campaign_context()).
-    const hasFollowups = !!followupBatch && followupBatch.max_followups > 0
+    const hasFollowups = !!followupBatch && followupBatch.schedule_days.length > 0
     await supabaseAdmin.from('campaigns').insert({
       tenant_id,
       contact_id,
@@ -273,7 +273,7 @@ async function sendOneCampaignMessage(params: {
       ...(type === 'recall' || type === 'marketing' ? { context: { message, fields: contact } } : {}),
       ...(followupBatch ? { batch_id: followupBatch.id, followup_sequence: 0 } : {}),
       ...(hasFollowups
-        ? { next_followup_at: new Date(Date.now() + followupBatch!.interval_days * 24 * 60 * 60 * 1000).toISOString() }
+        ? { next_followup_at: new Date(Date.now() + followupBatch!.schedule_days[0] * 24 * 60 * 60 * 1000).toISOString() }
         : {}),
     })
 
@@ -328,7 +328,7 @@ export async function POST(req: NextRequest) {
   try {
     const {
       tenant_id, type, contacts, message_template, interval_months, template_id,
-      batch_name, followup_template_id, followup_interval_days, max_followups,
+      batch_name, followup_template_id, followup_schedule_days,
     } = await req.json() as {
       tenant_id: string
       type: CampaignType
@@ -338,8 +338,8 @@ export async function POST(req: NextRequest) {
       template_id?: string
       batch_name?: string
       followup_template_id?: string
-      followup_interval_days?: number
-      max_followups?: number
+      /** Days to wait after message i before sending follow-up i+1 (index 0 = gap after the initial send). Array length = number of follow-ups. */
+      followup_schedule_days?: number[]
     }
 
     if (!tenant_id || !type || !Array.isArray(contacts) || contacts.length === 0) {
@@ -429,10 +429,14 @@ export async function POST(req: NextRequest) {
     // campaign" flow) — recall already has its own periodic re-engagement
     // via send_recall_messages() based on dormancy, so stacking a second
     // follow-up schedule on top of that would double-send.
-    let followupBatch: { id: string; interval_days: number; max_followups: number } | null = null
-    if (type === 'marketing' && max_followups && max_followups > 0) {
-      const intervalDays = Math.min(90, Math.max(1, Math.round(followup_interval_days || 3)))
-      const maxFollowups = Math.min(10, Math.max(1, Math.round(max_followups)))
+    let followupBatch: { id: string; schedule_days: number[] } | null = null
+    if (type === 'marketing' && followup_schedule_days?.length) {
+      // Each step gets its own gap (e.g. 1 day, then 4 days) instead of one
+      // fixed interval repeated for every follow-up — clamped the same way
+      // a single interval used to be, just per-element.
+      const scheduleDays = followup_schedule_days
+        .slice(0, 10)
+        .map((d) => Math.min(90, Math.max(1, Math.round(d))))
 
       let followupTemplateIdToStore: string | null = null
       if (followup_template_id && followup_template_id !== template_id) {
@@ -458,8 +462,7 @@ export async function POST(req: NextRequest) {
           name: batch_name?.trim() || null,
           template_id: template_id || null,
           followup_template_id: followupTemplateIdToStore,
-          followup_interval_days: intervalDays,
-          max_followups: maxFollowups,
+          followup_schedule_days: scheduleDays,
           contact_count: contacts.length,
         })
         .select('id')
@@ -467,7 +470,7 @@ export async function POST(req: NextRequest) {
       if (batchErr || !batch) {
         return NextResponse.json({ error: batchErr?.message || 'Could not set up follow-up schedule' }, { status: 500 })
       }
-      followupBatch = { id: batch.id, interval_days: intervalDays, max_followups: maxFollowups }
+      followupBatch = { id: batch.id, schedule_days: scheduleDays }
     }
 
     const templateNameByType: Record<CampaignType, string | null> = {
@@ -524,7 +527,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ...results,
       details,
-      followup: followupBatch ? { interval_days: followupBatch.interval_days, max_followups: followupBatch.max_followups } : null,
+      followup: followupBatch ? { schedule_days: followupBatch.schedule_days } : null,
     })
   } catch (e) {
     console.error('send-csv error:', e)
