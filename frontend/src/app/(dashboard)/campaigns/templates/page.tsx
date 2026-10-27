@@ -337,6 +337,8 @@ export default function MarketingTemplatesPage() {
         </div>
       )}
 
+      {isConnected && <ActiveFollowupBatches tenantId={tenant?.id || ''} />}
+
       {isConnected && (
         <Card>
           <CardHeader>
@@ -456,7 +458,12 @@ export default function MarketingTemplatesPage() {
             )}
 
             {tpl.status === 'approved' && (
-              <SendCampaignSection template={tpl} tenantId={tenant?.id || ''} isConnected={isConnected} />
+              <SendCampaignSection
+                template={tpl}
+                tenantId={tenant?.id || ''}
+                isConnected={isConnected}
+                approvedMarketingTemplates={(templates || []).filter((t) => t.status === 'approved' && t.purpose === 'marketing')}
+              />
             )}
 
             {(tpl.status === 'paused' || tpl.status === 'disabled') && (
@@ -618,8 +625,109 @@ export default function MarketingTemplatesPage() {
   )
 }
 
-function SendCampaignSection({ template, tenantId, isConnected }: { template: WhatsappTemplate; tenantId: string; isConnected: boolean }) {
+interface FollowupBatch {
+  id: string
+  name: string | null
+  template_name: string | null
+  followup_template_name: string | null
+  followup_interval_days: number
+  max_followups: number
+  contact_count: number
+  pending_followups: number
+  issue_count: number
+  created_at: string
+}
+
+function ActiveFollowupBatches({ tenantId }: { tenantId: string }) {
+  const queryClient = useQueryClient()
+  const { data: batches } = useQuery({
+    queryKey: ['campaign-batches', tenantId],
+    queryFn: async () => {
+      if (!tenantId) return []
+      const res = await fetch(`/api/campaigns/batches?tenant_id=${tenantId}`)
+      const data = await res.json()
+      return (Array.isArray(data) ? data : []) as FollowupBatch[]
+    },
+    enabled: !!tenantId,
+    refetchInterval: 60000,
+  })
+
+  const stopMutation = useMutation({
+    mutationFn: async (batchId: string) => {
+      const res = await fetch('/api/campaigns/batches', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenantId, batch_id: batchId }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Could not stop follow-ups')
+    },
+    onSuccess: () => {
+      toast.success('Remaining follow-ups stopped for this batch')
+      queryClient.invalidateQueries({ queryKey: ['campaign-batches', tenantId] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  // Kept visible even once pending_followups hits 0 when it stopped early
+  // for a reason the clinic can actually fix (deleted template, etc.) --
+  // otherwise a batch that silently broke for everyone in it would just
+  // vanish from view instead of surfacing the problem.
+  const active = (batches || []).filter((b) => b.pending_followups > 0 || b.issue_count > 0)
+  if (!active.length) return null
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Active Follow-Up Campaigns</CardTitle>
+        <CardDescription>Patient record campaigns still sending automatic follow-ups to non-responders</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {active.map((b) => (
+          <div key={b.id} className="flex items-center justify-between gap-3 rounded-md border p-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">{b.name || b.template_name || 'Patient record campaign'}</p>
+              <p className="text-xs text-muted-foreground">
+                {b.pending_followups} of {b.contact_count} contacts still waiting on a follow-up ·
+                {' '}up to {b.max_followups} message{b.max_followups === 1 ? '' : 's'} every {b.followup_interval_days} day{b.followup_interval_days === 1 ? '' : 's'}
+                {b.followup_template_name ? ` · follow-up uses "${b.followup_template_name}"` : ''}
+              </p>
+              {b.issue_count > 0 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  {b.issue_count} contact{b.issue_count === 1 ? '' : 's'} stopped early due to a setup problem (e.g. a deleted
+                  template or contact) — check this batch&apos;s template still exists and is approved.
+                </p>
+              )}
+            </div>
+            {b.pending_followups > 0 && (
+              <Button
+                size="sm" variant="outline"
+                onClick={() => stopMutation.mutate(b.id)}
+                disabled={stopMutation.isPending}
+              >
+                Stop Follow-Ups
+              </Button>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function SendCampaignSection({
+  template, tenantId, isConnected, approvedMarketingTemplates,
+}: {
+  template: WhatsappTemplate
+  tenantId: string
+  isConnected: boolean
+  approvedMarketingTemplates: WhatsappTemplate[]
+}) {
   const [open, setOpen] = useState(false)
+  const [followupsEnabled, setFollowupsEnabled] = useState(false)
+  const [followupDays, setFollowupDays] = useState(3)
+  const [maxFollowups, setMaxFollowups] = useState(2)
+  const [followupTemplateId, setFollowupTemplateId] = useState<string>('')
   const extraColumns: ExtraColumn[] = template.variables.map((v) => ({
     key: v, label: v, candidates: [v],
   }))
@@ -631,10 +739,60 @@ function SendCampaignSection({ template, tenantId, isConnected }: { template: Wh
           <Send className="h-3.5 w-3.5" /> Send Campaign From Spreadsheet
         </Button>
       ) : (
-        <div className="space-y-3 pt-2 border-t">
-          <p className="text-xs text-muted-foreground">
-            Upload a spreadsheet with a column for each variable below — map each one, then send.
+        <div className="space-y-4 pt-2 border-t">
+          <p className="text-xs text-muted-foreground pt-2">
+            Upload a spreadsheet with a column for each variable below — map each one, then send to up to 100 patients at once.
           </p>
+
+          <div className="rounded-md border p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-sm font-medium">Automatically follow up with non-responders</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Patients who don&apos;t reply get nudged again, on your own schedule — no need to re-upload the spreadsheet yourself.
+                </p>
+              </div>
+              <Switch checked={followupsEnabled} onCheckedChange={setFollowupsEnabled} />
+            </div>
+
+            {followupsEnabled && (
+              <div className="space-y-3 pt-1">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Wait this many days between messages</Label>
+                    <Input
+                      type="number" min={1} max={90} value={followupDays}
+                      onChange={(e) => setFollowupDays(Math.min(90, Math.max(1, parseInt(e.target.value, 10) || 1)))}
+                      className="text-sm"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Number of follow-ups</Label>
+                    <Input
+                      type="number" min={1} max={10} value={maxFollowups}
+                      onChange={(e) => setMaxFollowups(Math.min(10, Math.max(1, parseInt(e.target.value, 10) || 1)))}
+                      className="text-sm"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Follow-up message <span className="text-muted-foreground font-normal">(optional — reuses this template if left blank)</span></Label>
+                  <Select value={followupTemplateId} onValueChange={(v) => setFollowupTemplateId(v || '')}>
+                    <SelectTrigger className="w-full"><SelectValue placeholder={`Same as "${template.name}"`} /></SelectTrigger>
+                    <SelectContent>
+                      {approvedMarketingTemplates.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Stops automatically for anyone who replies, opts out, or has had {maxFollowups} follow-up{maxFollowups === 1 ? '' : 's'} sent.
+                </p>
+              </div>
+            )}
+          </div>
+
           <CsvCampaignUploader
             type="marketing"
             tenantId={tenantId}
@@ -642,6 +800,9 @@ function SendCampaignSection({ template, tenantId, isConnected }: { template: Wh
             messageTemplate={template.body_text}
             templateId={template.id}
             extraColumns={extraColumns}
+            maxFollowups={followupsEnabled ? maxFollowups : 0}
+            followupIntervalDays={followupsEnabled ? followupDays : undefined}
+            followupTemplateId={followupsEnabled ? (followupTemplateId || undefined) : undefined}
           />
         </div>
       )}

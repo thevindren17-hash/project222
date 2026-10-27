@@ -18,7 +18,13 @@ export interface ExtraColumn {
 }
 
 interface CsvResultDetail { name: string; phone: string; status: 'skipped' | 'failed'; reason: string }
-interface CsvResult { sent: number; skipped: number; failed: number; details?: CsvResultDetail[] }
+interface CsvResult {
+  sent: number
+  skipped: number
+  failed: number
+  details?: CsvResultDetail[]
+  followup?: { interval_days: number; max_followups: number } | null
+}
 
 function detectCol(headers: string[], candidates: string[]): string {
   const lower = headers.map(h => h.toLowerCase().trim())
@@ -37,6 +43,10 @@ export default function CsvCampaignUploader({
   extraColumns = [],
   intervalMonths,
   templateId,
+  batchName,
+  followupTemplateId,
+  followupIntervalDays,
+  maxFollowups,
 }: {
   type: CampaignType
   tenantId: string
@@ -46,6 +56,14 @@ export default function CsvCampaignUploader({
   intervalMonths?: number
   /** Required when type === 'marketing' -- identifies which approved whatsapp_templates row to send. */
   templateId?: string
+  /** Optional label for the follow-up schedule this upload creates (type === 'marketing' only). */
+  batchName?: string
+  /** Template to use for automatic follow-ups -- defaults to templateId on the backend when omitted. */
+  followupTemplateId?: string
+  /** Days to wait before each automatic follow-up. Ignored unless maxFollowups > 0. */
+  followupIntervalDays?: number
+  /** How many automatic follow-ups to send to non-responders. 0 (default) = one-off send, no follow-ups. */
+  maxFollowups?: number
 }) {
   const [csvHeaders, setCsvHeaders] = useState<string[]>([])
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([])
@@ -142,6 +160,10 @@ export default function CsvCampaignUploader({
           message_template: messageTemplate.trim() || undefined,
           interval_months: intervalMonths,
           template_id: templateId,
+          batch_name: batchName,
+          followup_template_id: followupTemplateId,
+          followup_interval_days: followupIntervalDays,
+          max_followups: maxFollowups,
         }),
       })
       const data = await res.json()
@@ -278,6 +300,13 @@ export default function CsvCampaignUploader({
       {/* Results */}
       {result && (
         <div className="space-y-3">
+          {result.followup && (
+            <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-xs text-foreground">
+              Follow-up messages are scheduled: up to {result.followup.max_followups} more
+              {result.followup.max_followups === 1 ? ' message' : ' messages'}, every {result.followup.interval_days}{' '}
+              day{result.followup.interval_days === 1 ? '' : 's'}, sent automatically to anyone who hasn&apos;t replied yet.
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3 text-center">
             <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3">
               <p className="text-xl font-bold text-green-600 dark:text-green-400">{result.sent}</p>

@@ -29,7 +29,7 @@ from api.integrations import router as integrations_router
 from api.agent import router as agent_router
 from api.templates import router as templates_router, poll_pending_template_statuses
 from api.reminders import scheduler, send_appointment_reminders
-from api.campaigns import send_feedback_requests, send_recall_messages, cleanup_expired_campaigns
+from api.campaigns import send_feedback_requests, send_recall_messages, cleanup_expired_campaigns, send_campaign_followups
 from api.no_show import auto_complete_bookings
 
 
@@ -65,6 +65,14 @@ async def lifespan(app: FastAPI):
         hours=6,
         next_run_time=datetime.now(),
         id="campaign_cleanup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_campaign_followups,
+        "interval",
+        hours=1,
+        next_run_time=datetime.now(),
+        id="campaign_followups",
         replace_existing=True,
     )
     scheduler.add_job(
@@ -127,6 +135,7 @@ _JOBS = {
     "feedback":  send_feedback_requests,
     "recall":    send_recall_messages,
     "cleanup":   cleanup_expired_campaigns,
+    "campaign_followups": send_campaign_followups,
     "no_show":   auto_complete_bookings,
     "templates": poll_pending_template_statuses,
 }

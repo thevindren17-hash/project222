@@ -132,10 +132,11 @@ async function sendOneCampaignMessage(params: {
   templateName?: string | null
   templateLanguage?: string
   marketingTemplate?: MarketingTemplateInfo | null
+  followupBatch?: { id: string; interval_days: number; max_followups: number } | null
 }): Promise<SendOutcome> {
   const {
     tenant_id, type, contact, phone_number_id, access_token, clinic_name,
-    message_template, interval_months, templateName, templateLanguage, marketingTemplate,
+    message_template, interval_months, templateName, templateLanguage, marketingTemplate, followupBatch,
   } = params
 
   const phone = normalizePhone(contact.phone)
@@ -257,13 +258,23 @@ async function sendOneCampaignMessage(params: {
     // marketing sends also store the exact personalized text in `context`
     // so a later reply can be recognized as "responding to this campaign"
     // (backend/api/campaigns.py get_pending_campaign_context()).
+    const hasFollowups = !!followupBatch && followupBatch.max_followups > 0
     await supabaseAdmin.from('campaigns').insert({
       tenant_id,
       contact_id,
       type,
       status: 'sent',
       sent_at: new Date().toISOString(),
-      ...(type === 'recall' || type === 'marketing' ? { context: { message } } : {}),
+      // `fields` carries the contact's raw spreadsheet values forward so a
+      // later automatic follow-up (send_campaign_followups, backend/api/
+      // campaigns.py) can re-fill every {{n}} variable, not just {name} --
+      // without this, a follow-up for a template with an offer/service
+      // variable would send it blank.
+      ...(type === 'recall' || type === 'marketing' ? { context: { message, fields: contact } } : {}),
+      ...(followupBatch ? { batch_id: followupBatch.id, followup_sequence: 0 } : {}),
+      ...(hasFollowups
+        ? { next_followup_at: new Date(Date.now() + followupBatch!.interval_days * 24 * 60 * 60 * 1000).toISOString() }
+        : {}),
     })
 
     // Save to thread if one exists
@@ -315,13 +326,20 @@ const DEFAULT_TEMPLATES: Record<Exclude<CampaignType, 'marketing'>, string> = {
 
 export async function POST(req: NextRequest) {
   try {
-    const { tenant_id, type, contacts, message_template, interval_months, template_id } = await req.json() as {
+    const {
+      tenant_id, type, contacts, message_template, interval_months, template_id,
+      batch_name, followup_template_id, followup_interval_days, max_followups,
+    } = await req.json() as {
       tenant_id: string
       type: CampaignType
       contacts: (Record<string, string> & { name: string; phone: string; service?: string; date?: string; time?: string })[]
       message_template?: string
       interval_months?: number
       template_id?: string
+      batch_name?: string
+      followup_template_id?: string
+      followup_interval_days?: number
+      max_followups?: number
     }
 
     if (!tenant_id || !type || !Array.isArray(contacts) || contacts.length === 0) {
@@ -407,6 +425,51 @@ export async function POST(req: NextRequest) {
       marketingTemplateLanguage = tpl.language
     }
 
+    // Follow-ups are only offered for marketing (the "patient record
+    // campaign" flow) — recall already has its own periodic re-engagement
+    // via send_recall_messages() based on dormancy, so stacking a second
+    // follow-up schedule on top of that would double-send.
+    let followupBatch: { id: string; interval_days: number; max_followups: number } | null = null
+    if (type === 'marketing' && max_followups && max_followups > 0) {
+      const intervalDays = Math.min(90, Math.max(1, Math.round(followup_interval_days || 3)))
+      const maxFollowups = Math.min(10, Math.max(1, Math.round(max_followups)))
+
+      let followupTemplateIdToStore: string | null = null
+      if (followup_template_id && followup_template_id !== template_id) {
+        const { data: followupTpl } = await supabaseAdmin
+          .from('whatsapp_templates')
+          .select('id, status')
+          .eq('id', followup_template_id)
+          .eq('tenant_id', tenant_id)
+          .maybeSingle()
+        if (!followupTpl) {
+          return NextResponse.json({ error: 'Follow-up template not found' }, { status: 404 })
+        }
+        if (followupTpl.status !== 'approved') {
+          return NextResponse.json({ error: `Follow-up template is "${followupTpl.status}", not approved yet` }, { status: 400 })
+        }
+        followupTemplateIdToStore = followupTpl.id
+      }
+
+      const { data: batch, error: batchErr } = await supabaseAdmin
+        .from('campaign_batches')
+        .insert({
+          tenant_id,
+          name: batch_name?.trim() || null,
+          template_id: template_id || null,
+          followup_template_id: followupTemplateIdToStore,
+          followup_interval_days: intervalDays,
+          max_followups: maxFollowups,
+          contact_count: contacts.length,
+        })
+        .select('id')
+        .single()
+      if (batchErr || !batch) {
+        return NextResponse.json({ error: batchErr?.message || 'Could not set up follow-up schedule' }, { status: 500 })
+      }
+      followupBatch = { id: batch.id, interval_days: intervalDays, max_followups: maxFollowups }
+    }
+
     const templateNameByType: Record<CampaignType, string | null> = {
       reminder: tenantSettings?.reminder_template_name || 'appointment_reminder',
       feedback: tenantSettings?.feedback_template_name || 'feedback_request',
@@ -444,6 +507,7 @@ export async function POST(req: NextRequest) {
             templateName: templateNameByType[type],
             templateLanguage,
             marketingTemplate,
+            followupBatch,
           })
         )
       )
@@ -457,7 +521,11 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    return NextResponse.json({ ...results, details })
+    return NextResponse.json({
+      ...results,
+      details,
+      followup: followupBatch ? { interval_days: followupBatch.interval_days, max_followups: followupBatch.max_followups } : null,
+    })
   } catch (e) {
     console.error('send-csv error:', e)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

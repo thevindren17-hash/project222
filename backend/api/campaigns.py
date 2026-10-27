@@ -684,6 +684,244 @@ async def send_recall_messages():
             continue
 
 
+# ── Phase 3: Patient Record Campaign follow-ups ───────────────────────────────
+# A clinic uploads a spreadsheet of up to 100 patients (CsvCampaignUploader,
+# type='marketing') and optionally sets "follow up every N days, M times" on
+# that batch. The initial send (frontend/src/app/api/campaigns/send-csv/
+# route.ts) creates one `campaigns` row per contact with followup_sequence=0
+# and next_followup_at set if the batch has follow-ups configured. This job
+# is the part that actually sends those follow-ups later, unattended.
+
+async def send_campaign_followups():
+    """
+    Every due follow-up (next_followup_at <= now) gets the next message in
+    its batch's sequence, unless the contact already replied, booked, or
+    opted out. Reply/booking are checked directly against the messages/
+    bookings tables rather than the 7-day get_pending_campaign_context()
+    window, since a follow-up interval can easily be longer than 7 days and
+    that window is for AI-context priming, not for this stop condition.
+
+    A transient problem (follow-up template still pending Meta review,
+    WhatsApp momentarily disconnected) reschedules this same row for
+    tomorrow instead of killing the sequence outright — a clinic fixing the
+    underlying issue shouldn't have to re-upload the whole spreadsheet to
+    resume. A permanent one (batch/template/contact deleted, opted out,
+    replied, booked, or sequence exhausted) stops it and records why in
+    stopped_reason, so "no more follow-ups" is never a silent dead end the
+    clinic has no way to notice.
+    """
+    if not await acquire_lock("campaign_followups", duration_minutes=25):
+        logger.info("Campaign follow-ups: lock held by another instance, skipping this run")
+        return
+    supabase = get_supabase_client()
+    now_iso = datetime.now().isoformat()
+
+    async def _stop(row_id: str, reason: str):
+        await _db(lambda: supabase.table("campaigns").update(
+            {"next_followup_at": None, "stopped_reason": reason}
+        ).eq("id", row_id).execute())
+
+    async def _retry_tomorrow(row_id: str):
+        retry_at = (datetime.now() + timedelta(days=1)).isoformat()
+        await _db(lambda: supabase.table("campaigns").update(
+            {"next_followup_at": retry_at}
+        ).eq("id", row_id).execute())
+
+    due_res = await _db(lambda: supabase.table("campaigns").select(
+        "id, tenant_id, contact_id, batch_id, followup_sequence, sent_at, context"
+    ).not_.is_("batch_id", "null").not_.is_("next_followup_at", "null").lte(
+        "next_followup_at", now_iso
+    ).execute())
+    due = due_res.data or []
+    if not due:
+        return
+
+    batch_ids = list({row["batch_id"] for row in due})
+    batches_res = await _db(lambda: supabase.table("campaign_batches").select("*").in_(
+        "id", batch_ids
+    ).execute())
+    batches_by_id = {b["id"]: b for b in (batches_res.data or [])}
+
+    # Fetched regardless of status (not just 'approved') so a template still
+    # pending Meta review can be told apart from one that's gone entirely --
+    # the former is worth retrying later, the latter never will succeed.
+    template_ids = list({
+        tid for b in batches_by_id.values()
+        for tid in (b.get("template_id"), b.get("followup_template_id")) if tid
+    })
+    templates_by_id: dict = {}
+    if template_ids:
+        tpls_res = await _db(lambda: supabase.table("whatsapp_templates").select(
+            "id, name, language, status, variables, body_text, header_media_id"
+        ).in_("id", template_ids).execute())
+        templates_by_id = {t["id"]: t for t in (tpls_res.data or [])}
+
+    tenants_cache: dict = {}
+
+    for row in due:
+        row_id = row["id"]
+        try:
+            batch = batches_by_id.get(row["batch_id"])
+            if not batch:
+                # Batch was deleted — nothing sane to do but stop this row.
+                await _stop(row_id, "batch_deleted")
+                continue
+
+            next_sequence = (row.get("followup_sequence") or 0) + 1
+            if next_sequence > (batch.get("max_followups") or 0):
+                await _stop(row_id, "completed")
+                continue
+
+            contact_id = row.get("contact_id")
+            tenant_id = row["tenant_id"]
+            _cid = contact_id
+            _tid = tenant_id
+            _since = row.get("sent_at") or now_iso
+
+            # Stop the sequence the moment the patient has said anything
+            # back — a follow-up nudge is for non-responders, not people the
+            # AI is already talking to.
+            replied_res = await _db(lambda: supabase.table("messages").select("id").eq(
+                "tenant_id", _tid
+            ).eq("contact_id", _cid).eq("role", "user").gt(
+                "created_at", _since
+            ).limit(1).execute())
+            if replied_res.data:
+                await _stop(row_id, "replied")
+                continue
+
+            # Stop on a new booking too, not just a WhatsApp reply — a
+            # patient can book through the voice line (bookings.source =
+            # 'voice') without ever sending a message this AI would see, and
+            # a now-booked patient shouldn't keep getting nudged to book.
+            booking_res = await _db(lambda: supabase.table("bookings").select("id").eq(
+                "tenant_id", _tid
+            ).eq("contact_id", _cid).not_.in_(
+                "status", ["cancelled"]
+            ).gt("created_at", _since).limit(1).execute())
+            if booking_res.data:
+                await _stop(row_id, "booked")
+                continue
+
+            contact_res = await _db_optional(lambda: supabase.table("contacts").select(
+                "name, phone, opted_out"
+            ).eq("id", _cid).maybe_single().execute())
+            contact = contact_res.data
+            if not contact or not contact.get("phone"):
+                await _stop(row_id, "contact_invalid")
+                continue
+            if contact.get("opted_out"):
+                await _stop(row_id, "opted_out")
+                continue
+
+            tenant = tenants_cache.get(tenant_id)
+            if tenant is None:
+                tenant = await get_tenant_by_id(tenant_id)
+                tenants_cache[tenant_id] = tenant
+            if not tenant:
+                await _stop(row_id, "tenant_unavailable")
+                continue
+            if not tenant.is_active or not tenant.wa_phone_number_id or not tenant.wa_access_token:
+                # Likely temporary (WhatsApp reconnect in progress, account
+                # paused) — retry tomorrow rather than abandoning the
+                # sequence the moment a connection hiccups.
+                logger.info(f"Follow-up delayed, WhatsApp not connected | tenant={tenant_id}")
+                await _retry_tomorrow(row_id)
+                continue
+
+            template_id = batch.get("followup_template_id") or batch.get("template_id")
+            wa_tmpl = templates_by_id.get(template_id)
+            if not wa_tmpl:
+                logger.info(f"Follow-up stopped, template deleted | batch={batch['id']} | tenant={tenant_id}")
+                await _stop(row_id, "template_deleted")
+                continue
+            if wa_tmpl.get("status") != "approved":
+                # Could still be pending Meta's review, or was paused/
+                # rejected and may get fixed/resubmitted — worth another
+                # look tomorrow instead of permanently giving up.
+                logger.info(f"Follow-up delayed, template status={wa_tmpl.get('status')} | batch={batch['id']} | tenant={tenant_id}")
+                await _retry_tomorrow(row_id)
+                continue
+
+            name = contact.get("name") or "there"
+            # Carry the original spreadsheet values forward (set at the
+            # initial send in frontend/src/app/api/campaigns/send-csv/
+            # route.ts, propagated here each round) so a template variable
+            # beyond {name} -- an offer, a service -- still gets filled in
+            # correctly on every automatic follow-up, not just the first send.
+            prior_fields = (row.get("context") or {}).get("fields") or {}
+            available = {**prior_fields, "name": name}
+            variables = wa_tmpl.get("variables") or []
+            params = [str(available.get(v, "") or "") for v in variables]
+            message = wa_tmpl.get("body_text") or ""
+            for i, v in enumerate(variables):
+                message = message.replace("{{%d}}" % (i + 1), params[i])
+
+            try:
+                await send_whatsapp_template(
+                    to=contact["phone"],
+                    template_name=wa_tmpl["name"],
+                    language_code=wa_tmpl.get("language") or "en",
+                    parameters=params,
+                    phone_number_id=tenant.wa_phone_number_id,
+                    access_token=tenant.wa_access_token,
+                    header_image_id=wa_tmpl.get("header_media_id"),
+                )
+            except Exception as e:
+                logger.error(f"Follow-up send failed | tenant={tenant_id} | contact={contact_id} | {e}")
+                # Leave next_followup_at as-is so a transient Meta/network
+                # error gets retried on the next run instead of silently
+                # dropping this contact from the sequence.
+                continue
+
+            is_last = next_sequence >= (batch.get("max_followups") or 0)
+            new_next_due = None if is_last else (
+                datetime.now() + timedelta(days=batch.get("followup_interval_days") or 3)
+            ).isoformat()
+
+            _new_row = {
+                "tenant_id": tenant_id,
+                "contact_id": contact_id,
+                "batch_id": batch["id"],
+                "type": "marketing",
+                "status": "sent",
+                "sent_at": datetime.now().isoformat(),
+                "followup_sequence": next_sequence,
+                "next_followup_at": new_next_due,
+                "stopped_reason": "completed" if is_last else None,
+                "context": {"message": message, "fields": prior_fields},
+            }
+            await _db(lambda: supabase.table("campaigns").insert(_new_row).execute())
+            # This row's own job is done — superseded by the new row above,
+            # which now owns whatever's next (another follow-up, or none).
+            await _stop(row_id, "superseded")
+
+            _p = contact["phone"]
+            thread_res = await _db(lambda: supabase.table("whatsapp_threads").select("id").eq(
+                "tenant_id", tenant_id
+            ).eq("contact_number", _p).order("created_at", desc=True).limit(1).execute())
+            thread_id = thread_res.data[0]["id"] if thread_res.data else None
+            if thread_id:
+                _thid = thread_id
+                await _db(lambda: supabase.table("messages").insert({
+                    "thread_id": _thid,
+                    "tenant_id": tenant_id,
+                    "contact_id": contact_id,
+                    "role": "assistant",
+                    "body": message,
+                    "handled_by": "ai",
+                }).execute())
+                await _db(lambda: supabase.table("whatsapp_threads").update({
+                    "last_message_at": datetime.now().isoformat()
+                }).eq("id", _thid).execute())
+
+            logger.info(f"Follow-up #{next_sequence} sent | tenant={tenant_id} | contact={contact_id} | batch={batch['id']}")
+
+        except Exception as e:
+            logger.error(f"Campaign follow-up row {row_id} failed, skipping | {e}", exc_info=True)
+            continue
+
+
 # ── Campaign cleanup ──────────────────────────────────────────────────────────
 
 async def cleanup_expired_campaigns():
