@@ -11,11 +11,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
 import { format, subWeeks, subMonths } from 'date-fns'
-import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore, Trash2, Sheet } from 'lucide-react'
+import { Bell, Star, Loader2, MessageCircleWarning, Archive, ArchiveRestore, Trash2, Sheet, ClipboardList } from 'lucide-react'
 import BookingDetailModal from '@/components/calendar/booking-detail-modal'
 import { BOOKING_STATUS } from '@/lib/booking-status'
 import { parseClinicLocal } from '@/lib/utils'
 import { syncBookingToSheet } from '@/lib/api'
+import EmptyState from '@/components/dashboard/empty-state'
 import type { Booking } from '@/lib/types'
 
 // Supabase's PostgrestError is a plain {message, details, hint, code}
@@ -270,8 +271,12 @@ export default function AppointmentsPage() {
       <div className="space-y-3 md:hidden">
         {visibleBookings?.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-muted-foreground text-sm">
-              {awaitingReplyOnly ? 'No patients awaiting reply' : 'No appointments found'}
+            <CardContent>
+              <EmptyState
+                icon={awaitingReplyOnly ? MessageCircleWarning : ClipboardList}
+                title={awaitingReplyOnly ? 'No patients awaiting reply' : 'No appointments found'}
+                description={awaitingReplyOnly ? undefined : 'Bookings made through WhatsApp or the calendar will show up here.'}
+              />
             </CardContent>
           </Card>
         )}
@@ -380,8 +385,12 @@ export default function AppointmentsPage() {
             <TableBody>
               {visibleBookings?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                    {awaitingReplyOnly ? 'No patients awaiting reply' : 'No appointments found'}
+                  <TableCell colSpan={7}>
+                    <EmptyState
+                      icon={awaitingReplyOnly ? MessageCircleWarning : ClipboardList}
+                      title={awaitingReplyOnly ? 'No patients awaiting reply' : 'No appointments found'}
+                      description={awaitingReplyOnly ? undefined : 'Bookings made through WhatsApp or the calendar will show up here.'}
+                    />
                   </TableCell>
                 </TableRow>
               )}

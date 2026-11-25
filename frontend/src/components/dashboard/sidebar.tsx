@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { getCurrentTenant } from '@/lib/supabase'
+import WorkspaceSwitcher from '@/components/dashboard/workspace-switcher'
 import {
   LayoutDashboard, Calendar, ClipboardList, Phone, MessageSquare,
   BarChart3, Bot, Users, Building2, FlaskConical, Bell, UserRoundCheck, Star, Sheet,
@@ -147,10 +148,7 @@ export default function Sidebar({ open = false, onClose }: SidebarProps) {
           <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
             <Phone className="h-4 w-4 text-primary-foreground" />
           </div>
-          <div className="leading-tight min-w-0">
-            <p className="text-sm font-semibold truncate">AI Receptionist</p>
-            <p className="text-[10px] text-muted-foreground truncate">Workspace</p>
-          </div>
+          <WorkspaceSwitcher />
         </div>
 
         {/* Nav */}
